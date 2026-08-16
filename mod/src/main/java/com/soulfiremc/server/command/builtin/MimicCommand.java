@@ -39,7 +39,7 @@ public final class MimicCommand {
         .then(argument("entity", EntityArgumentType.INSTANCE)
           .executes(
             help(
-              "Makes selected bots mimic the movement of other entities",
+              "Make selected bots mimic the movement of other entities",
               c -> {
                 var entityMatcher = EntityArgumentType.getEntityMatcher(c, "entity");
 
@@ -49,7 +49,7 @@ public final class MimicCommand {
                     var level = bot.minecraft().level;
                     var player = bot.minecraft().player;
                     if (level == null || player == null) {
-                      c.getSource().source().sendWarn("You must be in a world to use this command!");
+                      c.getSource().source().sendWarn("Join a world before you use this command.");
                       return Command.SINGLE_SUCCESS;
                     }
 
@@ -57,7 +57,7 @@ public final class MimicCommand {
                       .filter(entityMatcher)
                       .findAny();
                     if (entity.isEmpty()) {
-                      c.getSource().source().sendWarn("Entity not found!");
+                      c.getSource().source().sendWarn("Entity not found.");
                       return Command.SINGLE_SUCCESS;
                     }
 

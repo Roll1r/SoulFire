@@ -46,7 +46,7 @@ public final class SparkCommand {
               })))
         .executes(
           help(
-            "Get spark help",
+            "Show Spark help",
             c -> {
               c.getSource().soulFire().sparkPlugin().platform().executeCommand(new SFSparkCommandSender(c.getSource().source()), new String[]{});
               return Command.SINGLE_SUCCESS;

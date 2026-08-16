@@ -352,8 +352,8 @@ tool = await bot.inventory.best_tool(
 )
 ```
 
-Use `run_auto_eat`, `run_attack_entity`, and the other `run_*` methods when the
-task should be owned by the lifetime of its event iterator.
+Use `run_auto_eat`, `run_attack_entity`, and the other `run_*` methods to tie a
+task lifetime to its event iterator.
 
 ## Observe synchronized state
 
@@ -423,7 +423,7 @@ async for event in soulfire.plugins.typed_events(
         print(event.value.sequence)
 ```
 
-The initial envelope reports whether `after_sequence` could be resumed.
+The initial envelope reports whether the stream resumed after `after_sequence`.
 `dropped_before` reports backpressure loss. Sync clients expose the same API as
 an iterator.
 
@@ -474,9 +474,9 @@ async for packet in bot.protocol.packets(
     print(packet.name, packet.network_id)
 ```
 
-Encoded bytes use SoulFire's reported native protocol. ViaVersion translates
-the decoded packet to the remote server protocol afterward. Raw sends require
-the admin-only `RAW_PROTOCOL` permission and should set `expected_name`.
+Encoded bytes use the native protocol that SoulFire reports. ViaVersion then
+translates the decoded packet to the remote server protocol. Raw sends require
+the admin-only `RAW_PROTOCOL` permission. Set `expected_name` for each raw send.
 
 ## Use generated protocol clients
 

@@ -49,14 +49,14 @@ public final class ExportMapCommand {
       bot -> {
         var level = bot.minecraft().level;
         if (level == null) {
-          context.getSource().source().sendWarn("No level loaded!");
+          context.getSource().source().sendWarn("No world is loaded.");
           return Command.SINGLE_SUCCESS;
         }
 
         for (var mapId : idProvider.apply(level)) {
           var mapDataState = level.getMapData(mapId);
           if (mapDataState == null) {
-            context.getSource().source().sendInfo("Map not found!");
+            context.getSource().source().sendWarn("Map not found.");
             return Command.SINGLE_SUCCESS;
           }
 
@@ -69,7 +69,7 @@ public final class ExportMapCommand {
             ImageIO.write(image, "png", file.toFile());
             context.getSource().source().sendInfo("Exported map to {}", file);
           } catch (IOException e) {
-            context.getSource().source().sendError("Failed to export map!", e);
+            context.getSource().source().sendError("Map export failed.", e);
           }
         }
 
@@ -82,13 +82,13 @@ public final class ExportMapCommand {
       literal("export-map")
         .executes(
           help(
-            "Exports images of all map items. Can be a held item or in a item-frame.",
+            "Export all loaded maps as images.",
             c -> exportMap(c, level -> level.getAllMapData().keySet())))
         .then(
           argument("map_id", IntegerArgumentType.integer())
             .executes(
               help(
-                "Exports a image of a map item by map id. Can be a held item or in a item-frame.",
+                "Export a map as an image by its map ID.",
                 c -> {
                   var mapId = IntegerArgumentType.getInteger(c, "map_id");
                   return exportMap(c, _ -> Set.of(new MapId(mapId)));

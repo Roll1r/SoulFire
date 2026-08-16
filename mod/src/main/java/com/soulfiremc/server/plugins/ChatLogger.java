@@ -146,7 +146,7 @@ public final class ChatLogger extends InternalPlugin {
         .namespace(NAMESPACE)
         .key("deduplicate-amount")
         .uiName("Deduplicate amount")
-        .description("How often should the same message be logged before it will not be logged again? (within 5 seconds)")
+        .description("SoulFire logs the same message no more than this number of times within five seconds.")
         .defaultValue(1)
         .minValue(1)
         .maxValue(Integer.MAX_VALUE)

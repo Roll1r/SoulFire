@@ -49,7 +49,7 @@ public final class ExportRenderDebugDumpCommand {
         var level = minecraft.level;
         var player = minecraft.player;
         if (level == null || player == null) {
-          context.getSource().source().sendWarn("No level loaded!");
+          context.getSource().source().sendWarn("No world is loaded.");
           return Command.SINGLE_SUCCESS;
         }
 
@@ -87,7 +87,7 @@ public final class ExportRenderDebugDumpCommand {
           context.getSource().source().sendInfo("PNG: {}", result.frame());
           context.getSource().source().sendInfo("Scene data: {}", result.scene());
         } catch (IOException e) {
-          context.getSource().source().sendError("Failed to export renderer debug dump!", e);
+          context.getSource().source().sendError("Renderer debug dump export failed.", e);
         }
 
         return Command.SINGLE_SUCCESS;
@@ -103,7 +103,7 @@ public final class ExportRenderDebugDumpCommand {
       literal("export-render-debug-dump")
         .executes(
           help(
-            "Exports a POV render PNG plus scene, material, texture, and runtime texture debug data.",
+            "Export a POV image and its scene, material, texture, and runtime texture debug data.",
             c -> exportRenderDebugDump(c, RenderConstants.DEFAULT_WIDTH, RenderConstants.DEFAULT_HEIGHT, -1)))
         .then(
           argument("width", IntegerArgumentType.integer(1, 3840))
@@ -111,7 +111,7 @@ public final class ExportRenderDebugDumpCommand {
               argument("height", IntegerArgumentType.integer(1, 2160))
                 .executes(
                   help(
-                    "Exports a debug dump with custom resolution.",
+                    "Export a debug dump at a custom resolution.",
                     c -> exportRenderDebugDump(
                       c,
                       IntegerArgumentType.getInteger(c, "width"),
@@ -121,7 +121,7 @@ public final class ExportRenderDebugDumpCommand {
                   argument("max_distance", IntegerArgumentType.integer(1, 2048))
                     .executes(
                       help(
-                        "Exports a debug dump with custom resolution and max render distance in blocks.",
+                        "Export a debug dump at a custom resolution and maximum render distance.",
                         c -> exportRenderDebugDump(
                           c,
                           IntegerArgumentType.getInteger(c, "width"),

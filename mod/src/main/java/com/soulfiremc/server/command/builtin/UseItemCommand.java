@@ -38,7 +38,7 @@ public final class UseItemCommand {
           argument("hand", new EnumArgumentType<>(InteractionHand.class))
             .executes(
               help(
-                "Makes selected bots use an item in the specified hand",
+                "Make selected bots use an item in the specified hand",
                 c -> {
                   var hand = c.getArgument("hand", InteractionHand.class);
 

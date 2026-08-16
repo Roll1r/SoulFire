@@ -52,7 +52,7 @@ public final class MoveCommand {
         .then(argument("entity", EntityArgumentType.INSTANCE)
           .executes(
             help(
-              "Makes selected bots move to an entity",
+              "Move selected bots to an entity",
               c -> {
                 var entityMatcher = EntityArgumentType.getEntityMatcher(c, "entity");
 
@@ -63,7 +63,7 @@ public final class MoveCommand {
                       .filter(entityMatcher)
                       .findAny();
                     if (entity.isEmpty()) {
-                      c.getSource().source().sendWarn("Entity not found!");
+                      c.getSource().source().sendWarn("Entity not found.");
                       return Command.SINGLE_SUCCESS;
                     }
 
@@ -80,7 +80,7 @@ public final class MoveCommand {
           .then(argument("radius", IntegerArgumentType.integer())
             .executes(
               help(
-                "Makes selected bots move to a random xz position within the radius",
+                "Move selected bots to a random XZ position within the radius",
                 c -> {
                   var radius = IntegerArgumentType.getInteger(c, "radius");
 
@@ -102,7 +102,7 @@ public final class MoveCommand {
         .then(argument("y", DoubleAxisArgumentType.INSTANCE)
           .executes(
             help(
-              "Makes selected bots move to the y coordinates",
+              "Move selected bots to the Y coordinate",
               c -> {
                 var y = DoubleAxisArgumentType.getDoubleAxisData(c, "y");
                 return executePathfinding(c, bot -> new YGoal(Mth.floor(
@@ -113,7 +113,7 @@ public final class MoveCommand {
           .then(argument("z", DoubleAxisArgumentType.INSTANCE)
             .executes(
               help(
-                "Makes selected bots move to the xz coordinates",
+                "Move selected bots to the XZ coordinates",
                 c -> {
                   var x = DoubleAxisArgumentType.getDoubleAxisData(c, "x");
                   var z = DoubleAxisArgumentType.getDoubleAxisData(c, "z");
@@ -130,7 +130,7 @@ public final class MoveCommand {
             .then(argument("z", DoubleAxisArgumentType.INSTANCE)
               .executes(
                 help(
-                  "Makes selected bots move to the xyz coordinates",
+                  "Move selected bots to the XYZ coordinates",
                   c -> {
                     var x = DoubleAxisArgumentType.getDoubleAxisData(c, "x");
                     var y = DoubleAxisArgumentType.getDoubleAxisData(c, "y");

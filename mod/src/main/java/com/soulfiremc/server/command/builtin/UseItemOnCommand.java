@@ -48,7 +48,7 @@ public final class UseItemOnCommand {
                     argument("hand", new EnumArgumentType<>(InteractionHand.class))
                       .executes(
                         help(
-                          "Makes selected bots use an item on the block at the xyz coordinates with the specified face and hand",
+                          "Make selected bots use an item on a block with the specified face and hand",
                           c -> {
                             var blockX = DoubleAxisArgumentType.getDoubleAxisData(c, "blockX");
                             var blockY = DoubleAxisArgumentType.getDoubleAxisData(c, "blockY");

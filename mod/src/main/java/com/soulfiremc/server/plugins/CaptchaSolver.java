@@ -245,7 +245,7 @@ public final class CaptchaSolver extends InternalPlugin {
         .namespace(NAMESPACE)
         .key("model")
         .uiName("AI Model")
-        .description("What AI model should be used for detecting the text in the CAPTCHA image")
+        .description("SoulFire uses this AI model to detect text in the CAPTCHA image.")
         .defaultValue("llava")
         .build();
     public static final StringProperty<SettingsSource.Bot> RESPONSE_COMMAND =
@@ -254,7 +254,7 @@ public final class CaptchaSolver extends InternalPlugin {
         .namespace(NAMESPACE)
         .key("response-command")
         .uiName("Response Command")
-        .description("What command should be ran using the response. Omit / to send a normal message")
+        .description("SoulFire runs this command with the response. Without /, SoulFire sends a chat message.")
         .defaultValue("%s")
         .build();
     public static final ComboProperty<SettingsSource.Bot> IMAGE_SOURCE =
@@ -263,7 +263,7 @@ public final class CaptchaSolver extends InternalPlugin {
         .namespace(NAMESPACE)
         .key("image-source")
         .uiName("Image Source")
-        .description("Where should the captcha images be taken from")
+        .description("SoulFire gets CAPTCHA images from this source.")
         .defaultValue(ImageSource.MAP_IN_HAND.name())
         .addOptions(ComboProperty.optionsFromEnum(ImageSource.values(), ComboProperty::capitalizeEnum, e -> switch (e) {
           case MAP_IN_HAND -> "map";

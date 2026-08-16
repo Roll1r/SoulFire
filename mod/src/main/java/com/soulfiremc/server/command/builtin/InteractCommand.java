@@ -44,7 +44,7 @@ public final class InteractCommand {
               argument("hand", new EnumArgumentType<>(InteractionHand.class))
                 .executes(
                   help(
-                    "Makes selected bots interact with an entity using a specific hand",
+                    "Make selected bots interact with an entity using the specified hand",
                     c -> {
                       var entityMatcher = EntityArgumentType.getEntityMatcher(c, "entity");
                       var hand = c.getArgument("hand", InteractionHand.class);
@@ -64,7 +64,7 @@ public final class InteractCommand {
                               .filter(entityMatcher)
                               .findAny();
                             if (entity.isEmpty()) {
-                              c.getSource().source().sendWarn("Entity not found!");
+                              c.getSource().source().sendWarn("Entity not found.");
                               return;
                             }
 

@@ -47,7 +47,7 @@ public final class ExportBasicRenderCommand {
         var level = bot.minecraft().level;
         var player = bot.minecraft().player;
         if (level == null || player == null) {
-          context.getSource().source().sendWarn("No level loaded!");
+          context.getSource().source().sendWarn("No world is loaded.");
           return Command.SINGLE_SUCCESS;
         }
 
@@ -80,7 +80,7 @@ public final class ExportBasicRenderCommand {
           ImageIO.write(image, "png", file.toFile());
           context.getSource().source().sendInfo("Exported render to {}", file);
         } catch (IOException e) {
-          context.getSource().source().sendError("Failed to export render!", e);
+          context.getSource().source().sendError("Render export failed.", e);
         }
 
         return Command.SINGLE_SUCCESS;
@@ -92,7 +92,7 @@ public final class ExportBasicRenderCommand {
       literal("export-basic-render")
         .executes(
           help(
-            "Exports an image of a rudimentary camera render of the world the bot sees.",
+            "Export a basic camera image of the world that the bot sees.",
             c -> exportBasicRender(c, RenderConstants.DEFAULT_WIDTH, RenderConstants.DEFAULT_HEIGHT)))
         .then(
           argument("width", IntegerArgumentType.integer(1, 3840))
@@ -100,7 +100,7 @@ public final class ExportBasicRenderCommand {
               argument("height", IntegerArgumentType.integer(1, 2160))
                 .executes(
                   help(
-                    "Exports an image with custom resolution.",
+                    "Export an image at a custom resolution.",
                     c -> exportBasicRender(
                       c,
                       IntegerArgumentType.getInteger(c, "width"),

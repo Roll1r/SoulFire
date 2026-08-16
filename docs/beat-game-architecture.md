@@ -30,7 +30,7 @@ The TypeScript package owns decisions that only make sense for a game plan:
 
 A reusable task is an actuator. For example, SoulFire can execute a generic
 collect-blocks task close to the game loop. TypeScript decides which block to
-collect, how many are needed, and what should happen next.
+collect, how many are needed, and the next action.
 
 ## Why Effect is canonical
 

@@ -39,7 +39,7 @@ public final class GenerateTokenCommand {
               c -> {
                 var authSystem = c.getSource().soulFire().authSystem();
                 c.getSource().source().sendInfo(
-                  "JWT (This gives full access to your account, keep this secret): {}",
+                  "Keep this JWT secret. It gives full access to your account: {}",
                   authSystem.generateJWT(
                     authSystem.getUserData(c.getSource().source().getUniqueId()).orElseThrow(),
                     RPCConstants.API_AUDIENCE
@@ -54,7 +54,7 @@ public final class GenerateTokenCommand {
               c -> {
                 var authSystem = c.getSource().soulFire().authSystem();
                 c.getSource().source().sendInfo(
-                  "JWT (This gives full access to your WebDAV files, keep this secret): {}",
+                  "Keep this JWT secret. It gives full access to your WebDAV files: {}",
                   authSystem.generateJWT(
                     authSystem.getUserData(c.getSource().source().getUniqueId()).orElseThrow(),
                     RPCConstants.API_AUDIENCE

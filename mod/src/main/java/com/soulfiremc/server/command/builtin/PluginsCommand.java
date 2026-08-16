@@ -39,7 +39,7 @@ public final class PluginsCommand {
             c -> {
               var extensions = SoulFireAPI.getServerExtensions();
               if (extensions.isEmpty()) {
-                c.getSource().source().sendWarn("No plugins found!");
+                c.getSource().source().sendWarn("No plugins are installed.");
                 return Command.SINGLE_SUCCESS;
               }
 

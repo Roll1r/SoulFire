@@ -51,7 +51,7 @@ public final class InventoryCommand {
           literal("close")
             .executes(
               help(
-                "Closes the current inventory for selected bots, opens the player inventory afterwards",
+                "Close the current inventory of selected bots. Then open the player inventory.",
                 c ->
                   forEveryBot(
                     c,
@@ -68,7 +68,7 @@ public final class InventoryCommand {
           literal("current")
             .executes(
               help(
-                "Get info about the current inventory for selected bots",
+                "Show the current inventory of selected bots",
                 c ->
                   forEveryBot(
                     c,
@@ -96,7 +96,7 @@ public final class InventoryCommand {
                         source.sendInfo(format(playerInventoryMenu.getSlot(InventoryMenu.CRAFT_SLOT_START)) + " (Top left crafting grid)");
                         source.sendInfo(format(playerInventoryMenu.getSlot(InventoryMenu.CRAFT_SLOT_START + 1)) + " (Top right crafting grid)");
                         source.sendInfo(format(playerInventoryMenu.getSlot(InventoryMenu.CRAFT_SLOT_START + 2)) + " (Bottom left crafting grid)");
-                        source.sendInfo(format(playerInventoryMenu.getSlot(InventoryMenu.CRAFT_SLOT_START + 3)) + " (Bottom right crafting grid:)");
+                        source.sendInfo(format(playerInventoryMenu.getSlot(InventoryMenu.CRAFT_SLOT_START + 3)) + " (Bottom right crafting grid)");
                         source.sendInfo(format(playerInventoryMenu.getSlot(InventoryMenu.ARMOR_SLOT_START)) + " (Helmet)");
                         source.sendInfo(format(playerInventoryMenu.getSlot(InventoryMenu.ARMOR_SLOT_START + 1)) + " (Chestplate)");
                         source.sendInfo(format(playerInventoryMenu.getSlot(InventoryMenu.ARMOR_SLOT_START + 2)) + " (Leggings)");

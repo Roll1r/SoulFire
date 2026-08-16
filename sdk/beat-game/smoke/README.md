@@ -25,6 +25,6 @@ Use the same run and team IDs when restarting after an intentional crash. The
 JSON checkpoint store then resumes the existing run instead of creating a new
 one.
 
-The worker writes newline-delimited JSON events to standard output. CI should
-retain that log, the checkpoint directory, the SoulFire log, and the Minecraft
-world whenever the run fails.
+The worker writes newline-delimited JSON events to standard output. If a run
+fails, configure CI to retain this output, the checkpoint directory, the
+SoulFire log, and the Minecraft world.

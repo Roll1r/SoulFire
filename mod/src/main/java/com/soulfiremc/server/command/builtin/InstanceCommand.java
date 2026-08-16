@@ -45,7 +45,7 @@ public final class InstanceCommand {
             .forward(
               dispatcher.getRoot(),
               helpSingleRedirect(
-                "Instead of running a command for all possible instances, run it for a specific list of instances. Use a comma to separate the names",
+                "Run a command for specific instances. Separate instance names with commas.",
                 c -> {
                   var instanceNames = Set.of(StringArgumentType.getString(c, "instance_names").split(","));
                   return c.getSource()

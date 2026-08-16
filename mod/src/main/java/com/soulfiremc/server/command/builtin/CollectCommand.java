@@ -47,7 +47,7 @@ public final class CollectCommand {
             .then(argument("searchRadius", IntegerArgumentType.integer(1))
               .executes(
                 help(
-                  "Makes selected bots collect a block by name or tag",
+                  "Make selected bots collect a block by name or tag",
                   c -> {
                     var resolvable = c.getArgument("block", BlockTagResolvable.class);
                     var amount = IntegerArgumentType.getInteger(c, "amount");

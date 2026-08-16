@@ -43,7 +43,7 @@ public final class ProxySettings implements SettingsObject {
       .namespace(NAMESPACE)
       .key("shuffle-proxies")
       .uiName("Shuffle proxies")
-      .description("Should the proxy order be random when connecting bots?")
+      .description("This setting randomizes proxy order before bots connect.")
       .defaultValue(false)
       .build();
   public static final BooleanProperty<SettingsSource.Instance> STICKY_PROXIES =

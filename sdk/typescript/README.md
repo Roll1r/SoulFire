@@ -15,8 +15,8 @@ pnpm add @soulfiremc/sdk effect @effect/platform
 
 The SDK requires a compatible Effect runtime. Use
 `@soulfiremc/sdk/node`, `@soulfiremc/sdk/browser`, or
-`@soulfiremc/sdk/bun` when SoulFire should provide the matching live HTTP
-layer. The universal entry point also accepts any
+`@soulfiremc/sdk/bun` to use the matching live HTTP layer from SoulFire. The
+universal entry point also accepts any
 `@effect/platform/HttpClient`, which keeps tests, workers, Deno, and custom
 transport policies portable.
 
@@ -78,8 +78,8 @@ and required plugins before returning a ready client.
 
 ## Provide SoulFire as a layer
 
-Use `SoulFire.layer` when application services should depend on a shared
-SoulFire client:
+Use `SoulFire.layer` to provide one shared SoulFire client to application
+services:
 
 ```ts
 import { Effect } from "effect";
@@ -491,7 +491,7 @@ yield* soulfire.plugins
   );
 ```
 
-The first envelope reports whether `afterSequence` could be resumed.
+The first envelope reports whether the stream resumed after `afterSequence`.
 `droppedBefore` reports backpressure loss. The Promise facade exposes the same
 operation as an `AsyncIterable`.
 

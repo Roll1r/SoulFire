@@ -33,9 +33,9 @@ public final class WhoAmICommand {
       literal("whoami")
         .executes(
           help(
-            "See who you are",
+            "Show your current user",
             c -> {
-              c.getSource().source().sendInfo("Your are: {}", c.getSource().source().getUsername());
+              c.getSource().source().sendInfo("You are: {}", c.getSource().source().getUsername());
 
               return Command.SINGLE_SUCCESS;
             })));

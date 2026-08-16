@@ -103,7 +103,7 @@ public final class PathfindingSettings implements SettingsObject {
       .namespace(NAMESPACE)
       .key("disable-pruning")
       .uiName("Disable Pruning")
-      .description("Disable periodic pruning of the pathfinding search space (may use more memory)")
+      .description("This setting disables periodic pruning of the pathfinding search space. It can increase memory use.")
       .defaultValue(false)
       .build();
   public static final MinMaxProperty<SettingsSource.Bot> Y_ROT_JITTER =

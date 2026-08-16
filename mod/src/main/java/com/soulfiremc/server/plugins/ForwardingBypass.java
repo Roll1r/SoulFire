@@ -395,7 +395,7 @@ public final class ForwardingBypass extends InternalPlugin {
         .namespace(NAMESPACE)
         .key("player-address")
         .uiName("Player Address")
-        .description("What the server should use as the player IP. Only used by some forwarding modes.")
+        .description("SoulFire uses this value as the player IP. Only some forwarding modes use this setting.")
         .defaultValue("127.0.0.1")
         .build();
 

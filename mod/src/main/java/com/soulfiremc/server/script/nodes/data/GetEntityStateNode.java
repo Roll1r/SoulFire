@@ -57,7 +57,7 @@ public final class GetEntityStateNode extends AbstractScriptNode {
       PortDefinition.output("pitch", "Pitch", PortType.NUMBER, "Entity pitch rotation (vertical)"),
       PortDefinition.output("motion", "Motion", PortType.VECTOR3, "Entity motion/velocity vector")
     )
-    .description("Gets the state of an entity by integer ID or UUID (position, health, gamemode, etc.)")
+    .description("Gets an entity state by integer ID or UUID, including its position, health, and game mode")
     .icon("heart-pulse")
     .color("#9C27B0")
     .addKeywords("entity", "state", "health", "alive", "player", "gamemode", "sprint", "position", "uuid", "rotation", "motion")

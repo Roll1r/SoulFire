@@ -35,7 +35,7 @@ public final class SayCommand {
           argument("message", StringArgumentType.greedyString())
             .executes(
               help(
-                "Makes selected bots send a message in chat or execute a command",
+                "Make selected bots send a chat message or run a command",
                 c -> {
                   var message = StringArgumentType.getString(c, "message");
 

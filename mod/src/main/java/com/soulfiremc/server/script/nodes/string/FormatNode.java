@@ -38,7 +38,7 @@ public final class FormatNode extends AbstractScriptNode {
     .addOutputs(
       PortDefinition.output("result", "Result", PortType.STRING, "Formatted string")
     )
-    .description("Formats a template string by replacing {0}, {1}, etc. placeholders with arguments")
+    .description("Formats a template string by replacing placeholders such as {0} and {1} with arguments")
     .icon("text")
     .color("#8BC34A")
     .addKeywords("string", "format", "template", "placeholder", "interpolate")

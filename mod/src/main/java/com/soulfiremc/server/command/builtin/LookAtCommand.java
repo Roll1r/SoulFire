@@ -37,7 +37,7 @@ public final class LookAtCommand {
             .then(argument("z", DoubleAxisArgumentType.INSTANCE)
               .executes(
                 help(
-                  "Makes selected bots look at the block at the xyz coordinates",
+                  "Make selected bots look at the block at the XYZ coordinates",
                   c -> {
                     var x = DoubleAxisArgumentType.getDoubleAxisData(c, "x");
                     var y = DoubleAxisArgumentType.getDoubleAxisData(c, "y");

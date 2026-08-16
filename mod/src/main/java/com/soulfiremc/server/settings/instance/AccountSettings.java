@@ -32,7 +32,7 @@ public final class AccountSettings implements SettingsObject {
       .namespace(NAMESPACE)
       .key("shuffle-accounts")
       .uiName("Shuffle accounts")
-      .description("Should the accounts order be random when connecting bots?")
+      .description("This setting randomizes account order before bots connect.")
       .defaultValue(false)
       .build();
   public static final BooleanProperty<SettingsSource.Instance> USE_PROXIES_FOR_ACCOUNT_AUTH =
@@ -42,8 +42,8 @@ public final class AccountSettings implements SettingsObject {
       .key("use-proxies-for-account-auth")
       .uiName("Use proxies for account auth")
       .description("""
-        Should the imported proxies be used to authenticate accounts? (Contact Microsoft login, input credentials, etc.)
-        Otherwise the SF server will authenticate accounts directly.""")
+        SoulFire uses imported proxies for account authentication.
+        Otherwise, the SoulFire server connects directly.""")
       .defaultValue(false)
       .build();
   public static final IntProperty<SettingsSource.Instance> ACCOUNT_IMPORT_CONCURRENCY =
@@ -52,7 +52,7 @@ public final class AccountSettings implements SettingsObject {
       .namespace(NAMESPACE)
       .key("account-import-concurrency")
       .uiName("Account import concurrency")
-      .description("For credentials-like auth, how many accounts should be imported at once?")
+      .description("SoulFire imports no more than this number of accounts at the same time when authentication requires credentials.")
       .defaultValue(3)
       .minValue(1)
       .maxValue(Integer.MAX_VALUE)

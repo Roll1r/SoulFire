@@ -88,7 +88,7 @@ public final class ServerSettings implements SettingsObject {
       .namespace(NAMESPACE)
       .key("email-type")
       .uiName("Email Type")
-      .description("How emails should be delivered.")
+      .description("SoulFire uses this method to deliver emails.")
       .defaultValue(EmailType.CONSOLE.name())
       .addOptions(ComboProperty.optionsFromEnum(EmailType.values(), EmailType::toString, e -> switch (e) {
         case CONSOLE -> "logs";

@@ -45,7 +45,7 @@ public final class BotCommand {
             .forward(
               dispatcher.getRoot(),
               helpSingleRedirect(
-                "Instead of running a command for all possible bots, run it for a specific list of bots. Use a comma to separate the names",
+                "Run a command for specific bots. Separate bot names with commas.",
                 c -> {
                   var botNames = Set.of(StringArgumentType.getString(c, "bot_names").split(","));
                   return c.getSource()

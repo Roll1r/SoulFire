@@ -32,7 +32,7 @@ public final class StopTaskCommand {
       literal("stop-task")
         .executes(
           help(
-            "Makes selected bots stop their current task",
+            "Stop the current task of selected bots",
             c ->
               forEveryBot(
                 c,
@@ -40,7 +40,7 @@ public final class StopTaskCommand {
                   if (bot.botControl().stopAll()) {
                     c.getSource().source().sendInfo("Stopped current task for " + bot.accountName());
                   } else {
-                    c.getSource().source().sendWarn("No task was running!");
+                    c.getSource().source().sendWarn("No task is running.");
                   }
 
                   return Command.SINGLE_SUCCESS;

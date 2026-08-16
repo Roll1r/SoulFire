@@ -43,7 +43,7 @@ public final class ExcavateCommand {
                     .then(argument("toZ", DoubleAxisArgumentType.INSTANCE)
                       .executes(
                         help(
-                          "Makes selected bots dig a rectangle from the from to the to coordinates",
+                          "Make selected bots dig a rectangular area between two coordinates",
                           c -> {
                             var fromX = DoubleAxisArgumentType.getDoubleAxisData(c, "fromX");
                             var fromY = DoubleAxisArgumentType.getDoubleAxisData(c, "fromY");
@@ -72,7 +72,7 @@ public final class ExcavateCommand {
                 .then(argument("radius", IntegerArgumentType.integer(1))
                   .executes(
                     help(
-                      "Makes selected bots dig a sphere with the given radius",
+                      "Make selected bots dig a sphere with the specified radius",
                       c -> {
                         var x = DoubleAxisArgumentType.getDoubleAxisData(c, "x");
                         var y = DoubleAxisArgumentType.getDoubleAxisData(c, "y");

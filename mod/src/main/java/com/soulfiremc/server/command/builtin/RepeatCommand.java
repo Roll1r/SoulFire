@@ -37,7 +37,7 @@ public final class RepeatCommand {
             .forward(
               dispatcher.getRoot(),
               helpRedirect(
-                "Repeat the command for the specified amount of times",
+                "Repeat the command the specified number of times",
                 c -> {
                   var amount = IntegerArgumentType.getInteger(c, "amount");
                   var list = new ArrayList<CommandSourceStack>();

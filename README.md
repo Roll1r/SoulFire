@@ -9,9 +9,8 @@ Advanced Minecraft Bot Tool. Deploy automated bots for server testing, automatio
 This repository only contains the CLI and server implementation. The official GUI client is in [another repository](https://github.com/soulfiremc-com/SoulFireClient).
 
 > [!WARNING]
-> This tool should only be used on servers you own or have explicit permission to test. Ensure your hosting provider
-> allows automated bot testing. If you use this software without authorization, you make yourself (or your
-> legal guardians) liable; the developers of SoulFire are not responsible for your own actions.
+> Use this tool only on servers that you own or have permission to test. Make sure that your hosting provider allows
+> automated bot testing. You are responsible for unauthorized use. The SoulFire developers are not responsible for your actions.
 
 ---
 
@@ -43,7 +42,7 @@ Check it out: [https://enderdash.com](https://enderdash.com/?utm_source=github&u
 > [!TIP]
 > Want to check out how SoulFire looks before installing it? Take a look at the official [demo page](https://demo.soulfiremc.com).
 
-For installing SoulFire, please refer to the [installation guide](https://soulfiremc.com/docs/installation).
+Follow the [installation guide](https://soulfiremc.com/docs/installation) to install SoulFire.
 
 ## 🍿 Version support
 
@@ -98,8 +97,7 @@ through [nightly.link](https://nightly.link/soulfiremc-com/SoulFire/workflows/bu
 ## 👨‍💻 Developer API
 
 SoulFire offers a Developer API to create your own plugins using the plugin API and mixins.
-The software may regularly have breaking changes, so you'll have to stick to a version of SoulFire or update your plugin
-regularly.
+SoulFire can include breaking changes. Pin your plugin to a SoulFire version, or update it when SoulFire changes.
 
 To learn more about the Developer API, take a look at the
 official [plugin example](https://github.com/soulfiremc-com/SoulFirePluginExample).

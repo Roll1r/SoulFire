@@ -37,7 +37,7 @@ public final class FollowCommand {
           .then(argument("maxRadius", IntegerArgumentType.integer(1))
             .executes(
               help(
-                "Makes selected bots follow an entity",
+                "Make selected bots follow an entity",
                 c -> {
                   var entityMatcher = EntityArgumentType.getEntityMatcher(c, "entity");
                   var maxRadius = IntegerArgumentType.getInteger(c, "maxRadius");
