@@ -6,11 +6,20 @@ on:
       version:
         description: 'Version to set'
         required: true
+      update_sdk:
+        description: 'Update SDK package versions'
+        required: true
+        default: false
+        type: boolean
   workflow_call:
     inputs:
       version:
         required: true
         type: string
+      update_sdk:
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   set-version:
@@ -28,6 +37,20 @@ jobs:
       - name: 'Set Version'
         run: |
           sed -i 's/^maven_version=.*/maven_version='"${INPUTS_VERSION}"'/g' gradle.properties
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
+
+      - name: 'Set up Bun'
+        if: inputs.update_sdk
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.0"
+
+      - name: 'Set SDK Version'
+        if: inputs.update_sdk
+        run: |
+          node scripts/set-sdk-version.mjs "${INPUTS_VERSION}"
+          bun install --lockfile-only --frozen-lockfile --ignore-scripts
         env:
           INPUTS_VERSION: ${{ inputs.version }}
 

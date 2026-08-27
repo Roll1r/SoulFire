@@ -9,9 +9,6 @@ on:
       after-version:
         description: 'Snapshot version after release'
         required: true
-      sdk-version:
-        description: 'SDK package version to publish'
-        required: true
 
 # FIXME: Entire secret keys should not be inherited, Use specific set of secrets explicitly instead.
 # See this issue to learn more: https://github.com/zizmorcore/zizmor/issues/360
@@ -22,6 +19,7 @@ jobs:
       contents: write
     with:
       version: ${{ inputs.version }}
+      update_sdk: true
     secrets: inherit
 
   build:
@@ -173,7 +171,7 @@ jobs:
       contents: read
       id-token: write
     with:
-      version: ${{ inputs.sdk-version }}
+      version: ${{ inputs.version }}
       publish_npm: true
       publish_pypi: true
       publish_jsr: true
