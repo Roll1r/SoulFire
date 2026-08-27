@@ -2503,8 +2503,7 @@ function executeDecision(
                 retryThroughFluids: true,
                 path: {
                   ...state.strategy.path,
-                  allowMining: nearbyCorpseDrops !== undefined
-                    || hasMiningPickaxe(respawned),
+                  allowMining: hasMiningPickaxe(respawned),
                   avoidFluids: true,
                   additionalPlaceItemIds:
                     DEATH_RECOVERY_ADDITIONAL_PLACE_ITEM_IDS,

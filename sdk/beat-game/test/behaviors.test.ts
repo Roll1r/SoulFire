@@ -4497,6 +4497,12 @@ describe("beat-game behavior programs", () => {
           rotation: driver.currentObservation.player.rotation,
         });
       });
+    driver.raycastResolver = ({ includeFluids }) => {
+      const source = blocks.get(key(water));
+      return includeFluids === true && source !== undefined
+        ? { block: source, distance: 2 }
+        : { distance: 2 };
+    };
     let selectedItemId = "";
     const updateInventory = (
       update: (counts: Record<string, number>) => void,
@@ -4686,7 +4692,7 @@ describe("beat-game behavior programs", () => {
       origin,
       ignite: false,
     }))).rejects.toThrow(
-      "Could not reach, excavate, or expose a safe side-on stand",
+      "Could not reach, excavate, or target a safe side-on stand",
     );
 
     expect(driver.actions).not.toContainEqual({

@@ -196,8 +196,8 @@ describe("beat-game planner", () => {
 
     expect(decision).toMatchObject({
       type: "satisfy-requirement",
-      action: "satisfy:shield",
-      requirement: { key: "shield" },
+      action: "satisfy:iron",
+      requirement: { key: "iron" },
     });
   });
 
