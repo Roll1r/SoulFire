@@ -9,6 +9,9 @@ on:
       after-version:
         description: 'Snapshot version after release'
         required: true
+      sdk-version:
+        description: 'SDK package version to publish'
+        required: true
 
 # FIXME: Entire secret keys should not be inherited, Use specific set of secrets explicitly instead.
 # See this issue to learn more: https://github.com/zizmorcore/zizmor/issues/360
@@ -163,8 +166,20 @@ jobs:
     uses: soulfiremc-com/SoulFire/.github/workflows/docker-deploy.yml@main
     secrets: inherit
 
+  publish-sdk:
+    needs: build
+    uses: ./.github/workflows/publish-sdk.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      version: ${{ inputs.sdk-version }}
+      publish_npm: true
+      publish_pypi: true
+      publish_jsr: true
+
   set-after-version:
-    needs: [ deploy-javadoc, deploy-docker ]
+    needs: [ deploy-javadoc, deploy-docker, publish-sdk ]
     uses: soulfiremc-com/SoulFire/.github/workflows/set-version.yml@main
     permissions:
       contents: write
