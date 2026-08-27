@@ -45,7 +45,7 @@ dependencies {
     isTransitive = false
   }
 
-  annotationProcessor("io.github.llamalad7:mixinextras-fabric:0.5.4")
+  annotationProcessor("io.github.llamalad7:mixinextras-fabric:0.5.5")
 
   annotationProcessor(libs.immutables.gson)
   compileOnly(libs.immutables.value)

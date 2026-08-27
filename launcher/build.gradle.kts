@@ -66,7 +66,7 @@ dependencies {
   api("org.lwjgl:lwjgl:3.4.3:unsafe")
   api("org.slf4j:slf4j-api:2.0.18")
 
-  api("io.github.llamalad7:mixinextras-fabric:0.5.4")
+  api("io.github.llamalad7:mixinextras-fabric:0.5.5")
   api("org.checkerframework:checker-qual:4.2.2")
 
   // Newest netty
