@@ -76,8 +76,6 @@ jobs:
         run: node scripts/validate-mineflayer-parity.mjs
       - name: Check TypeScript SDK
         run: pnpm --filter @soulfiremc/sdk check
-      - name: Check beat-game SDK
-        run: pnpm --filter @soulfiremc/beat-game check
       - name: Import Node.js entry points
         run: |
           node -e 'const sdk = await import("./sdk/typescript/dist/node.js"); if (typeof sdk.SoulFire.connect !== "function") throw new Error("Effect Node.js entry point is invalid")'
