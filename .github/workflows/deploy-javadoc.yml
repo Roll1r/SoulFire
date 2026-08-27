@@ -23,17 +23,11 @@ jobs:
         uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
       - name: Build with Gradle
         run: ./gradlew :javadoc:javadoc --stacktrace
-      - name: Move files
-        run: |
-          mv ./javadoc/build/docs/javadoc ./docs
-      - name: Create CNAME
-        run: |
-          echo "jd.soulfiremc.com" > ./docs/CNAME
-
-      - name: 'Push changes'
-        uses: stefanzweifel/git-auto-commit-action@4a55954c782fc1ea30b9056cd3e7a2b40ca8887d # v7.2.0
+      - name: Deploy Javadoc
+        uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453 # v4.1.0
         with:
-          commit_message: 'Deploy SoulFire Javadoc'
-          branch: 'gh-pages'
-          create_branch: true
-          push_options: '--force'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./javadoc/build/docs/javadoc
+          cname: jd.soulfiremc.com
+          force_orphan: true
+          commit_message: 'docs(javadoc): deploy generated documentation'
