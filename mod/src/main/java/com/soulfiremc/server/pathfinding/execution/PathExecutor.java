@@ -259,6 +259,11 @@ public final class PathExecutor implements ControlTask {
             throw UnreachableGoalException.searchLimit(
               Math.toIntExact(limit.metadata().expandedStates())
             );
+          case RouteFinder.QualityBoundNotMetResult unqualified ->
+            throw UnreachableGoalException.qualityBound(
+              unqualified.metadata().qualityBound(),
+              findPath.pathConstraint().maximumQualityBound()
+            );
           case RouteFinder.PartialRouteResult partialRouteResult -> () -> {
             preparePartialPath(
               partialRouteResult.actions(),

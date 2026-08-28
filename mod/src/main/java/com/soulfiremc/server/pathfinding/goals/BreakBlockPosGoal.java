@@ -17,7 +17,7 @@
  */
 package com.soulfiremc.server.pathfinding.goals;
 
-import com.soulfiremc.server.pathfinding.MinecraftRouteNode;
+import com.soulfiremc.server.pathfinding.NodeState;
 import com.soulfiremc.server.pathfinding.SFVec3i;
 import com.soulfiremc.server.pathfinding.execution.BlockBreakAction;
 import com.soulfiremc.server.pathfinding.execution.WorldAction;
@@ -26,14 +26,22 @@ import com.soulfiremc.server.pathfinding.graph.MinecraftGraph;
 import java.util.List;
 
 public record BreakBlockPosGoal(SFVec3i goal) implements GoalScorer {
+  /// Current graph primitives only mine blocks within three blocks of the
+  /// source feet position. Subtracting the full radius keeps this estimate
+  /// admissible for transition-completed goals.
+  private static final double MAXIMUM_ACTION_OFFSET = 3;
+
   @Override
   public double computeScore(MinecraftGraph graph, SFVec3i blockPosition, List<WorldAction> actions) {
-    return blockPosition.distance(goal);
+    return Math.max(
+      0,
+      blockPosition.distance(goal) - MAXIMUM_ACTION_OFFSET
+    );
   }
 
   @Override
-  public boolean isFinished(MinecraftRouteNode current) {
-    for (var action : current.actions()) {
+  public boolean isFinished(NodeState state, List<WorldAction> actions) {
+    for (var action : actions) {
       if (action instanceof BlockBreakAction breakBlockAction && breakBlockAction.blockPosition().equals(goal)) {
         return true;
       }

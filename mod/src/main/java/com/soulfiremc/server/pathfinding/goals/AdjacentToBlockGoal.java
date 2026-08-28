@@ -17,7 +17,7 @@
  */
 package com.soulfiremc.server.pathfinding.goals;
 
-import com.soulfiremc.server.pathfinding.MinecraftRouteNode;
+import com.soulfiremc.server.pathfinding.NodeState;
 import com.soulfiremc.server.pathfinding.SFVec3i;
 import com.soulfiremc.server.pathfinding.execution.WorldAction;
 import com.soulfiremc.server.pathfinding.graph.MinecraftGraph;
@@ -66,12 +66,12 @@ public record AdjacentToBlockGoal(
       .filter(candidate -> !excludedPositions.contains(candidate))
       .mapToDouble(position::distance)
       .min()
-      .orElse(Double.POSITIVE_INFINITY);
+      .orElse(0);
   }
 
   @Override
-  public boolean isFinished(MinecraftRouteNode current) {
-    var position = current.node().blockPosition();
+  public boolean isFinished(NodeState state, List<WorldAction> actions) {
+    var position = state.blockPosition();
     return !excludedPositions.contains(position)
       && interactionPositions.contains(position);
   }

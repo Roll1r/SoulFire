@@ -17,7 +17,6 @@
  */
 package com.soulfiremc.server.pathfinding.goals;
 
-import com.soulfiremc.server.pathfinding.MinecraftRouteNode;
 import com.soulfiremc.server.pathfinding.NodeState;
 import com.soulfiremc.server.pathfinding.SFVec3i;
 import org.junit.jupiter.api.Test;
@@ -36,8 +35,14 @@ final class AwayFromPositionsGoalTest {
       10
     );
 
-    assertFalse(goal.isFinished(node(new SFVec3i(35, 64, 0))));
-    assertTrue(goal.isFinished(node(new SFVec3i(15, 64, 20))));
+    assertFalse(goal.isFinished(
+      node(new SFVec3i(35, 64, 0)),
+      List.of()
+    ));
+    assertTrue(goal.isFinished(
+      node(new SFVec3i(15, 64, 20)),
+      List.of()
+    ));
   }
 
   @Test
@@ -61,20 +66,17 @@ final class AwayFromPositionsGoalTest {
   void treatsNoObservableThreatsAsSafe() {
     var goal = new AwayFromPositionsGoal(List.of(), 10);
 
-    assertTrue(goal.isFinished(node(new SFVec3i(0, 64, 0))));
+    assertTrue(goal.isFinished(
+      node(new SFVec3i(0, 64, 0)),
+      List.of()
+    ));
     assertEquals(
       0,
       goal.computeScore(null, new SFVec3i(0, 64, 0), List.of())
     );
   }
 
-  private static MinecraftRouteNode node(SFVec3i position) {
-    return new MinecraftRouteNode(
-      new NodeState(position, 0),
-      List.of(),
-      0,
-      0,
-      0
-    );
+  private static NodeState node(SFVec3i position) {
+    return new NodeState(position, 0);
   }
 }

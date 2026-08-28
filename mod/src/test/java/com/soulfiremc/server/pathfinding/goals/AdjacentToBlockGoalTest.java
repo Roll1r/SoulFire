@@ -17,7 +17,6 @@
  */
 package com.soulfiremc.server.pathfinding.goals;
 
-import com.soulfiremc.server.pathfinding.MinecraftRouteNode;
 import com.soulfiremc.server.pathfinding.NodeState;
 import com.soulfiremc.server.pathfinding.SFVec3i;
 import org.junit.jupiter.api.Test;
@@ -36,9 +35,18 @@ final class AdjacentToBlockGoalTest {
 
   @Test
   void requiresLeavingTheBlocksSupportColumn() {
-    assertFalse(GOAL.isFinished(node(new SFVec3i(10, 64, -4))));
-    assertTrue(GOAL.isFinished(node(new SFVec3i(11, 64, -4))));
-    assertTrue(GOAL.isFinished(node(new SFVec3i(9, 63, -3))));
+    assertFalse(GOAL.isFinished(
+      node(new SFVec3i(10, 64, -4)),
+      List.of()
+    ));
+    assertTrue(GOAL.isFinished(
+      node(new SFVec3i(11, 64, -4)),
+      List.of()
+    ));
+    assertTrue(GOAL.isFinished(
+      node(new SFVec3i(9, 63, -3)),
+      List.of()
+    ));
   }
 
   @Test
@@ -47,16 +55,28 @@ final class AdjacentToBlockGoalTest {
     var goal = new AdjacentToBlockGoal(overheadTarget);
     var position = new SFVec3i(10, 63, -4);
 
-    assertTrue(goal.isFinished(node(position)));
+    assertTrue(goal.isFinished(node(position), List.of()));
     assertEquals(0.0D, goal.computeScore(null, position, List.of()));
-    assertFalse(goal.isFinished(node(new SFVec3i(10, 62, -4))));
-    assertFalse(goal.isFinished(node(new SFVec3i(10, 68, -4))));
+    assertFalse(goal.isFinished(
+      node(new SFVec3i(10, 62, -4)),
+      List.of()
+    ));
+    assertFalse(goal.isFinished(
+      node(new SFVec3i(10, 68, -4)),
+      List.of()
+    ));
   }
 
   @Test
   void rejectsPositionsOutsideInteractionHeight() {
-    assertFalse(GOAL.isFinished(node(new SFVec3i(11, 65, -4))));
-    assertFalse(GOAL.isFinished(node(new SFVec3i(11, 60, -4))));
+    assertFalse(GOAL.isFinished(
+      node(new SFVec3i(11, 65, -4)),
+      List.of()
+    ));
+    assertFalse(GOAL.isFinished(
+      node(new SFVec3i(11, 60, -4)),
+      List.of()
+    ));
   }
 
   @Test
@@ -67,21 +87,18 @@ final class AdjacentToBlockGoalTest {
       Set.of(blockedApproach)
     );
 
-    assertFalse(goal.isFinished(node(blockedApproach)));
-    assertTrue(goal.isFinished(node(new SFVec3i(9, 64, -4))));
+    assertFalse(goal.isFinished(node(blockedApproach), List.of()));
+    assertTrue(goal.isFinished(
+      node(new SFVec3i(9, 64, -4)),
+      List.of()
+    ));
     assertEquals(
       1.0D,
       goal.computeScore(null, blockedApproach, List.of())
     );
   }
 
-  private static MinecraftRouteNode node(SFVec3i position) {
-    return new MinecraftRouteNode(
-      new NodeState(position, 0),
-      List.of(),
-      0,
-      0,
-      0
-    );
+  private static NodeState node(SFVec3i position) {
+    return new NodeState(position, 0);
   }
 }

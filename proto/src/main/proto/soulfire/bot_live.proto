@@ -992,13 +992,13 @@ message PathfindGoal {
 
 enum PathfindSearchMode {
   PATHFIND_SEARCH_MODE_UNSPECIFIED = 0;
-  // Exact A* with an admissible heuristic and no suboptimality.
+  // Exact A* through ARA* with epsilon fixed at 1.0.
   PATHFIND_SEARCH_MODE_PRECISION = 1;
-  // Bounded A* with a default quality bound of 1.2.
+  // ARA* starting at epsilon 2.5 and repairing to a 1.2 bound by default.
   PATHFIND_SEARCH_MODE_NORMAL = 2;
-  // Bounded A* with a default quality bound of 1.5.
+  // ARA* starting at epsilon 3.0 and repairing to a 1.5 bound by default.
   PATHFIND_SEARCH_MODE_URGENT = 3;
-  // A safety-first policy for immediate escape movement.
+  // ARA* starting at epsilon 4.0 and repairing to a 2.0 bound by default.
   PATHFIND_SEARCH_MODE_ESCAPE = 4;
 }
 
@@ -1033,15 +1033,16 @@ message PathfindOptions {
   optional int32 maximum_y = 11;
   // Search quality and latency policy. Unset uses NORMAL.
   PathfindSearchMode search_mode = 12;
-  // Largest accepted multiplicative quality bound. Values must be from 1.0
-  // through the selected mode's default bound. Unset uses the mode default.
+  // Largest accepted certified multiplicative quality bound. Values must be
+  // from 1.0 through the selected mode's initial epsilon. Unset uses the mode
+  // default. ARA* does not execute an incumbent that misses this bound.
   optional double maximum_quality_bound = 13;
   // Smooth camera movement only inside movement-specific safe tolerances.
   // Block interactions and precision movement remain deterministic.
   optional bool smooth_camera = 14;
-  // Hard state-expansion budget for each search attempt. 0 uses the server
-  // default. Reaching this limit is reported separately from an unreachable
-  // goal.
+  // Hard state-expansion budget for the complete ARA* repair session. 0 uses
+  // the server default. Reaching this limit is reported separately from an
+  // unreachable goal.
   uint32 maximum_expanded_states = 15;
   // Largest ordinary fall onto solid ground. Values above 3 are rejected
   // because longer falls require a dedicated safe-landing primitive.

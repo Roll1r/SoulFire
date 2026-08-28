@@ -71,10 +71,10 @@ public interface PathConstraint {
 
   /// Returns the largest accepted multiplicative route-quality bound.
   default double maximumQualityBound() {
-    return searchMode().heuristicWeight();
+    return searchMode().defaultQualityBound();
   }
 
-  /// Returns the hard state-expansion budget for one search attempt.
+  /// Returns the hard state-expansion budget for the complete ARA* session.
   default int maximumExpandedStates() {
     return 50_000;
   }

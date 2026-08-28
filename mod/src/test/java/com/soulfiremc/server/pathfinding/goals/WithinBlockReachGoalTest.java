@@ -17,7 +17,6 @@
  */
 package com.soulfiremc.server.pathfinding.goals;
 
-import com.soulfiremc.server.pathfinding.MinecraftRouteNode;
 import com.soulfiremc.server.pathfinding.NodeState;
 import com.soulfiremc.server.pathfinding.SFVec3i;
 import org.junit.jupiter.api.Test;
@@ -37,7 +36,7 @@ final class WithinBlockReachGoalTest {
     var goal = new WithinBlockReachGoal(TARGET);
     var position = TARGET.add(3, 0, 0);
 
-    assertTrue(goal.isFinished(node(position)));
+    assertTrue(goal.isFinished(node(position), List.of()));
     assertEquals(0.0D, goal.computeScore(null, position, List.of()));
   }
 
@@ -45,35 +44,50 @@ final class WithinBlockReachGoalTest {
   void acceptsAReachablePositionBelowAnOverheadBlock() {
     var target = TARGET.add(0, 6, 0);
 
-    assertTrue(new WithinBlockReachGoal(target).isFinished(node(TARGET)));
+    assertTrue(new WithinBlockReachGoal(target).isFinished(
+      node(TARGET),
+      List.of()
+    ));
   }
 
   @Test
   void doesNotRouteOntoABlockDirectlyAboveTheTarget() {
     var position = TARGET.add(0, 1, 0);
 
-    assertFalse(new WithinBlockReachGoal(TARGET).isFinished(node(position)));
+    assertFalse(new WithinBlockReachGoal(TARGET).isFinished(
+      node(position),
+      List.of()
+    ));
   }
 
   @Test
   void acceptsAReachableLowerBlockOutsideTheSupportColumn() {
     var position = TARGET.add(1, 2, 0);
 
-    assertTrue(new WithinBlockReachGoal(TARGET).isFinished(node(position)));
+    assertTrue(new WithinBlockReachGoal(TARGET).isFinished(
+      node(position),
+      List.of()
+    ));
   }
 
   @Test
   void measuresReachToAFaceInsteadOfTheBlockBoundingBox() {
     var position = TARGET.add(5, 0, 0);
 
-    assertFalse(new WithinBlockReachGoal(TARGET).isFinished(node(position)));
+    assertFalse(new WithinBlockReachGoal(TARGET).isFinished(
+      node(position),
+      List.of()
+    ));
   }
 
   @Test
   void leavesPositioningMarginForALateralRaycast() {
     var position = TARGET.add(4, 0, 0);
 
-    assertFalse(new WithinBlockReachGoal(TARGET).isFinished(node(position)));
+    assertFalse(new WithinBlockReachGoal(TARGET).isFinished(
+      node(position),
+      List.of()
+    ));
   }
 
   @Test
@@ -81,17 +95,14 @@ final class WithinBlockReachGoalTest {
     var rejected = TARGET.add(3, 0, 0);
     var goal = new WithinBlockReachGoal(TARGET, Set.of(rejected));
 
-    assertFalse(goal.isFinished(node(rejected)));
-    assertTrue(goal.isFinished(node(TARGET.add(-3, 0, 0))));
+    assertFalse(goal.isFinished(node(rejected), List.of()));
+    assertTrue(goal.isFinished(
+      node(TARGET.add(-3, 0, 0)),
+      List.of()
+    ));
   }
 
-  private static MinecraftRouteNode node(SFVec3i position) {
-    return new MinecraftRouteNode(
-      new NodeState(position, 0),
-      List.of(),
-      0,
-      0,
-      0
-    );
+  private static NodeState node(SFVec3i position) {
+    return new NodeState(position, 0);
   }
 }

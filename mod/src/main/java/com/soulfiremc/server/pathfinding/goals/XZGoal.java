@@ -17,7 +17,7 @@
  */
 package com.soulfiremc.server.pathfinding.goals;
 
-import com.soulfiremc.server.pathfinding.MinecraftRouteNode;
+import com.soulfiremc.server.pathfinding.NodeState;
 import com.soulfiremc.server.pathfinding.SFVec3i;
 import com.soulfiremc.server.pathfinding.execution.WorldAction;
 import com.soulfiremc.server.pathfinding.graph.MinecraftGraph;
@@ -37,7 +37,10 @@ public record XZGoal(Vector2i goal) implements GoalScorer {
   }
 
   @Override
-  public boolean isFinished(MinecraftRouteNode current) {
-    return new Vector2i(current.node().blockPosition().x, current.node().blockPosition().z).equals(goal);
+  public boolean isFinished(NodeState state, List<WorldAction> actions) {
+    return new Vector2i(
+      state.blockPosition().x,
+      state.blockPosition().z
+    ).equals(goal);
   }
 }

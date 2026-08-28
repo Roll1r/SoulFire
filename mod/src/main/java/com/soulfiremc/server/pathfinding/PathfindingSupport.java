@@ -400,7 +400,7 @@ public final class PathfindingSupport {
         ? OptionalDouble.of(options.getMaximumQualityBound())
         : OptionalDouble.empty();
       var modeBound = searchMode.orElse(RouteSearchMode.NORMAL)
-        .heuristicWeight();
+        .initialEpsilon();
       if (
         maximumQualityBound.isPresent()
           && (
@@ -411,7 +411,7 @@ public final class PathfindingSupport {
       ) {
         throw Status.INVALID_ARGUMENT
           .withDescription(
-            "maximum_quality_bound must be between 1.0 and the search mode bound"
+            "maximum_quality_bound must be between 1.0 and the search mode's initial epsilon"
           )
           .asRuntimeException();
       }

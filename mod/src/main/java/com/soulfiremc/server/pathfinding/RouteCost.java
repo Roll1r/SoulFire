@@ -17,16 +17,19 @@
  */
 package com.soulfiremc.server.pathfinding;
 
-/// An ordered route cost. Safety and irreversible changes take precedence.
-/// Duration includes configured break and placement penalties. Raw action
-/// counts only break ties, so conservation does not prevent useful edits.
+/// Structured route-cost diagnostics.
+///
+/// ARA* optimizes the scalar value returned by [#optimizationCost()]. Damage
+/// risk participates in that value, while breaking and placement preferences
+/// are already included in `durationCost` through policy penalties. Raw action
+/// counts remain diagnostics and never masquerade as a multiplicative bound.
 public record RouteCost(
   double expectedDamage,
   int irreversibleChanges,
   int placedBlocks,
   int brokenBlocks,
   double durationCost
-) implements Comparable<RouteCost> {
+) {
   public static final RouteCost ZERO = new RouteCost(0, 0, 0, 0, 0);
 
   public RouteCost {
@@ -51,58 +54,8 @@ public record RouteCost(
     );
   }
 
-  public int compareEstimated(RouteCost other, double heuristic, double otherHeuristic) {
-    var safetyComparison = compareSafety(other);
-    if (safetyComparison != 0) {
-      return safetyComparison;
-    }
-    var durationComparison = Double.compare(
-      durationCost + heuristic,
-      other.durationCost + otherHeuristic
-    );
-    if (durationComparison != 0) {
-      return durationComparison;
-    }
-    return compareResourceUse(other);
-  }
-
-  public boolean noWorseThan(RouteCost other) {
-    return expectedDamage <= other.expectedDamage
-      && irreversibleChanges <= other.irreversibleChanges
-      && durationCost <= other.durationCost
-      && placedBlocks <= other.placedBlocks
-      && brokenBlocks <= other.brokenBlocks;
-  }
-
-  @Override
-  public int compareTo(RouteCost other) {
-    var safetyComparison = compareSafety(other);
-    if (safetyComparison != 0) {
-      return safetyComparison;
-    }
-    var durationComparison = Double.compare(durationCost, other.durationCost);
-    return durationComparison != 0
-      ? durationComparison
-      : compareResourceUse(other);
-  }
-
-  private int compareSafety(RouteCost other) {
-    var damageComparison = Double.compare(expectedDamage, other.expectedDamage);
-    if (damageComparison != 0) {
-      return damageComparison;
-    }
-    var irreversibleComparison = Integer.compare(irreversibleChanges, other.irreversibleChanges);
-    if (irreversibleComparison != 0) {
-      return irreversibleComparison;
-    }
-    return 0;
-  }
-
-  private int compareResourceUse(RouteCost other) {
-    var placementComparison = Integer.compare(placedBlocks, other.placedBlocks);
-    if (placementComparison != 0) {
-      return placementComparison;
-    }
-    return Integer.compare(brokenBlocks, other.brokenBlocks);
+  /// Returns the scalar non-negative cost optimized by ARA*.
+  public double optimizationCost() {
+    return expectedDamage + durationCost;
   }
 }

@@ -69,7 +69,7 @@ public record ConfiguredPathConstraint(
       return configuredMaximumQualityBound.getAsDouble();
     }
     return configuredSearchMode
-      .map(RouteSearchMode::heuristicWeight)
+      .map(RouteSearchMode::defaultQualityBound)
       .orElseGet(delegate::maximumQualityBound);
   }
 

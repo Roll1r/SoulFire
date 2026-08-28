@@ -17,7 +17,7 @@
  */
 package com.soulfiremc.server.pathfinding.goals;
 
-import com.soulfiremc.server.pathfinding.MinecraftRouteNode;
+import com.soulfiremc.server.pathfinding.NodeState;
 import com.soulfiremc.server.pathfinding.SFVec3i;
 import com.soulfiremc.server.pathfinding.execution.WorldAction;
 import com.soulfiremc.server.pathfinding.graph.MinecraftGraph;
@@ -36,7 +36,7 @@ public record AwayFromPosGoal(SFVec3i origin, int minRadius) implements GoalScor
   }
 
   @Override
-  public boolean isFinished(MinecraftRouteNode current) {
-    return current.node().blockPosition().distance(origin) >= minRadius;
+  public boolean isFinished(NodeState state, List<WorldAction> actions) {
+    return state.blockPosition().distance(origin) >= minRadius;
   }
 }

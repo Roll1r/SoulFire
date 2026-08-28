@@ -17,7 +17,7 @@
  */
 package com.soulfiremc.server.pathfinding.goals;
 
-import com.soulfiremc.server.pathfinding.MinecraftRouteNode;
+import com.soulfiremc.server.pathfinding.NodeState;
 import com.soulfiremc.server.pathfinding.SFVec3i;
 import com.soulfiremc.server.pathfinding.execution.WorldAction;
 import com.soulfiremc.server.pathfinding.graph.MinecraftGraph;
@@ -38,13 +38,25 @@ public record CompositeGoal(Set<GoalScorer> goals) implements GoalScorer {
   }
 
   @Override
-  public boolean isFinished(MinecraftRouteNode current) {
-    return goals.stream().anyMatch(goal -> goal.isFinished(current));
+  public boolean isFinished(NodeState state, List<WorldAction> actions) {
+    return goals.stream().anyMatch(goal -> goal.isFinished(state, actions));
   }
 
-  public GoalScorer getFinishedGoal(MinecraftRouteNode current) {
-    return goals.stream().filter(goal -> goal.isFinished(current))
+  public GoalScorer getFinishedGoal(
+    NodeState state,
+    List<WorldAction> actions
+  ) {
+    return goals.stream().filter(goal -> goal.isFinished(state, actions))
       .findFirst()
       .orElseThrow(() -> new IllegalStateException("No goals finished"));
+  }
+
+  @Override
+  public GoalScorer snapshot() {
+    return new CompositeGoal(
+      goals.stream().map(GoalScorer::snapshot).collect(
+        java.util.stream.Collectors.toUnmodifiableSet()
+      )
+    );
   }
 }

@@ -19,18 +19,27 @@ package com.soulfiremc.server.pathfinding;
 
 /// The explicit route-quality and latency policy for a search.
 public enum RouteSearchMode {
-  PRECISION(1.0),
-  NORMAL(1.2),
-  URGENT(1.5),
-  ESCAPE(1.5);
+  PRECISION(1.0, 1.0),
+  NORMAL(2.5, 1.2),
+  URGENT(3.0, 1.5),
+  ESCAPE(4.0, 2.0);
 
-  private final double heuristicWeight;
+  private final double initialEpsilon;
+  private final double defaultQualityBound;
 
-  RouteSearchMode(double heuristicWeight) {
-    this.heuristicWeight = heuristicWeight;
+  RouteSearchMode(
+    double initialEpsilon,
+    double defaultQualityBound
+  ) {
+    this.initialEpsilon = initialEpsilon;
+    this.defaultQualityBound = defaultQualityBound;
   }
 
-  public double heuristicWeight() {
-    return heuristicWeight;
+  public double initialEpsilon() {
+    return initialEpsilon;
+  }
+
+  public double defaultQualityBound() {
+    return defaultQualityBound;
   }
 }

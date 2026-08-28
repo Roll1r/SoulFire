@@ -19,50 +19,37 @@ package com.soulfiremc.server.pathfinding.goals;
 
 import com.soulfiremc.server.pathfinding.NodeState;
 import com.soulfiremc.server.pathfinding.SFVec3i;
-import net.minecraft.world.phys.Vec3;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-final class CloseToWorldPosGoalTest {
+final class DynamicGoalScorerTest {
   @Test
-  void preservesFractionalRadius() {
-    var goal = new CloseToWorldPosGoal(
-      new Vec3(0.5, 64, 0.5),
-      1.25
+  void freezesOneGoalForTheCompleteSearchSession() {
+    var observations = new AtomicInteger();
+    DynamicGoalScorer dynamic = () -> new PosGoal(
+      new SFVec3i(observations.incrementAndGet(), 64, 0)
     );
 
-    assertTrue(goal.isFinished(
-      node(new SFVec3i(1, 64, 0)),
-      List.of()
-    ));
-    assertFalse(goal.isFinished(
-      node(new SFVec3i(2, 64, 0)),
-      List.of()
-    ));
-  }
+    var snapshot = dynamic.snapshot();
 
-  @Test
-  void measuresFromThePhysicalCenterAtNegativeCoordinates() {
-    var goal = new CloseToWorldPosGoal(
-      new Vec3(-67.05, 66.27, 160.13),
-      1.5
+    assertEquals(1, observations.get());
+    assertTrue(snapshot.isFinished(
+      new NodeState(new SFVec3i(1, 64, 0), 0),
+      List.of()
+    ));
+    assertEquals(
+      1,
+      snapshot.computeScore(
+        null,
+        new SFVec3i(2, 64, 0),
+        List.of()
+      )
     );
-
-    assertTrue(goal.isFinished(
-      node(new SFVec3i(-67, 65, 160)),
-      List.of()
-    ));
-    assertFalse(goal.isFinished(
-      node(new SFVec3i(-66, 65, 160)),
-      List.of()
-    ));
-  }
-
-  private static NodeState node(SFVec3i position) {
-    return new NodeState(position, 0);
+    assertEquals(1, observations.get());
   }
 }

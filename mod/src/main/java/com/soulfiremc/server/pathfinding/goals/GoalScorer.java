@@ -17,7 +17,7 @@
  */
 package com.soulfiremc.server.pathfinding.goals;
 
-import com.soulfiremc.server.pathfinding.MinecraftRouteNode;
+import com.soulfiremc.server.pathfinding.NodeState;
 import com.soulfiremc.server.pathfinding.SFVec3i;
 import com.soulfiremc.server.pathfinding.execution.WorldAction;
 import com.soulfiremc.server.pathfinding.graph.MinecraftGraph;
@@ -26,18 +26,25 @@ import java.util.List;
 
 /// A goal represents something that the user wants the bot to achieve.
 public interface GoalScorer {
-  /// Calculates the estimated score for a given block position to the goal. Usually this means the
-  /// distance from achieving the goal.
+  /// Calculates an admissible lower bound on the remaining block displacement
+  /// to the goal. The estimate must never exceed the displacement required by
+  /// the cheapest valid route. Return zero when no tighter bound is known.
   ///
   /// @param graph         the graph to calculate the score for
   /// @param blockPosition the block position to calculate the score for
   /// @param actions       the actions that have been executed to reach the current state
-  /// @return the score for the given world state
+  /// @return a finite, non-negative lower bound in blocks
   double computeScore(MinecraftGraph graph, SFVec3i blockPosition, List<WorldAction> actions);
 
   /// Checks if the given world state indicates that the goal is reached.
   ///
-  /// @param current the node to check
+  /// @param state   the navigation state to check
+  /// @param actions the transition actions that entered the state
   /// @return true if the goal is reached, false otherwise
-  boolean isFinished(MinecraftRouteNode current);
+  boolean isFinished(NodeState state, List<WorldAction> actions);
+
+  /// Freezes dynamic goal observations for one immutable search session.
+  default GoalScorer snapshot() {
+    return this;
+  }
 }

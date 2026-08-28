@@ -137,10 +137,19 @@ public final class PathfinderServiceImpl
         .setIrreversibleChanges(cost.irreversibleChanges())
         .setPlacedBlocks(cost.placedBlocks())
         .setBrokenBlocks(cost.brokenBlocks())
-        .setDurationCost(cost.durationCost()))
+        .setDurationCost(cost.durationCost())
+        .setOptimizationCost(cost.optimizationCost()))
       .setExpandedStates(metadata.expandedStates())
       .setGeneratedTransitions(metadata.generatedTransitions())
       .setSearchElapsedMillis(metadata.elapsedMillis())
+      .setInitialEpsilon(metadata.initialEpsilon())
+      .setFinalEpsilon(metadata.finalEpsilon())
+      .setRepairIterations(metadata.repairIterations())
+      .setRepairedInconsistentStates(
+        metadata.repairedInconsistentStates()
+      )
+      .setIncumbentImprovements(metadata.incumbentImprovements())
+      .setRequiredQualityBound(metadata.requiredQualityBound())
       .setFrontierReason(switch (metadata.frontierReason()) {
         case NONE -> PathFrontierReason.PATH_FRONTIER_REASON_NONE;
         case LEVEL_BOUNDARY ->
@@ -199,6 +208,11 @@ public final class PathfinderServiceImpl
         builder.setPartialReason("No route could reach the goal");
       case RouteFinder.SearchLimitReachedResult _ ->
         builder.setPartialReason("The route search reached its state-expansion budget");
+      case RouteFinder.QualityBoundNotMetResult unqualified ->
+        builder.setPartialReason(
+          "A route was found, but its certified quality bound %s exceeds the request"
+            .formatted(unqualified.metadata().qualityBound())
+        );
       case RouteFinder.SearchInterruptedResult _ ->
         builder.setPartialReason("The path search was interrupted");
       default -> {
@@ -213,7 +227,10 @@ public final class PathfinderServiceImpl
     return switch (result) {
       case RouteFinder.FoundRouteResult found -> found.actions();
       case RouteFinder.PartialRouteResult partial -> partial.actions();
-      default -> List.of();
+      case RouteFinder.NoRouteFoundResult _,
+           RouteFinder.SearchLimitReachedResult _,
+           RouteFinder.SearchInterruptedResult _,
+           RouteFinder.QualityBoundNotMetResult _ -> List.of();
     };
   }
 
@@ -227,6 +244,8 @@ public final class PathfinderServiceImpl
         PathPlanStatus.PATH_PLAN_STATUS_UNREACHABLE;
       case RouteFinder.SearchLimitReachedResult _ ->
         PathPlanStatus.PATH_PLAN_STATUS_SEARCH_EXPIRED;
+      case RouteFinder.QualityBoundNotMetResult _ ->
+        PathPlanStatus.PATH_PLAN_STATUS_QUALITY_BOUND_NOT_MET;
       case RouteFinder.SearchInterruptedResult _ ->
         PathPlanStatus.PATH_PLAN_STATUS_CANCELLED;
     };

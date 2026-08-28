@@ -17,7 +17,7 @@
  */
 package com.soulfiremc.server.pathfinding.goals;
 
-import com.soulfiremc.server.pathfinding.MinecraftRouteNode;
+import com.soulfiremc.server.pathfinding.NodeState;
 import com.soulfiremc.server.pathfinding.SFVec3i;
 import com.soulfiremc.server.pathfinding.execution.WorldAction;
 import com.soulfiremc.server.pathfinding.graph.MinecraftGraph;
@@ -37,7 +37,7 @@ public record PosGoal(SFVec3i goal) implements GoalScorer {
   }
 
   @Override
-  public boolean isFinished(MinecraftRouteNode current) {
-    return current.node().blockPosition().equals(goal);
+  public boolean isFinished(NodeState state, List<WorldAction> actions) {
+    return state.blockPosition().equals(goal);
   }
 }

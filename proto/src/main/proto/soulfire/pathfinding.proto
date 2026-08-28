@@ -28,6 +28,7 @@ enum PathPlanStatus {
   PATH_PLAN_STATUS_UNREACHABLE = 3;
   PATH_PLAN_STATUS_SEARCH_EXPIRED = 4;
   PATH_PLAN_STATUS_CANCELLED = 5;
+  PATH_PLAN_STATUS_QUALITY_BOUND_NOT_MET = 6;
 }
 
 enum PathFrontierReason {
@@ -44,6 +45,8 @@ message PathRouteCost {
   uint32 placed_blocks = 3;
   uint32 broken_blocks = 4;
   double duration_cost = 5;
+  // Scalar cost for which the ARA* quality bound is certified.
+  double optimization_cost = 6;
 }
 
 message PathStep {
@@ -63,12 +66,23 @@ message PathPlan {
   uint64 maximum_ticks = 6;
   optional string partial_reason = 7;
   PathfindSearchMode search_mode = 8;
+  // Certified multiplicative bound for `route_cost.optimization_cost`.
+  // Zero means that this result contains no certified complete route.
   double quality_bound = 9;
   PathRouteCost route_cost = 10;
   uint64 expanded_states = 11;
   uint64 generated_transitions = 12;
   uint64 search_elapsed_millis = 13;
   PathFrontierReason frontier_reason = 14;
+  // Inflation used by the first ARA* search stage.
+  double initial_epsilon = 15;
+  // Inflation used by the last completed or interrupted ARA* stage.
+  double final_epsilon = 16;
+  uint32 repair_iterations = 17;
+  uint32 repaired_inconsistent_states = 18;
+  uint32 incumbent_improvements = 19;
+  // Maximum certified bound requested by the caller.
+  double required_quality_bound = 20;
 }
 
 message PlanPathRequest {

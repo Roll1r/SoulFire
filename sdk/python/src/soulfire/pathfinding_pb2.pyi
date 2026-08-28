@@ -30,6 +30,7 @@ class PathPlanStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     PATH_PLAN_STATUS_UNREACHABLE: _ClassVar[PathPlanStatus]
     PATH_PLAN_STATUS_SEARCH_EXPIRED: _ClassVar[PathPlanStatus]
     PATH_PLAN_STATUS_CANCELLED: _ClassVar[PathPlanStatus]
+    PATH_PLAN_STATUS_QUALITY_BOUND_NOT_MET: _ClassVar[PathPlanStatus]
 
 class PathFrontierReason(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -51,6 +52,7 @@ PATH_PLAN_STATUS_PARTIAL: PathPlanStatus
 PATH_PLAN_STATUS_UNREACHABLE: PathPlanStatus
 PATH_PLAN_STATUS_SEARCH_EXPIRED: PathPlanStatus
 PATH_PLAN_STATUS_CANCELLED: PathPlanStatus
+PATH_PLAN_STATUS_QUALITY_BOUND_NOT_MET: PathPlanStatus
 PATH_FRONTIER_REASON_UNSPECIFIED: PathFrontierReason
 PATH_FRONTIER_REASON_NONE: PathFrontierReason
 PATH_FRONTIER_REASON_LEVEL_BOUNDARY: PathFrontierReason
@@ -58,18 +60,20 @@ PATH_FRONTIER_REASON_SEARCH_DEADLINE: PathFrontierReason
 PATH_FRONTIER_REASON_SEARCH_BUDGET: PathFrontierReason
 
 class PathRouteCost(_message.Message):
-    __slots__ = ("expected_damage", "irreversible_changes", "placed_blocks", "broken_blocks", "duration_cost")
+    __slots__ = ("expected_damage", "irreversible_changes", "placed_blocks", "broken_blocks", "duration_cost", "optimization_cost")
     EXPECTED_DAMAGE_FIELD_NUMBER: _ClassVar[int]
     IRREVERSIBLE_CHANGES_FIELD_NUMBER: _ClassVar[int]
     PLACED_BLOCKS_FIELD_NUMBER: _ClassVar[int]
     BROKEN_BLOCKS_FIELD_NUMBER: _ClassVar[int]
     DURATION_COST_FIELD_NUMBER: _ClassVar[int]
+    OPTIMIZATION_COST_FIELD_NUMBER: _ClassVar[int]
     expected_damage: float
     irreversible_changes: int
     placed_blocks: int
     broken_blocks: int
     duration_cost: float
-    def __init__(self, expected_damage: _Optional[float] = ..., irreversible_changes: _Optional[int] = ..., placed_blocks: _Optional[int] = ..., broken_blocks: _Optional[int] = ..., duration_cost: _Optional[float] = ...) -> None: ...
+    optimization_cost: float
+    def __init__(self, expected_damage: _Optional[float] = ..., irreversible_changes: _Optional[int] = ..., placed_blocks: _Optional[int] = ..., broken_blocks: _Optional[int] = ..., duration_cost: _Optional[float] = ..., optimization_cost: _Optional[float] = ...) -> None: ...
 
 class PathStep(_message.Message):
     __slots__ = ("index", "kind", "position", "description", "maximum_ticks")
@@ -86,7 +90,7 @@ class PathStep(_message.Message):
     def __init__(self, index: _Optional[int] = ..., kind: _Optional[_Union[PathStepKind, str]] = ..., position: _Optional[_Union[_common_pb2.BlockPosition, _Mapping]] = ..., description: _Optional[str] = ..., maximum_ticks: _Optional[int] = ...) -> None: ...
 
 class PathPlan(_message.Message):
-    __slots__ = ("status", "start", "steps", "blocks_to_break", "blocks_to_place", "maximum_ticks", "partial_reason", "search_mode", "quality_bound", "route_cost", "expanded_states", "generated_transitions", "search_elapsed_millis", "frontier_reason")
+    __slots__ = ("status", "start", "steps", "blocks_to_break", "blocks_to_place", "maximum_ticks", "partial_reason", "search_mode", "quality_bound", "route_cost", "expanded_states", "generated_transitions", "search_elapsed_millis", "frontier_reason", "initial_epsilon", "final_epsilon", "repair_iterations", "repaired_inconsistent_states", "incumbent_improvements", "required_quality_bound")
     STATUS_FIELD_NUMBER: _ClassVar[int]
     START_FIELD_NUMBER: _ClassVar[int]
     STEPS_FIELD_NUMBER: _ClassVar[int]
@@ -101,6 +105,12 @@ class PathPlan(_message.Message):
     GENERATED_TRANSITIONS_FIELD_NUMBER: _ClassVar[int]
     SEARCH_ELAPSED_MILLIS_FIELD_NUMBER: _ClassVar[int]
     FRONTIER_REASON_FIELD_NUMBER: _ClassVar[int]
+    INITIAL_EPSILON_FIELD_NUMBER: _ClassVar[int]
+    FINAL_EPSILON_FIELD_NUMBER: _ClassVar[int]
+    REPAIR_ITERATIONS_FIELD_NUMBER: _ClassVar[int]
+    REPAIRED_INCONSISTENT_STATES_FIELD_NUMBER: _ClassVar[int]
+    INCUMBENT_IMPROVEMENTS_FIELD_NUMBER: _ClassVar[int]
+    REQUIRED_QUALITY_BOUND_FIELD_NUMBER: _ClassVar[int]
     status: PathPlanStatus
     start: _common_pb2.BlockPosition
     steps: _containers.RepeatedCompositeFieldContainer[PathStep]
@@ -115,7 +125,13 @@ class PathPlan(_message.Message):
     generated_transitions: int
     search_elapsed_millis: int
     frontier_reason: PathFrontierReason
-    def __init__(self, status: _Optional[_Union[PathPlanStatus, str]] = ..., start: _Optional[_Union[_common_pb2.BlockPosition, _Mapping]] = ..., steps: _Optional[_Iterable[_Union[PathStep, _Mapping]]] = ..., blocks_to_break: _Optional[_Iterable[_Union[_common_pb2.BlockPosition, _Mapping]]] = ..., blocks_to_place: _Optional[_Iterable[_Union[_common_pb2.BlockPosition, _Mapping]]] = ..., maximum_ticks: _Optional[int] = ..., partial_reason: _Optional[str] = ..., search_mode: _Optional[_Union[_bot_live_pb2.PathfindSearchMode, str]] = ..., quality_bound: _Optional[float] = ..., route_cost: _Optional[_Union[PathRouteCost, _Mapping]] = ..., expanded_states: _Optional[int] = ..., generated_transitions: _Optional[int] = ..., search_elapsed_millis: _Optional[int] = ..., frontier_reason: _Optional[_Union[PathFrontierReason, str]] = ...) -> None: ...
+    initial_epsilon: float
+    final_epsilon: float
+    repair_iterations: int
+    repaired_inconsistent_states: int
+    incumbent_improvements: int
+    required_quality_bound: float
+    def __init__(self, status: _Optional[_Union[PathPlanStatus, str]] = ..., start: _Optional[_Union[_common_pb2.BlockPosition, _Mapping]] = ..., steps: _Optional[_Iterable[_Union[PathStep, _Mapping]]] = ..., blocks_to_break: _Optional[_Iterable[_Union[_common_pb2.BlockPosition, _Mapping]]] = ..., blocks_to_place: _Optional[_Iterable[_Union[_common_pb2.BlockPosition, _Mapping]]] = ..., maximum_ticks: _Optional[int] = ..., partial_reason: _Optional[str] = ..., search_mode: _Optional[_Union[_bot_live_pb2.PathfindSearchMode, str]] = ..., quality_bound: _Optional[float] = ..., route_cost: _Optional[_Union[PathRouteCost, _Mapping]] = ..., expanded_states: _Optional[int] = ..., generated_transitions: _Optional[int] = ..., search_elapsed_millis: _Optional[int] = ..., frontier_reason: _Optional[_Union[PathFrontierReason, str]] = ..., initial_epsilon: _Optional[float] = ..., final_epsilon: _Optional[float] = ..., repair_iterations: _Optional[int] = ..., repaired_inconsistent_states: _Optional[int] = ..., incumbent_improvements: _Optional[int] = ..., required_quality_bound: _Optional[float] = ...) -> None: ...
 
 class PlanPathRequest(_message.Message):
     __slots__ = ("instance_id", "bot_id", "goal", "options", "include_descriptions")

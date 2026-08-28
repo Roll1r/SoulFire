@@ -17,7 +17,6 @@
  */
 package com.soulfiremc.server.pathfinding.goals;
 
-import com.soulfiremc.server.pathfinding.MinecraftRouteNode;
 import com.soulfiremc.server.pathfinding.NodeState;
 import com.soulfiremc.server.pathfinding.SFVec3i;
 import org.junit.jupiter.api.Test;
@@ -32,26 +31,35 @@ final class CloseToWorldXZGoalTest {
   void ignoresHeightAndPreservesFractionalRadius() {
     var goal = new CloseToWorldXZGoal(154.05, 642.13, 4);
 
-    assertTrue(goal.isFinished(node(new SFVec3i(154, -32, 643))));
-    assertTrue(goal.isFinished(node(new SFVec3i(151, 200, 644))));
-    assertFalse(goal.isFinished(node(new SFVec3i(150, 72, 646))));
+    assertTrue(goal.isFinished(
+      node(new SFVec3i(154, -32, 643)),
+      List.of()
+    ));
+    assertTrue(goal.isFinished(
+      node(new SFVec3i(151, 200, 644)),
+      List.of()
+    ));
+    assertFalse(goal.isFinished(
+      node(new SFVec3i(150, 72, 646)),
+      List.of()
+    ));
   }
 
   @Test
   void measuresFromThePhysicalCenterAtNegativeCoordinates() {
     var goal = new CloseToWorldXZGoal(-67.05, 160.13, 1.5);
 
-    assertTrue(goal.isFinished(node(new SFVec3i(-67, 0, 160))));
-    assertFalse(goal.isFinished(node(new SFVec3i(-66, 0, 160))));
+    assertTrue(goal.isFinished(
+      node(new SFVec3i(-67, 0, 160)),
+      List.of()
+    ));
+    assertFalse(goal.isFinished(
+      node(new SFVec3i(-66, 0, 160)),
+      List.of()
+    ));
   }
 
-  private static MinecraftRouteNode node(SFVec3i position) {
-    return new MinecraftRouteNode(
-      new NodeState(position, 0),
-      List.of(),
-      0,
-      0,
-      0
-    );
+  private static NodeState node(SFVec3i position) {
+    return new NodeState(position, 0);
   }
 }

@@ -17,7 +17,7 @@
  */
 package com.soulfiremc.server.pathfinding.goals;
 
-import com.soulfiremc.server.pathfinding.MinecraftRouteNode;
+import com.soulfiremc.server.pathfinding.NodeState;
 import com.soulfiremc.server.pathfinding.SFVec3i;
 import com.soulfiremc.server.pathfinding.execution.WorldAction;
 import com.soulfiremc.server.pathfinding.graph.MinecraftGraph;
@@ -34,7 +34,15 @@ public interface DynamicGoalScorer extends GoalScorer {
   }
 
   @Override
-  default boolean isFinished(MinecraftRouteNode current) {
-    return create().isFinished(current);
+  default boolean isFinished(
+    NodeState state,
+    List<WorldAction> actions
+  ) {
+    return create().isFinished(state, actions);
+  }
+
+  @Override
+  default GoalScorer snapshot() {
+    return create().snapshot();
   }
 }

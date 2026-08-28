@@ -19,16 +19,16 @@ package com.soulfiremc.server.pathfinding;
 
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class RouteCostTest {
   @Test
-  void prefersSafeRoutesBeforeShortRoutes() {
+  void includesDamageRiskInTheBoundedScalarCost() {
     var safe = new RouteCost(0, 0, 0, 0, 20);
     var dangerous = new RouteCost(1, 0, 0, 0, 1);
 
-    assertTrue(safe.compareTo(dangerous) < 0);
+    assertTrue(safe.optimizationCost() > dangerous.optimizationCost());
   }
 
   @Test
@@ -36,15 +36,14 @@ final class RouteCostTest {
     var placed = new RouteCost(0, 0, 1, 0, 5);
     var noPlacement = new RouteCost(0, 0, 0, 0, 20);
 
-    assertTrue(placed.compareTo(noPlacement) < 0);
+    assertTrue(placed.optimizationCost() < noPlacement.optimizationCost());
   }
 
   @Test
-  void dominanceKeepsCostAndResourceTradeoffs() {
-    var faster = new RouteCost(0, 0, 1, 0, 5);
-    var conservative = new RouteCost(0, 0, 0, 0, 6);
+  void rawActionCountsDoNotChangeTheScalarBound() {
+    var placed = new RouteCost(0, 0, 1, 0, 5);
+    var untouched = new RouteCost(0, 0, 0, 0, 5);
 
-    assertFalse(faster.noWorseThan(conservative));
-    assertFalse(conservative.noWorseThan(faster));
+    assertEquals(placed.optimizationCost(), untouched.optimizationCost());
   }
 }

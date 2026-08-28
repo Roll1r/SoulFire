@@ -3296,8 +3296,9 @@ export type PathfindOptions = Message<"soulfire.v1.PathfindOptions"> & {
   searchMode: PathfindSearchMode;
 
   /**
-   * Largest accepted multiplicative quality bound. Values must be from 1.0
-   * through the selected mode's default bound. Unset uses the mode default.
+   * Largest accepted certified multiplicative quality bound. Values must be
+   * from 1.0 through the selected mode's initial epsilon. Unset uses the mode
+   * default. ARA* does not execute an incumbent that misses this bound.
    *
    * @generated from field: optional double maximum_quality_bound = 13;
    */
@@ -3312,9 +3313,9 @@ export type PathfindOptions = Message<"soulfire.v1.PathfindOptions"> & {
   smoothCamera?: boolean | undefined;
 
   /**
-   * Hard state-expansion budget for each search attempt. 0 uses the server
-   * default. Reaching this limit is reported separately from an unreachable
-   * goal.
+   * Hard state-expansion budget for the complete ARA* repair session. 0 uses
+   * the server default. Reaching this limit is reported separately from an
+   * unreachable goal.
    *
    * @generated from field: uint32 maximum_expanded_states = 15;
    */
@@ -4241,28 +4242,28 @@ export enum PathfindSearchMode {
   UNSPECIFIED = 0,
 
   /**
-   * Exact A* with an admissible heuristic and no suboptimality.
+   * Exact A* through ARA* with epsilon fixed at 1.0.
    *
    * @generated from enum value: PATHFIND_SEARCH_MODE_PRECISION = 1;
    */
   PRECISION = 1,
 
   /**
-   * Bounded A* with a default quality bound of 1.2.
+   * ARA* starting at epsilon 2.5 and repairing to a 1.2 bound by default.
    *
    * @generated from enum value: PATHFIND_SEARCH_MODE_NORMAL = 2;
    */
   NORMAL = 2,
 
   /**
-   * Bounded A* with a default quality bound of 1.5.
+   * ARA* starting at epsilon 3.0 and repairing to a 1.5 bound by default.
    *
    * @generated from enum value: PATHFIND_SEARCH_MODE_URGENT = 3;
    */
   URGENT = 3,
 
   /**
-   * A safety-first policy for immediate escape movement.
+   * ARA* starting at epsilon 4.0 and repairing to a 2.0 bound by default.
    *
    * @generated from enum value: PATHFIND_SEARCH_MODE_ESCAPE = 4;
    */

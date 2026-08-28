@@ -17,7 +17,7 @@
  */
 package com.soulfiremc.server.pathfinding.goals;
 
-import com.soulfiremc.server.pathfinding.MinecraftRouteNode;
+import com.soulfiremc.server.pathfinding.NodeState;
 import com.soulfiremc.server.pathfinding.SFVec3i;
 import com.soulfiremc.server.pathfinding.execution.WorldAction;
 import com.soulfiremc.server.pathfinding.graph.MinecraftGraph;
@@ -48,12 +48,15 @@ public record CloseToWorldXZGoal(
     SFVec3i blockPosition,
     List<WorldAction> actions
   ) {
-    return distanceToPlayerPosition(blockPosition);
+    return Math.max(
+      0,
+      distanceToPlayerPosition(blockPosition) - maxRadius
+    );
   }
 
   @Override
-  public boolean isFinished(MinecraftRouteNode current) {
-    return distanceToPlayerPosition(current.node().blockPosition())
+  public boolean isFinished(NodeState state, List<WorldAction> actions) {
+    return distanceToPlayerPosition(state.blockPosition())
       <= maxRadius;
   }
 

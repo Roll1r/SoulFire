@@ -17,7 +17,7 @@
  */
 package com.soulfiremc.server.pathfinding.goals;
 
-import com.soulfiremc.server.pathfinding.MinecraftRouteNode;
+import com.soulfiremc.server.pathfinding.NodeState;
 import com.soulfiremc.server.pathfinding.SFVec3i;
 import com.soulfiremc.server.pathfinding.execution.WorldAction;
 import com.soulfiremc.server.pathfinding.graph.MinecraftGraph;
@@ -31,11 +31,11 @@ import java.util.List;
 public record CloseToPosGoal(SFVec3i goal, int maxRadius) implements GoalScorer {
   @Override
   public double computeScore(MinecraftGraph graph, SFVec3i blockPosition, List<WorldAction> actions) {
-    return blockPosition.distance(goal);
+    return Math.max(0, blockPosition.distance(goal) - maxRadius);
   }
 
   @Override
-  public boolean isFinished(MinecraftRouteNode current) {
-    return current.node().blockPosition().distance(goal) <= maxRadius;
+  public boolean isFinished(NodeState state, List<WorldAction> actions) {
+    return state.blockPosition().distance(goal) <= maxRadius;
   }
 }

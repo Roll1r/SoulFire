@@ -35,6 +35,18 @@ public final class UnreachableGoalException extends IllegalStateException {
     );
   }
 
+  public static UnreachableGoalException qualityBound(
+    double certifiedBound,
+    double requestedBound
+  ) {
+    return new UnreachableGoalException(
+      "Pathfinding found a route with certified bound "
+        + certifiedBound
+        + " but the request requires "
+        + requestedBound
+    );
+  }
+
   public static UnreachableGoalException stalled(int partialRouteCount) {
     return new UnreachableGoalException(
       "Pathfinding made no progress across "

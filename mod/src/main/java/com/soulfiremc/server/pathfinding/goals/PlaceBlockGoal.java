@@ -17,25 +17,43 @@
  */
 package com.soulfiremc.server.pathfinding.goals;
 
-import com.soulfiremc.server.pathfinding.MinecraftRouteNode;
+import com.soulfiremc.server.pathfinding.NodeState;
 import com.soulfiremc.server.pathfinding.SFVec3i;
 import com.soulfiremc.server.pathfinding.execution.BlockPlaceAction;
+import com.soulfiremc.server.pathfinding.execution.JumpAndPlaceBelowAction;
 import com.soulfiremc.server.pathfinding.execution.WorldAction;
 import com.soulfiremc.server.pathfinding.graph.MinecraftGraph;
 
 import java.util.List;
 
 public record PlaceBlockGoal(SFVec3i goal) implements GoalScorer {
+  /// Current graph primitives only place blocks within three blocks of the
+  /// source feet position. Subtracting the full radius keeps this estimate
+  /// admissible for transition-completed goals.
+  private static final double MAXIMUM_ACTION_OFFSET = 3;
+
   @Override
   public double computeScore(MinecraftGraph graph, SFVec3i blockPosition, List<WorldAction> actions) {
-    return blockPosition.distance(goal);
+    return Math.max(
+      0,
+      blockPosition.distance(goal) - MAXIMUM_ACTION_OFFSET
+    );
   }
 
   @Override
-  public boolean isFinished(MinecraftRouteNode current) {
-    for (var action : current.actions()) {
-      if (action instanceof BlockPlaceAction placeBlockAction && placeBlockAction.blockPosition().equals(goal)) {
-        return true;
+  public boolean isFinished(NodeState state, List<WorldAction> actions) {
+    for (var action : actions) {
+      switch (action) {
+        case BlockPlaceAction place
+          when place.blockPosition().equals(goal) -> {
+          return true;
+        }
+        case JumpAndPlaceBelowAction place
+          when place.blockPlacePosition().equals(goal) -> {
+          return true;
+        }
+        default -> {
+        }
       }
     }
 
