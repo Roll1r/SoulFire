@@ -24,11 +24,11 @@ import com.soulfiremc.bootstrap.client.cli.SFCommandDefinition;
 import com.soulfiremc.bootstrap.client.grpc.RPCClient;
 import com.soulfiremc.grpc.generated.AccountTypeCredentials;
 import com.soulfiremc.grpc.generated.CredentialsAuthRequest;
+import com.soulfiremc.grpc.generated.CredentialsAuthResponse;
 import com.soulfiremc.grpc.generated.InstanceConfig;
 import com.soulfiremc.server.account.AuthType;
 import com.soulfiremc.server.account.MinecraftAccount;
 import com.soulfiremc.server.settings.lib.InstanceSettingsImpl;
-import lombok.RequiredArgsConstructor;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 
@@ -37,19 +37,28 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.util.*;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 @Slf4j
-@RequiredArgsConstructor
 public final class ClientSettingsManager {
   private final Multimap<PropertyKey, Consumer<JsonElement>> listeners =
     Multimaps.newListMultimap(new LinkedHashMap<>(), ArrayList::new);
   private final Map<String, Map<String, Supplier<JsonElement>>> providers = new LinkedHashMap<>();
-  private final RPCClient rpcClient;
+  private final Function<CredentialsAuthRequest, Iterator<CredentialsAuthResponse>> credentialsLogin;
   @Setter
   private SFCommandDefinition commandDefinition;
   private InstanceSettingsImpl.Stem settingsSource = InstanceSettingsImpl.Stem.EMPTY;
+
+  public ClientSettingsManager(RPCClient rpcClient) {
+    this(rpcClient.mcAuthServiceBlocking()::loginCredentials);
+  }
+
+  ClientSettingsManager(
+    Function<CredentialsAuthRequest, Iterator<CredentialsAuthResponse>> credentialsLogin) {
+    this.credentialsLogin = credentialsLogin;
+  }
 
   public void registerProvider(PropertyKey property, Supplier<JsonElement> provider) {
     providers
@@ -61,18 +70,9 @@ public final class ClientSettingsManager {
     listeners.put(property, listener);
   }
 
-  public InstanceConfig exportSettingsProto(UUID instanceId) {
-    // Load accounts
-    if (commandDefinition.accountFile() != null && commandDefinition.authType() != null) {
-      try {
-        loadFromString(instanceId, Files.readString(commandDefinition.accountFile()), commandDefinition.authType());
-      } catch (IOException e) {
-        log.error("Failed to load accounts!", e);
-        throw new UncheckedIOException(e);
-      }
-    }
-
-    // Load proxies
+  public void configureInstance(UUID instanceId, Consumer<InstanceConfig> configUpdater) {
+    // Authentication reads proxies and settings from the server-side instance state.
+    // Upload them before sending any account credentials.
     if (commandDefinition.proxyFile() != null) {
       try {
         loadFromString(
@@ -86,7 +86,19 @@ public final class ClientSettingsManager {
 
     // Load settings
     gatherProviders();
-    return settingsSource.toProto();
+    configUpdater.accept(settingsSource.toProto());
+
+    // Load accounts after the server can use the requested authentication proxies.
+    if (commandDefinition.accountFile() != null && commandDefinition.authType() != null) {
+      try {
+        loadFromString(instanceId, Files.readString(commandDefinition.accountFile()), commandDefinition.authType());
+      } catch (IOException e) {
+        log.error("Failed to load accounts!", e);
+        throw new UncheckedIOException(e);
+      }
+
+      configUpdater.accept(settingsSource.toProto());
+    }
   }
 
   private void gatherProviders() {
@@ -127,17 +139,36 @@ public final class ClientSettingsManager {
 
   private void loadFromString(UUID instanceId, String data, AuthType authType) {
     try {
-      var newAccounts =
-        fromStringList(instanceId, splitAccountPayloads(data, authType), authType);
+      var accountPayloads = splitAccountPayloads(data, authType);
+      var newAccounts = fromStringList(instanceId, accountPayloads, authType);
+      var failedAccounts = accountPayloads.size() - newAccounts.size();
 
       if (newAccounts.isEmpty()) {
-        log.warn("No accounts found in the provided data!");
+        if (accountPayloads.isEmpty()) {
+          log.warn("No accounts found in the provided data!");
+        } else {
+          log.warn("Failed to authenticate all {} provided accounts. Check the server logs for details.", accountPayloads.size());
+        }
         return;
       }
 
       settingsSource = settingsSource.withAccounts(newAccounts);
 
-      log.info("Loaded {} accounts!", newAccounts.size());
+      if (failedAccounts > 0) {
+        log.warn(
+          "Loaded {} of {} provided accounts; {} failed to authenticate. Check the server logs for details.",
+          newAccounts.size(),
+          accountPayloads.size(),
+          failedAccounts);
+      } else {
+        log.info("Loaded {} accounts!", newAccounts.size());
+      }
+
+      if (settingsSource.accounts().size() < newAccounts.size()) {
+        log.warn(
+          "The authenticated entries resolve to {} unique Minecraft accounts.",
+          settingsSource.accounts().size());
+      }
     } catch (Exception e) {
       log.error("Failed to load accounts from string!", e);
     }
@@ -152,7 +183,7 @@ public final class ClientSettingsManager {
           .addAllPayload(accounts);
 
       var results = new ArrayList<MinecraftAccount>();
-      var responses = rpcClient.mcAuthServiceBlocking().loginCredentials(request.build());
+      var responses = credentialsLogin.apply(request.build());
       while (responses.hasNext()) {
         var response = responses.next();
         if (response.hasOneSuccess()) {

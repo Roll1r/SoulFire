@@ -129,10 +129,11 @@ public final class SFCommandDefinition implements Callable<Integer> {
 
     cliManager.clientSettingsManager().commandDefinition(this);
 
-    cliManager.rpcClient().instanceStubBlocking().updateInstanceConfig(InstanceUpdateConfigRequest.newBuilder()
-      .setId(cliManager.cliInstanceId().toString())
-      .setConfig(cliManager.clientSettingsManager().exportSettingsProto(cliManager.cliInstanceId()))
-      .build());
+    cliManager.clientSettingsManager().configureInstance(cliManager.cliInstanceId(), config ->
+      cliManager.rpcClient().instanceStubBlocking().updateInstanceConfig(InstanceUpdateConfigRequest.newBuilder()
+        .setId(cliManager.cliInstanceId().toString())
+        .setConfig(config)
+        .build()));
 
     if (start) {
       cliManager.clientCommandManager().execute("bots start");
