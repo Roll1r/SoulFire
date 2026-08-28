@@ -29,6 +29,7 @@ enum PathPlanStatus {
   PATH_PLAN_STATUS_SEARCH_EXPIRED = 4;
   PATH_PLAN_STATUS_CANCELLED = 5;
   PATH_PLAN_STATUS_QUALITY_BOUND_NOT_MET = 6;
+  PATH_PLAN_STATUS_WORLD_DATA_PENDING = 7;
 }
 
 enum PathFrontierReason {
@@ -47,6 +48,11 @@ message PathRouteCost {
   double duration_cost = 5;
   // Scalar cost for which the ARA* quality bound is certified.
   double optimization_cost = 6;
+}
+
+message PathChunk {
+  int32 x = 1 [(google.api.field_behavior) = REQUIRED];
+  int32 z = 2 [(google.api.field_behavior) = REQUIRED];
 }
 
 message PathStep {
@@ -83,6 +89,10 @@ message PathPlan {
   uint32 incumbent_improvements = 19;
   // Maximum certified bound requested by the caller.
   double required_quality_bound = 20;
+  // Navigation-world revision captured before this search started.
+  uint64 world_revision = 21;
+  // Chunks read by the search but absent from the captured client world.
+  repeated PathChunk unavailable_chunks = 22;
 }
 
 message PlanPathRequest {

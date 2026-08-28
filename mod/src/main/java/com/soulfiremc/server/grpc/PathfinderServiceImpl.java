@@ -150,6 +150,7 @@ public final class PathfinderServiceImpl
       )
       .setIncumbentImprovements(metadata.incumbentImprovements())
       .setRequiredQualityBound(metadata.requiredQualityBound())
+      .setWorldRevision(metadata.worldRevision())
       .setFrontierReason(switch (metadata.frontierReason()) {
         case NONE -> PathFrontierReason.PATH_FRONTIER_REASON_NONE;
         case LEVEL_BOUNDARY ->
@@ -159,6 +160,11 @@ public final class PathfinderServiceImpl
         case SEARCH_BUDGET ->
           PathFrontierReason.PATH_FRONTIER_REASON_SEARCH_BUDGET;
       });
+    for (var chunk : metadata.unavailableChunks()) {
+      builder.addUnavailableChunks(PathChunk.newBuilder()
+        .setX(chunk.x())
+        .setZ(chunk.z()));
+    }
     var actions = actions(result);
     long maximumTicks = 0;
     for (var index = 0; index < actions.size(); index++) {
@@ -208,6 +214,11 @@ public final class PathfinderServiceImpl
         builder.setPartialReason("No route could reach the goal");
       case RouteFinder.SearchLimitReachedResult _ ->
         builder.setPartialReason("The route search reached its state-expansion budget");
+      case RouteFinder.WorldDataPendingResult pending ->
+        builder.setPartialReason(
+          "The route needs %d chunks that are not loaded"
+            .formatted(pending.metadata().unavailableChunks().size())
+        );
       case RouteFinder.QualityBoundNotMetResult unqualified ->
         builder.setPartialReason(
           "A route was found, but its certified quality bound %s exceeds the request"
@@ -229,6 +240,7 @@ public final class PathfinderServiceImpl
       case RouteFinder.PartialRouteResult partial -> partial.actions();
       case RouteFinder.NoRouteFoundResult _,
            RouteFinder.SearchLimitReachedResult _,
+           RouteFinder.WorldDataPendingResult _,
            RouteFinder.SearchInterruptedResult _,
            RouteFinder.QualityBoundNotMetResult _ -> List.of();
     };
@@ -244,6 +256,8 @@ public final class PathfinderServiceImpl
         PathPlanStatus.PATH_PLAN_STATUS_UNREACHABLE;
       case RouteFinder.SearchLimitReachedResult _ ->
         PathPlanStatus.PATH_PLAN_STATUS_SEARCH_EXPIRED;
+      case RouteFinder.WorldDataPendingResult _ ->
+        PathPlanStatus.PATH_PLAN_STATUS_WORLD_DATA_PENDING;
       case RouteFinder.QualityBoundNotMetResult _ ->
         PathPlanStatus.PATH_PLAN_STATUS_QUALITY_BOUND_NOT_MET;
       case RouteFinder.SearchInterruptedResult _ ->

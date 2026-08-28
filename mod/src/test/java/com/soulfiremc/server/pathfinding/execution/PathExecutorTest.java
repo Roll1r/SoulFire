@@ -20,6 +20,7 @@ package com.soulfiremc.server.pathfinding.execution;
 import com.soulfiremc.server.pathfinding.SFVec3i;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -52,5 +53,41 @@ final class PathExecutorTest {
 
     assertFalse(guard.shouldAbort("pillar", position.add(0, 1, 0)));
     assertFalse(guard.shouldAbort("walk", position.add(0, 1, 0)));
+  }
+
+  @Test
+  void retriesWorldDataOnlyAfterTheRevisionAndDependenciesAdvance() {
+    var guard = new PathExecutor.WorldDataWaitGuard(7, 5);
+
+    assertEquals(
+      PathExecutor.WorldDataWaitDecision.WAIT,
+      guard.tick(7, true)
+    );
+    assertEquals(
+      PathExecutor.WorldDataWaitDecision.WAIT,
+      guard.tick(8, false)
+    );
+    assertEquals(
+      PathExecutor.WorldDataWaitDecision.RETRY,
+      guard.tick(8, true)
+    );
+  }
+
+  @Test
+  void boundsWaitingForMissingWorldData() {
+    var guard = new PathExecutor.WorldDataWaitGuard(7, 3);
+
+    assertEquals(
+      PathExecutor.WorldDataWaitDecision.WAIT,
+      guard.tick(7, false)
+    );
+    assertEquals(
+      PathExecutor.WorldDataWaitDecision.WAIT,
+      guard.tick(7, false)
+    );
+    assertEquals(
+      PathExecutor.WorldDataWaitDecision.TIMED_OUT,
+      guard.tick(7, false)
+    );
   }
 }

@@ -49,6 +49,8 @@
     "prepack": "bun run build",
     "smoke:e2e": "bun run --filter @soulfiremc/sdk build && bun run build && bun run typecheck:smoke && ../../gradlew -p ../.. :dedicated-launcher:uberJar && node --experimental-strip-types smoke/e2e.ts",
     "smoke:controlled": "SOULFIRE_E2E_CONTROLLED=true bun run smoke:e2e",
+    "smoke:qualify": "node --experimental-strip-types smoke/qualify.ts",
+    "smoke:qualify:controlled": "SOULFIRE_QUALIFICATION_CONTROLLED=true node --experimental-strip-types smoke/qualify.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "typecheck:smoke": "tsc -p tsconfig.smoke.json --noEmit"

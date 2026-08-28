@@ -45,6 +45,7 @@ import com.soulfiremc.server.api.SoulFireAPI;
 import com.soulfiremc.server.api.event.bot.BotDisconnectedEvent;
 import com.soulfiremc.server.api.event.bot.PreBotConnectEvent;
 import com.soulfiremc.server.api.metadata.MetadataHolder;
+import com.soulfiremc.server.pathfinding.NavigationWorldState;
 import com.soulfiremc.server.proxy.ProxyType;
 import com.soulfiremc.server.proxy.SFProxy;
 import com.soulfiremc.server.settings.lib.BotSettingsDelegate;
@@ -140,6 +141,8 @@ public final class BotConnection {
   private final MetadataHolder<JsonElement> persistentMetadata;
   private final ControlState controlState = new ControlState();
   private final BotControlAPI botControl = new BotControlAPI();
+  private final NavigationWorldState navigationWorldState =
+    new NavigationWorldState();
   private final BotRotationController rotationControl;
   private final SoulFireScheduler scheduler;
   private final BotConnectionFactory factory;

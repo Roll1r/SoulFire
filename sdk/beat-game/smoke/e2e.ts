@@ -160,6 +160,10 @@ const debugApiTimelineEntries = positiveIntegerEnvironment(
 );
 const debugBlockQueryResultLimit = 32;
 const verboseOutput = booleanEnvironment("SOULFIRE_E2E_VERBOSE", false);
+const longTravelGate = booleanEnvironment(
+  "SOULFIRE_E2E_LONG_TRAVEL",
+  smokeMode === "controlled",
+);
 const minecraftPort = 25_565;
 const attachedMinecraftContainer = optionalEnvironment(
   "SOULFIRE_E2E_MINECRAFT_CONTAINER",
@@ -252,6 +256,7 @@ interface ControlledMinecraftFixture extends BaseMinecraftFixture {
   readonly seed: string;
   readonly stronghold: Readonly<{ x: number; z: number }>;
   readonly spawn: Readonly<{ x: number; y: number; z: number }>;
+  readonly longTravelTarget: Readonly<{ x: number; y: number; z: number }>;
 }
 
 type MinecraftFixture =
@@ -310,6 +315,7 @@ const program = Effect.scoped(Effect.gen(function* () {
     debugApiPort,
     debugApiTimelineEntries,
     verboseOutput,
+    longTravelGate,
     fixtureConfiguration,
   });
 
@@ -680,6 +686,37 @@ const program = Effect.scoped(Effect.gen(function* () {
   yield* Fiber.interrupt(startupAirGuard);
   yield* bot.resetMovement().pipe(Effect.ignore);
   yield* record("bot-chunks-ready", { radiusChunks: 4 });
+  if (fixture.mode === "controlled") {
+    const corridorSample = yield* Effect.forEach(
+      [-1, 0, 1, 8, 15, 16, 31, 32, 47, 48, 63, 64].map((offset) => ({
+        x: fixture.spawn.x + offset,
+        y: fixture.spawn.y - 1,
+        z: fixture.spawn.z,
+      })),
+      (position) =>
+        bot.world.block({
+          position: {
+            ...position,
+            dimension: "minecraft:overworld",
+          },
+          includeShapes: true,
+        }).pipe(Effect.map(({ block }) => ({
+          position,
+          blockId: block?.blockId,
+          collisionShape: block?.collisionShape,
+        }))),
+      { concurrency: "unbounded" },
+    );
+    yield* record("controlled-corridor-sampled", { blocks: corridorSample });
+    const missingFloor = corridorSample.find(
+      ({ blockId }) => blockId !== "minecraft:stone",
+    );
+    if (missingFloor !== undefined) {
+      return yield* Effect.fail(new Error(
+        `Controlled corridor floor is not observable at ${json(missingFloor)}`,
+      ));
+    }
+  }
   let lastObservedInventoryRevision: bigint | undefined;
   const observedEntityFingerprints = new Map<string, string>();
   let lastObservedVitals:
@@ -692,6 +729,10 @@ const program = Effect.scoped(Effect.gen(function* () {
     | undefined;
   let activePathTrace: SmokeActivePathTrace | undefined;
   let lastPathOutcome: SmokePathOutcome | undefined;
+  let pathAttempts = 0;
+  let pathCompletions = 0;
+  let pathFailures = 0;
+  let pathInterruptions = 0;
   const tracePath = (
     kind: "pathfind" | "pathfind-xz",
     goal: SmokeActivePathTrace["goal"],
@@ -699,6 +740,7 @@ const program = Effect.scoped(Effect.gen(function* () {
     details: Readonly<Record<string, unknown>>,
     execute: () => ReturnType<typeof baseDriver.pathfind>,
   ) => Effect.suspend(() => {
+    pathAttempts += 1;
     const pathId = randomUUID();
     const startedAt = new Date().toISOString();
     const owner = currentDebugActionContext();
@@ -739,6 +781,7 @@ const program = Effect.scoped(Effect.gen(function* () {
           ? {}
           : { playerPosition: player.position }),
       };
+      pathCompletions += 1;
       yield* record(`${kind}-completed`, {
         pathId,
         startedAt,
@@ -757,6 +800,11 @@ const program = Effect.scoped(Effect.gen(function* () {
         }
         const completedAt = new Date().toISOString();
         const status = Exit.isInterrupted(exit) ? "interrupted" : "failed";
+        if (status === "interrupted") {
+          pathInterruptions += 1;
+        } else {
+          pathFailures += 1;
+        }
         const failure = debugExitFailure(exit);
         if (trace !== undefined) {
           lastPathOutcome = {
@@ -1031,6 +1079,58 @@ const program = Effect.scoped(Effect.gen(function* () {
         });
       }),
   };
+  if (fixture.mode === "controlled" && longTravelGate) {
+    const travelPolicy: BeatGamePathPolicy = {
+      ...defaultBeatGameStrategy.path,
+      allowMining: false,
+      allowPlacing: false,
+      avoidFluids: true,
+      sprint: true,
+      searchMode: "NORMAL",
+      maxSearchTimeMs: 120_000,
+    };
+    const travelTarget = {
+      ...fixture.longTravelTarget,
+      dimension: "minecraft:overworld",
+    };
+    const returnTarget = {
+      ...fixture.spawn,
+      x: fixture.spawn.x + 0.5,
+      z: fixture.spawn.z + 0.5,
+      dimension: "minecraft:overworld",
+    };
+    yield* record("long-travel-gate-started", {
+      travelTarget,
+      returnTarget,
+      policy: travelPolicy,
+    });
+    yield* driver.pathfind(travelTarget, 1.25, travelPolicy).pipe(
+      Effect.timeout(Duration.minutes(6)),
+    );
+    const reached = yield* driver.observe;
+    const targetDistance = Math.hypot(
+      reached.player.position.x - travelTarget.x,
+      reached.player.position.z - travelTarget.z,
+    );
+    if (targetDistance > 1.5) {
+      return yield* Effect.fail(new Error(
+        `Long-travel path ended ${targetDistance.toFixed(2)} blocks from its target`,
+      ));
+    }
+    yield* driver.pathfind(returnTarget, 1.25, travelPolicy).pipe(
+      Effect.timeout(Duration.minutes(6)),
+    );
+    const returned = yield* driver.observe;
+    yield* record("long-travel-gate-completed", {
+      targetDistance,
+      reached: reached.player.position,
+      returned: returned.player.position,
+      horizontalDistance: Math.hypot(
+        travelTarget.x - returnTarget.x,
+        travelTarget.z - returnTarget.z,
+      ) * 2,
+    });
+  }
   const beatGameStrategy = {
     ...defaultBeatGameStrategy,
     actionTimeoutMs: 600_000,
@@ -1049,6 +1149,9 @@ const program = Effect.scoped(Effect.gen(function* () {
   });
   const initialRunSnapshot = yield* run.snapshot;
   const initialPlanner = initialRunSnapshot.checkpoint.planner;
+  const observedPhases = new Set<BeatGamePhase>([initialPlanner.phase]);
+  let actionRetries = 0;
+  let safetyInterruptions = 0;
   if (initialPlanner.currentAction !== undefined) {
     activeDebugActionContext = {
       action: initialPlanner.currentAction,
@@ -1060,7 +1163,20 @@ const program = Effect.scoped(Effect.gen(function* () {
     };
   }
   yield* Stream.runForEach(run.events, (event) =>
-    Effect.sync(() => updateDebugActionContext(event)).pipe(
+    Effect.sync(() => {
+      updateDebugActionContext(event);
+      observedPhases.add(event.phase);
+      if (event.type === "phase-changed") {
+        observedPhases.add(event.current);
+      } else if (event.type === "action-retried") {
+        actionRetries += 1;
+      } else if (
+        event.type === "action-failed"
+        && /interrupt|preempt|evad|defend|safety/iu.test(event.detail ?? "")
+      ) {
+        safetyInterruptions += 1;
+      }
+    }).pipe(
       Effect.zipRight(record("beat-game-event", { event })),
     )
   ).pipe(Effect.forkScoped);
@@ -1545,6 +1661,44 @@ const program = Effect.scoped(Effect.gen(function* () {
       "Beat-game run completed while the bot was still in the End",
     ));
   }
+  const requiredPhases = Object.values(BeatGamePhase);
+  const missingPhases = requiredPhases.filter((phase) =>
+    !observedPhases.has(phase)
+  );
+  if (fixture.mode === "controlled" && missingPhases.length > 0) {
+    return yield* Effect.fail(new Error(
+      `Controlled completion skipped phase gates: ${missingPhases.join(", ")}`,
+    ));
+  }
+  const skillRetries = result.finalCheckpoint.memory.skillHistory.reduce(
+    (total, skill) =>
+      total + Object.values(skill.retries).reduce(
+        (skillTotal, count) => skillTotal + count,
+        0,
+      ),
+    0,
+  );
+  const qualificationMetrics = {
+    runId,
+    mode: fixture.mode,
+    seed: fixture.seed ?? "server-generated",
+    completed: true,
+    durationMs: result.durationMs,
+    deaths: result.finalCheckpoint.memory.deathPositions.length,
+    pathAttempts,
+    pathCompletions,
+    pathFailures,
+    pathInterruptions,
+    actionRetries,
+    safetyInterruptions,
+    skillRetries,
+    portalWorkspaces: result.finalCheckpoint.memory.portalWorkspaces.length,
+    observedPhases: requiredPhases.filter((phase) =>
+      observedPhases.has(phase)
+    ),
+  };
+  yield* writeJson("qualification.json", qualificationMetrics);
+  yield* record("qualification-metrics", qualificationMetrics);
   if (fixture.mode === "survival" && fixture.freshWorld) {
     yield* assertAdminCommandPolicy(fixture);
   }
@@ -1725,10 +1879,10 @@ const startMinecraftFixture = Effect.suspend(() => {
     const naturalSpawn = parseWorldSpawn(worldSpawn.stdout);
     const spawn = { ...naturalSpawn, y: 49 };
     const testCorridor = {
-      minimumX: stronghold.x - 16,
-      maximumX: spawn.x + 63,
-      minimumZ: spawn.z - 80,
-      maximumZ: spawn.z + 80,
+      minimumX: stronghold.x - 255,
+      maximumX: spawn.x + 255,
+      minimumZ: spawn.z - 32,
+      maximumZ: spawn.z + 32,
     };
     yield* rcon(
       containerName,
@@ -1737,29 +1891,36 @@ const startMinecraftFixture = Effect.suspend(() => {
       } ${testCorridor.maximumZ}`,
     );
     for (
-      let minimumZ = testCorridor.minimumZ;
-      minimumZ <= testCorridor.maximumZ;
-      minimumZ += 16
+      let minimumX = testCorridor.minimumX;
+      minimumX <= testCorridor.maximumX;
+      minimumX += 16
     ) {
-      const maximumZ = Math.min(minimumZ + 15, testCorridor.maximumZ);
-      yield* rcon(
-        containerName,
-        `fill ${testCorridor.minimumX} ${spawn.y + 9} ${minimumZ} ${
-          testCorridor.maximumX
-        } ${spawn.y + 9} ${maximumZ} stone`,
-      );
-      yield* rcon(
-        containerName,
-        `fill ${testCorridor.minimumX} ${spawn.y - 1} ${minimumZ} ${
-          testCorridor.maximumX
-        } ${spawn.y + 8} ${maximumZ} air`,
-      );
-      yield* rcon(
-        containerName,
-        `fill ${testCorridor.minimumX} ${spawn.y - 16} ${minimumZ} ${
-          testCorridor.maximumX
-        } ${spawn.y - 1} ${maximumZ} stone`,
-      );
+      const maximumX = Math.min(minimumX + 15, testCorridor.maximumX);
+      for (
+        let minimumZ = testCorridor.minimumZ;
+        minimumZ <= testCorridor.maximumZ;
+        minimumZ += 16
+      ) {
+        const maximumZ = Math.min(minimumZ + 15, testCorridor.maximumZ);
+        yield* rcon(
+          containerName,
+          `fill ${minimumX} ${spawn.y + 9} ${minimumZ} ${
+            maximumX
+          } ${spawn.y + 9} ${maximumZ} stone`,
+        );
+        yield* rcon(
+          containerName,
+          `fill ${minimumX} ${spawn.y - 1} ${minimumZ} ${
+            maximumX
+          } ${spawn.y + 8} ${maximumZ} air`,
+        );
+        yield* rcon(
+          containerName,
+          `fill ${minimumX} ${spawn.y - 16} ${minimumZ} ${
+            maximumX
+          } ${spawn.y - 1} ${maximumZ} stone`,
+        );
+      }
     }
     yield* rcon(
       containerName,
@@ -1834,6 +1995,11 @@ const startMinecraftFixture = Effect.suspend(() => {
       seed,
       stronghold,
       spawn,
+      longTravelTarget: {
+        x: spawn.x + 224.5,
+        y: spawn.y,
+        z: spawn.z + 0.5,
+      },
     } satisfies ControlledMinecraftFixture;
     yield* record("minecraft-ready", {
       ...fixture,

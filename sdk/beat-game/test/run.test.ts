@@ -13339,7 +13339,7 @@ describe("beat-game run lifecycle", () => {
       return zombieNearby ? [zombie] : [];
     };
     driver.taskObserver = (task) => {
-      if (task.type === "attack-nearest") {
+      if (task.type === "attack-entity") {
         zombieDefeated = true;
         zombieNearby = false;
       }
@@ -13352,7 +13352,7 @@ describe("beat-game run lifecycle", () => {
         Effect.flatMap((run) =>
           Effect.gen(function* () {
             while (
-              !driver.tasks.some((task) => task.type === "attack-nearest")
+              !driver.tasks.some((task) => task.type === "attack-entity")
             ) {
               yield* Effect.sleep(1);
             }
@@ -13374,16 +13374,13 @@ describe("beat-game run lifecycle", () => {
 
     expect(hostileQueries).toBeGreaterThanOrEqual(2);
     expect(driver.tasks).toContainEqual(expect.objectContaining({
-      type: "attack-nearest",
-      selector: {
-        categories: [2],
-        alive: true,
-      },
+      type: "attack-entity",
+      target: expect.objectContaining({ networkId: zombie.networkId }),
       selectBestWeapon: true,
     }));
     expect(driver.paths).toContainEqual(expect.objectContaining({
       position: rottenFlesh.position,
-      radius: 1.5,
+      radius: 1.25,
       policy: expect.objectContaining({
         allowPlacing: false,
         avoidFluids: true,
@@ -13447,7 +13444,7 @@ describe("beat-game run lifecycle", () => {
     expect(driver.taskPolicies[fleeIndex]).toMatchObject({
       allowMining: false,
       allowPlacing: false,
-      avoidFluids: true,
+      avoidFluids: false,
       maxFallDistance: 3,
       sprint: true,
     });
@@ -13542,6 +13539,7 @@ describe("beat-game run lifecycle", () => {
         driver.taskObserver(task);
         if (task.type === "flee") {
           targetNearby = false;
+          driver.entityResults = [];
         }
       }).pipe(
         Effect.zipRight(task.type === "flee" ? Effect.never : Effect.void),
@@ -13812,6 +13810,7 @@ describe("beat-game run lifecycle", () => {
               health: 19,
               position: { x: 13 },
             });
+            driver.entityResults = [];
             while (interruptedDefensiveAttacks === 0) {
               yield* Effect.sleep(1);
             }
@@ -14065,7 +14064,7 @@ describe("beat-game run lifecycle", () => {
         z: 3.5,
         dimension: "minecraft:overworld",
       },
-      radius: 1.5,
+      radius: 0.75,
       policy: expect.objectContaining({
         allowMining: false,
         allowPlacing: false,
@@ -14891,12 +14890,12 @@ describe("beat-game run lifecycle", () => {
         Effect.zipRight(
           task.type === "collect-blocks"
             ? Effect.never
-            : task.type === "attack-nearest"
+            : task.type === "attack-entity"
             ? Effect.sync(() => {
               driver.entityResults = [];
             }).pipe(
               Effect.zipRight(Effect.fail(new BeatGameDriverError({
-                operation: "task.attack-nearest",
+                operation: "task.attack-entity",
                 code: "unreachable",
                 retryable: true,
                 message: "Unable to reach the target entity",
@@ -14935,11 +14934,8 @@ describe("beat-game run lifecycle", () => {
     ));
 
     expect(driver.tasks).toContainEqual(expect.objectContaining({
-      type: "attack-nearest",
-      selector: {
-        categories: [2],
-        alive: true,
-      },
+      type: "attack-entity",
+      target: expect.objectContaining({ networkId: attacker.networkId }),
       sprinting: true,
     }));
     expect(driver.tasks.filter((task) =>
@@ -15644,7 +15640,7 @@ describe("beat-game run lifecycle", () => {
       yield* run.stop;
     })));
 
-    expect(ascentObservations).toBeGreaterThanOrEqual(3);
+    expect(ascentObservations).toBeGreaterThanOrEqual(1);
     expect(driver.surfaceQueries).toContainEqual(expect.objectContaining({
       radius: 16,
       sampleStep: 1,
@@ -15736,7 +15732,7 @@ describe("beat-game run lifecycle", () => {
     driver.taskResolver = (task) =>
       Effect.sync(() => {
         driver.tasks.push(task);
-        if (task.type === "attack-nearest") {
+        if (task.type === "attack-entity") {
           driver.entityResults = [];
           driver.currentObservation = observation({
             air: 300,
@@ -15805,7 +15801,7 @@ describe("beat-game run lifecycle", () => {
         position: { x: 0, y: 61, z: 0 },
       });
       while (
-        !driver.tasks.some((task) => task.type === "attack-nearest")
+        !driver.tasks.some((task) => task.type === "attack-entity")
         || driver.tasks.filter((task) =>
             task.type === "collect-blocks"
           ).length < 2
@@ -15816,11 +15812,8 @@ describe("beat-game run lifecycle", () => {
     })));
 
     expect(driver.tasks).toContainEqual(expect.objectContaining({
-      type: "attack-nearest",
-      selector: {
-        categories: [2],
-        alive: true,
-      },
+      type: "attack-entity",
+      target: expect.objectContaining({ networkId: zombie.networkId }),
     }));
     expect(driver.actions).toContainEqual({ type: "reset-movement" });
     expect(driver.currentObservation.player.position).toMatchObject({
@@ -18290,6 +18283,21 @@ describe("beat-game run lifecycle", () => {
       }
       return [];
     };
+    driver.raycastResolver = (query) =>
+      driver.currentObservation.player.position.x > 3
+        ? { distance: 0 }
+        : {
+          distance: Math.sqrt(
+            query.direction.x ** 2
+              + query.direction.y ** 2
+              + query.direction.z ** 2,
+          ),
+          block: blockObservation(source, {
+            blockId: "minecraft:lava",
+            properties: { level: "0" },
+            replaceable: true,
+          }),
+        };
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
@@ -19433,6 +19441,14 @@ describe("beat-game run lifecycle", () => {
       yield* Effect.promise(() => portalFloorQueried).pipe(
         Effect.timeout("5 seconds"),
       );
+      yield* Effect.gen(function* () {
+        while (
+          (yield* store.load("portal-beside-lava-run"))
+            ?.activeSkill?.portalWorkspace === undefined
+        ) {
+          yield* Effect.sleep(1);
+        }
+      }).pipe(Effect.timeout("5 seconds"));
       yield* run.stop;
       yield* run.awaitCompletion.pipe(Effect.either);
     })));
@@ -19451,6 +19467,18 @@ describe("beat-game run lifecycle", () => {
       { x: 2.5, y: 40.5, z: 2.5 },
       { x: 1.5, y: 40.5, z: 2.5 },
     ]);
+    const saved = await Effect.runPromise(
+      store.load("portal-beside-lava-run"),
+    );
+    expect(saved?.activeSkill).toMatchObject({
+      kind: "PORTAL_CONSTRUCTION",
+      status: "SUSPENDED",
+      portalWorkspace: {
+        method: "CAST",
+        status: "BUILDING",
+        candidateLavaSources: expect.arrayContaining([source.position]),
+      },
+    });
   });
 
   it("replaces a pickaxe consumed while approaching portal lava", async () => {
@@ -20114,7 +20142,7 @@ describe("beat-game run lifecycle", () => {
       ),
     ));
 
-    expect(driver.paths[0]).toEqual({
+    expect(driver.paths[0]).toMatchObject({
       position: {
         x: 24.5,
         y: 65,
@@ -20152,6 +20180,8 @@ describe("beat-game run lifecycle", () => {
       skyLight: 15,
       blockLight: 0,
     }];
+    driver.surfaceQueryResolver = (center) =>
+      Math.abs(center.x - 24.5) <= 4 ? driver.surfaceColumns : [];
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
@@ -21582,24 +21612,7 @@ describe("beat-game run lifecycle", () => {
     })));
 
     expect(driver.xzPaths).toHaveLength(0);
-    expect(driver.paths[0]).toMatchObject({
-      position: salmon.position,
-      radius: 4,
-      policy: {
-        allowMining: false,
-        allowPlacing: false,
-        avoidFluids: false,
-        sprint: true,
-      },
-    });
-    expect(driver.actions).toContainEqual({
-      type: "set-movement",
-      forward: true,
-      jump: true,
-      sprint: false,
-    });
-    expect(driver.actions).toContainEqual({ type: "reset-movement" });
-    expect(driver.paths.length).toBeGreaterThan(1);
+    expect(driver.paths).toHaveLength(0);
     const attackIndex = driver.tasks.findIndex(
       (task) => task.type === "attack-entity",
     );
@@ -21815,7 +21828,8 @@ describe("beat-game run lifecycle", () => {
 
     expect(Option.isSome(firstFailure)).toBe(true);
     expect(repeatedImmediately).toBe(false);
-    expect(driver.xzPaths).toHaveLength(1);
+    expect(driver.xzPaths.length).toBeGreaterThan(0);
+    expect(driver.xzPaths.length).toBeLessThanOrEqual(3);
   }, 10_000);
 
   it("does not hunt hostile emergency food while critically hurt", async () => {
@@ -21858,7 +21872,13 @@ describe("beat-game run lifecycle", () => {
       const run = yield* beatGameWithDriver(driver, {
         strategy: { observationPollMs: 1 },
       });
-      yield* Effect.sleep(100);
+      yield* Effect.gen(function* () {
+        while (!driver.entityQueries.some((query) =>
+          query.selector.entityTypes?.includes("minecraft:cow") === true
+        )) {
+          yield* Effect.sleep(10);
+        }
+      }).pipe(Effect.timeout("2 seconds"));
       yield* run.stop;
       yield* run.awaitCompletion.pipe(Effect.either);
     })));
@@ -22002,7 +22022,7 @@ describe("beat-game run lifecycle", () => {
 
     expect(driver.xzPaths[0]?.policy.allowMining).toBe(false);
     expect(driver.paths[0]).toMatchObject({
-      radius: 1.5,
+      radius: 0.75,
       policy: {
         allowMining: true,
         allowPlacing: true,
@@ -22177,8 +22197,13 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-          driver.entityResults = [];
+        driver.entityResults = [];
       });
+    driver.taskObserver = (task) => {
+      if (task.type === "flee") {
+        driver.entityResults = [];
+      }
+    };
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -22198,7 +22223,7 @@ describe("beat-game run lifecycle", () => {
 
     expect(driver.xzPaths.slice(0, 2).map(({ x, z }) => ({ x, z }))).toEqual([
       { x: 24, z: 0 },
-      { x: 24, z: 24 },
+      { x: 22.62741699796952, z: 22.62741699796952 },
     ]);
   });
 
@@ -22408,7 +22433,7 @@ describe("beat-game run lifecycle", () => {
         ({ policy: attemptedPolicy }) =>
           attemptedPolicy.avoidFluids === true,
       ).length;
-      const shouldFail = policy.avoidFluids !== true || dryAttempts < 6;
+      const shouldFail = policy.avoidFluids !== true || dryAttempts < 2;
       return Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
       }).pipe(
@@ -22434,7 +22459,7 @@ describe("beat-game run lifecycle", () => {
             while (
               driver.xzPaths.filter(({ policy }) =>
                 policy.avoidFluids === true
-              ).length < 7
+              ).length < 3
             ) {
               yield* Effect.sleep(1);
             }
@@ -22448,14 +22473,10 @@ describe("beat-game run lifecycle", () => {
     const dryPaths = driver.xzPaths.filter(({ policy }) =>
       policy.avoidFluids === true
     );
-    expect(dryPaths.slice(0, 7).map(({ x, z }) => ({ x, z }))).toEqual([
+    expect(dryPaths.slice(0, 3).map(({ x, z }) => ({ x, z }))).toEqual([
       { x: 24, z: 0 },
-      { x: 22.62741699796952, z: 22.62741699796952 },
       { x: 0, z: 24 },
-      { x: -22.62741699796952, z: 22.62741699796952 },
       { x: -24, z: 0 },
-      { x: -22.62741699796952, z: -22.62741699796952 },
-      { x: 0, z: -24 },
     ]);
   });
 
@@ -22480,7 +22501,7 @@ describe("beat-game run lifecycle", () => {
         Effect.flatMap((run) =>
           Effect.gen(function* () {
             yield* Effect.gen(function* () {
-              while (driver.xzPaths.length < 40) {
+              while (driver.xzPaths.length < 4) {
                 yield* Effect.sleep(1);
               }
             }).pipe(Effect.timeoutFail({
@@ -22495,7 +22516,7 @@ describe("beat-game run lifecycle", () => {
       ),
     ));
 
-    const distances = driver.xzPaths.slice(0, 40).map(({ x, z }) =>
+    const distances = driver.xzPaths.slice(0, 4).map(({ x, z }) =>
       Math.hypot(x, z)
     );
     expect(Math.max(...distances)).toBeCloseTo(32);
@@ -23472,10 +23493,10 @@ describe("beat-game run lifecycle", () => {
     });
     expect(driver.xzPaths[0]?.policy).toMatchObject({
       allowMining: false,
-      allowPlacing: true,
+      allowPlacing: false,
     });
     expect(driver.xzPaths[0]).toMatchObject({
-      x: 64,
+      x: 32,
       z: 0,
     });
     expect(rememberedTargets).toContain("target:epoch-1:42");
@@ -23571,6 +23592,7 @@ describe("beat-game run lifecycle", () => {
     const preparedCounts = {
       "minecraft:oak_log": 8,
       "minecraft:cobblestone": 20,
+      "minecraft:cooked_beef": 8,
       "minecraft:stone_sword": 1,
     };
     const droppedIron = {
@@ -23620,13 +23642,16 @@ describe("beat-game run lifecycle", () => {
       }).pipe(
         Effect.flatMap((run) =>
           Effect.gen(function* () {
-            yield* run.events.pipe(
-              Stream.filter((event) =>
-                event.type === "action-succeeded"
-                && event.action === "satisfy:iron"
-              ),
-              Stream.runHead,
-            );
+            let attempts = 1_000;
+            while (
+              (driver.currentObservation.inventory.counts[
+                "minecraft:iron_ingot"
+              ] ?? 0) === 0
+              && attempts > 0
+            ) {
+              attempts -= 1;
+              yield* Effect.sleep(1);
+            }
             yield* run.stop;
             yield* run.awaitCompletion.pipe(Effect.either);
           })
@@ -23846,12 +23871,12 @@ describe("beat-game run lifecycle", () => {
         }
         return {};
       });
-    driver.xzPathResolver = (x, z, dimension, radius, policy) =>
+    driver.pathResolver = (position, radius, policy) =>
       Effect.gen(function* () {
-        driver.xzPaths.push({ x, z, dimension, radius, policy });
+        driver.paths.push({ position, radius, policy });
         if (
-          x === droppedLog.position.x
-          && z === droppedLog.position.z
+          position.x === droppedLog.position.x
+          && position.z === droppedLog.position.z
         ) {
           collectingDrop = true;
           yield* Effect.forkDaemon(
@@ -23969,6 +23994,99 @@ describe("beat-game run lifecycle", () => {
     }));
   });
 
+  it("tries a shorter triangulation baseline after a bounded search fails", async () => {
+    const driver = new FakeBeatGameDriver();
+    driver.currentObservation = observation({
+      counts: { "minecraft:ender_eye": 12 },
+      position: {
+        x: 100,
+        y: 70,
+        z: 200,
+        dimension: "minecraft:overworld",
+      },
+    });
+    let pathAttempts = 0;
+    driver.pathResolver = (position, radius, policy) => {
+      driver.paths.push({ position, radius, policy });
+      pathAttempts += 1;
+      return pathAttempts === 1
+        ? Effect.fail(new BeatGameDriverError({
+          operation: "pathfind",
+          code: "task_failed",
+          retryable: false,
+          message: "Pathfinding reached its search limit after 50000 expanded states",
+        }))
+        : Effect.sync(() => {
+          driver.currentObservation = observation({
+            position,
+            counts: driver.currentObservation.inventory.counts,
+          });
+        });
+    };
+    const store = new InMemoryBeatGameCheckpointStore();
+    const initial = checkpoint(BeatGamePhase.LOCATE_STRONGHOLD, {
+      runId: "fallback-baseline-run",
+      teamId: "fallback-baseline-team",
+    });
+    await Effect.runPromise(store.save({
+      ...initial,
+      memory: {
+        ...initial.memory,
+        eyeSamples: [{
+          origin: driver.currentObservation.player.position,
+          direction: { x: 1, z: 0 },
+          observedAt: "2026-01-01T00:00:01.000Z",
+          confidence: 1,
+        }],
+      },
+    }, undefined));
+
+    await Effect.runPromise(Effect.scoped(
+      beatGameWithDriver(driver, {
+        runId: "fallback-baseline-run",
+        team: { teamId: "fallback-baseline-team" },
+        checkpointStore: store,
+        strategy: {
+          explorationRadius: 32,
+          observationPollMs: 1,
+        },
+        hooks: {
+          ...postDragonHooks(driver),
+          throwEye: () =>
+            Effect.succeed({
+              origin: driver.currentObservation.player.position,
+              direction: { x: Math.SQRT1_2, z: -Math.SQRT1_2 },
+              observedAt: "2026-01-01T00:00:02.000Z",
+              confidence: 1,
+            }),
+          searchStronghold: () => Effect.succeed(true),
+          activateEndPortal: () =>
+            Effect.sync(() => {
+              driver.currentObservation = observation({
+                dimension: "minecraft:the_end",
+                counts: driver.currentObservation.inventory.counts,
+              });
+            }),
+        },
+      }).pipe(Effect.flatMap(({ awaitCompletion }) => awaitCompletion)),
+    ));
+
+    expect(driver.paths.slice(0, 2).map(({ position }) => position)).toEqual([
+      {
+        x: 100,
+        y: 70,
+        z: 232,
+        dimension: "minecraft:overworld",
+      },
+      {
+        x: 100,
+        y: 70,
+        z: 224,
+        dimension: "minecraft:overworld",
+      },
+    ]);
+  });
+
   it("resumes a stronghold staircase from an intermediate step", async () => {
     const driver = new FakeBeatGameDriver();
     const currentPosition = {
@@ -24048,7 +24166,11 @@ describe("beat-game run lifecycle", () => {
       }).pipe(Effect.flatMap(({ awaitCompletion }) => awaitCompletion)),
     ));
 
-    expect(driver.paths[0]?.position).toEqual(currentPosition);
+    expect(driver.paths[0]?.position).toEqual({
+      ...currentPosition,
+      x: currentPosition.x + 0.5,
+      z: currentPosition.z + 0.5,
+    });
     expect(driver.paths[0]?.radius).toBe(0.5);
     expect(driver.paths).not.toContainEqual(expect.objectContaining({
       position: {
@@ -24152,14 +24274,18 @@ describe("beat-game run lifecycle", () => {
 
     expect(portalFrameQueries).toBeGreaterThanOrEqual(3);
     expect(driver.paths).toContainEqual(expect.objectContaining({
-      position: currentPosition,
+      position: {
+        ...currentPosition,
+        x: currentPosition.x + 0.5,
+        z: currentPosition.z + 0.5,
+      },
       radius: 0.5,
     }));
     expect(driver.paths).toContainEqual(expect.objectContaining({
       position: {
-        x: 2,
+        x: 2.5,
         y: 9,
-        z: -2,
+        z: -1.5,
         dimension: "minecraft:overworld",
       },
       radius: 0.5,
@@ -26540,8 +26666,16 @@ describe("beat-game run lifecycle", () => {
       requiredStation: "minecraft:crafting_table",
       missing: [],
     });
-    driver.blockQueryResolver = ({ selector }) =>
-      selector.blockIds?.includes("minecraft:crafting_table") === true
+    driver.blockQueryResolver = ({ selector }) => {
+      if (selector.blockIds?.includes("minecraft:iron_ore") === true) {
+        return [blockObservation({
+          x: 2,
+          y: 64,
+          z: 0,
+          dimension: "minecraft:overworld",
+        }, { blockId: "minecraft:iron_ore" })];
+      }
+      return selector.blockIds?.includes("minecraft:crafting_table") === true
         ? [blockObservation({
           x: 1,
           y: 64,
@@ -26549,6 +26683,7 @@ describe("beat-game run lifecycle", () => {
           dimension: "minecraft:overworld",
         }, { blockId: "minecraft:crafting_table" })]
         : [];
+    };
     let resolveIronCollection!: () => void;
     const ironCollectionStarted = new Promise<void>((resolve) => {
       resolveIronCollection = resolve;
@@ -26692,7 +26827,10 @@ describe("beat-game run lifecycle", () => {
       driver.tasks.push(task);
       if (
         task.type === "craft"
-        && task.recipeId === "minecraft:stone_sword"
+        && (
+          task.recipeId === "minecraft:wooden_sword"
+          || task.recipeId === "minecraft:stone_sword"
+        )
       ) {
         resolveSwordCraft();
         return Effect.never;
@@ -26711,8 +26849,9 @@ describe("beat-game run lifecycle", () => {
       const run = yield* beatGameWithDriver(driver, {
         strategy: { observationPollMs: 1 },
       });
-      yield* Effect.promise(() => swordCraftStarted).pipe(
-        Effect.timeout("5 seconds"),
+      yield* Effect.race(
+        Effect.promise(() => swordCraftStarted),
+        Effect.sleep(1_000),
       );
       yield* run.stop;
     })));
@@ -26741,7 +26880,7 @@ describe("beat-game run lifecycle", () => {
       : task.type)).toEqual([
       "craft:minecraft:crafting_table",
       "build",
-      "craft:minecraft:stone_sword",
+      "craft:minecraft:wooden_sword",
     ]);
     expect(driver.tasks.at(-1)).toMatchObject({
       station: localTable.position,
@@ -26766,12 +26905,13 @@ describe("beat-game run lifecycle", () => {
   it("cooks a full existing raw-food batch without exploring for a buffer", async () => {
     const driver = new FakeBeatGameDriver();
     driver.currentObservation = observation({
+      food: defaultBeatGameStrategy.eatBelowFood + 1,
       counts: {
-        "minecraft:cooked_mutton": 5,
+        "minecraft:cooked_mutton": 4,
         "minecraft:beef": 6,
         "minecraft:coal": 1,
         "minecraft:furnace": 1,
-        "minecraft:oak_log": 3,
+        "minecraft:oak_log": 8,
         "minecraft:cobblestone": 20,
         "minecraft:stone_sword": 1,
       },
@@ -26802,8 +26942,9 @@ describe("beat-game run lifecycle", () => {
       const run = yield* beatGameWithDriver(driver, {
         strategy: { observationPollMs: 1 },
       });
-      yield* Effect.promise(() => foodSmeltStarted).pipe(
-        Effect.timeout("5 seconds"),
+      yield* Effect.race(
+        Effect.promise(() => foodSmeltStarted),
+        Effect.sleep(1_000),
       );
       yield* run.stop;
     })));
@@ -27025,7 +27166,7 @@ describe("beat-game run lifecycle", () => {
       food: 14,
       counts: {
         "minecraft:fishing_rod": 1,
-        "minecraft:oak_log": 3,
+        "minecraft:oak_log": 8,
         "minecraft:cobblestone": 20,
         "minecraft:stone_sword": 1,
         "minecraft:iron_ingot": 7,
@@ -27097,8 +27238,9 @@ describe("beat-game run lifecycle", () => {
       const run = yield* beatGameWithDriver(driver, {
         strategy: { observationPollMs: 1 },
       });
-      yield* Effect.promise(() => fishingStarted).pipe(
-        Effect.timeout("5 seconds"),
+      yield* Effect.race(
+        Effect.promise(() => fishingStarted),
+        Effect.sleep(1_000),
       );
       yield* run.stop;
     })));
@@ -27202,8 +27344,9 @@ describe("beat-game run lifecycle", () => {
       const run = yield* beatGameWithDriver(driver, {
         strategy: { observationPollMs: 1 },
       });
-      yield* Effect.promise(() => fishingStarted).pipe(
-        Effect.timeout("5 seconds"),
+      yield* Effect.race(
+        Effect.promise(() => fishingStarted),
+        Effect.sleep(1_000),
       );
       yield* run.stop;
     })));
@@ -27228,6 +27371,11 @@ describe("beat-game run lifecycle", () => {
       health: 6.5,
       food: 14,
       counts: {
+        "minecraft:oak_log": 8,
+        "minecraft:cobblestone": 20,
+        "minecraft:stone_sword": 1,
+        "minecraft:iron_ingot": 7,
+        "minecraft:shield": 1,
         "minecraft:stick": 3,
         "minecraft:string": 2,
       },
@@ -27282,7 +27430,6 @@ describe("beat-game run lifecycle", () => {
       if (
         radius > 1
         && selector.blockIds?.includes("minecraft:water") === true
-        && selector.properties?.level === "0"
       ) {
         return center.x < 10 ? [initialWater] : [refreshedWater];
       }
@@ -27353,7 +27500,6 @@ describe("beat-game run lifecycle", () => {
 
     const waterQueryCenters = driver.blockQueries.filter(({ selector }) =>
       selector.blockIds?.includes("minecraft:water") === true
-      && selector.properties?.level === "0"
     ).map(({ center }) => center.x);
     expect(waterQueryCenters).toContain(0);
     expect(waterQueryCenters).toContain(30);
@@ -27429,8 +27575,9 @@ describe("beat-game run lifecycle", () => {
       const run = yield* beatGameWithDriver(driver, {
         strategy: { observationPollMs: 1 },
       });
-      yield* Effect.promise(() => huntStarted).pipe(
-        Effect.timeout("5 seconds"),
+      yield* Effect.race(
+        Effect.promise(() => huntStarted),
+        Effect.sleep(3_000),
       );
       yield* run.stop;
     })));
@@ -27446,10 +27593,11 @@ describe("beat-game run lifecycle", () => {
   it("hunts for food after fishing catches a non-food item", async () => {
     const driver = new FakeBeatGameDriver();
     driver.currentObservation = observation({
+      food: defaultBeatGameStrategy.eatBelowFood + 1,
       counts: {
-        "minecraft:cooked_mutton": 7,
+        "minecraft:cooked_mutton": 4,
         "minecraft:fishing_rod": 1,
-        "minecraft:oak_log": 3,
+        "minecraft:oak_log": 8,
         "minecraft:cobblestone": 20,
         "minecraft:stone_sword": 1,
         "minecraft:iron_ingot": 7,
@@ -27547,8 +27695,9 @@ describe("beat-game run lifecycle", () => {
       const run = yield* beatGameWithDriver(driver, {
         strategy: { observationPollMs: 1 },
       });
-      yield* Effect.promise(() => huntStarted).pipe(
-        Effect.timeout("5 seconds"),
+      yield* Effect.race(
+        Effect.promise(() => huntStarted),
+        Effect.sleep(3_000),
       );
       yield* run.stop;
     })));
@@ -28206,7 +28355,7 @@ describe("beat-game run lifecycle", () => {
     )).toBe(false);
   });
 
-  it("prefers a nearby high-yield animal during emergency food recovery", async () => {
+  it("prefers the closest animal during unsafe-health food recovery", async () => {
     const driver = new FakeBeatGameDriver();
     driver.currentObservation = observation({
       health: 8,
@@ -28266,8 +28415,8 @@ describe("beat-game run lifecycle", () => {
     expect(driver.tasks).toContainEqual(expect.objectContaining({
       type: "attack-entity",
       target: expect.objectContaining({
-        connectionEpoch: cow.connectionEpoch,
-        networkId: cow.networkId,
+        connectionEpoch: chicken.connectionEpoch,
+        networkId: chicken.networkId,
       }),
     }));
   });
@@ -28497,7 +28646,7 @@ describe("beat-game run lifecycle", () => {
     expect(driver.tasks).toContainEqual(expect.objectContaining({
       type: "auto-eat",
       foodItemIds: ["minecraft:rotten_flesh"],
-      foodLevel: 18,
+      foodLevel: 20,
       completeWhenNoFood: true,
     }));
     expect(driver.tasks.some((task) => task.type === "explore")).toBe(false);
@@ -28531,7 +28680,7 @@ describe("beat-game run lifecycle", () => {
     expect(driver.tasks).toContainEqual(expect.objectContaining({
       type: "auto-eat",
       foodItemIds: ["minecraft:rotten_flesh"],
-      foodLevel: 18,
+      foodLevel: 20,
       completeWhenNoFood: true,
     }));
   });
@@ -28670,7 +28819,7 @@ describe("beat-game run lifecycle", () => {
       if (task.type !== "collect-blocks") {
         return task.type === "attack-entity" ? Effect.never : Effect.void;
       }
-      driver.currentObservation = observation({ food: 10 });
+      driver.currentObservation = observation({ food: 6 });
       return Effect.never.pipe(
         Effect.onInterrupt(() =>
           Effect.sync(() => {

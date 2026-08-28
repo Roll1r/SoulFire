@@ -27,6 +27,8 @@ import com.soulfiremc.server.bot.BotConnection;
 import net.minecraft.client.multiplayer.ClientPacketListener;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.network.protocol.game.ClientboundForgetLevelChunkPacket;
+import net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket;
 import net.minecraft.network.protocol.game.ClientboundOpenScreenPacket;
 import net.minecraft.network.protocol.game.ClientboundSetHealthPacket;
 import org.spongepowered.asm.mixin.Mixin;
@@ -36,6 +38,22 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(ClientPacketListener.class)
 public class MixinClientPacketListener {
+  @Inject(method = "handleLevelChunkWithLight", at = @At("RETURN"))
+  private void onLevelChunkWithLight(
+    ClientboundLevelChunkWithLightPacket packet,
+    CallbackInfo ci
+  ) {
+    BotConnection.current().navigationWorldState().markChanged();
+  }
+
+  @Inject(method = "handleForgetLevelChunk", at = @At("RETURN"))
+  private void onForgetLevelChunk(
+    ClientboundForgetLevelChunkPacket packet,
+    CallbackInfo ci
+  ) {
+    BotConnection.current().navigationWorldState().markChanged();
+  }
+
   @WrapOperation(method = "handlePlayerCombatKill",
     at = @At(value = "INVOKE", target = "Lnet/minecraft/client/player/LocalPlayer;shouldShowDeathScreen()Z"))
   private boolean shouldRespawnEvent(LocalPlayer instance, Operation<Boolean> original) {

@@ -67,4 +67,16 @@ public final class UnreachableGoalException extends IllegalStateException {
         + " consecutive attempts"
     );
   }
+
+  public static UnreachableGoalException worldDataTimeout(
+    long snapshotRevision,
+    int unavailableChunks
+  ) {
+    return new UnreachableGoalException(
+      "Timed out waiting for "
+        + unavailableChunks
+        + " navigation chunks after world revision "
+        + snapshotRevision
+    );
+  }
 }

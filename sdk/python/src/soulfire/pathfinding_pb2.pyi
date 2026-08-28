@@ -31,6 +31,7 @@ class PathPlanStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     PATH_PLAN_STATUS_SEARCH_EXPIRED: _ClassVar[PathPlanStatus]
     PATH_PLAN_STATUS_CANCELLED: _ClassVar[PathPlanStatus]
     PATH_PLAN_STATUS_QUALITY_BOUND_NOT_MET: _ClassVar[PathPlanStatus]
+    PATH_PLAN_STATUS_WORLD_DATA_PENDING: _ClassVar[PathPlanStatus]
 
 class PathFrontierReason(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
@@ -53,6 +54,7 @@ PATH_PLAN_STATUS_UNREACHABLE: PathPlanStatus
 PATH_PLAN_STATUS_SEARCH_EXPIRED: PathPlanStatus
 PATH_PLAN_STATUS_CANCELLED: PathPlanStatus
 PATH_PLAN_STATUS_QUALITY_BOUND_NOT_MET: PathPlanStatus
+PATH_PLAN_STATUS_WORLD_DATA_PENDING: PathPlanStatus
 PATH_FRONTIER_REASON_UNSPECIFIED: PathFrontierReason
 PATH_FRONTIER_REASON_NONE: PathFrontierReason
 PATH_FRONTIER_REASON_LEVEL_BOUNDARY: PathFrontierReason
@@ -75,6 +77,14 @@ class PathRouteCost(_message.Message):
     optimization_cost: float
     def __init__(self, expected_damage: _Optional[float] = ..., irreversible_changes: _Optional[int] = ..., placed_blocks: _Optional[int] = ..., broken_blocks: _Optional[int] = ..., duration_cost: _Optional[float] = ..., optimization_cost: _Optional[float] = ...) -> None: ...
 
+class PathChunk(_message.Message):
+    __slots__ = ("x", "z")
+    X_FIELD_NUMBER: _ClassVar[int]
+    Z_FIELD_NUMBER: _ClassVar[int]
+    x: int
+    z: int
+    def __init__(self, x: _Optional[int] = ..., z: _Optional[int] = ...) -> None: ...
+
 class PathStep(_message.Message):
     __slots__ = ("index", "kind", "position", "description", "maximum_ticks")
     INDEX_FIELD_NUMBER: _ClassVar[int]
@@ -90,7 +100,7 @@ class PathStep(_message.Message):
     def __init__(self, index: _Optional[int] = ..., kind: _Optional[_Union[PathStepKind, str]] = ..., position: _Optional[_Union[_common_pb2.BlockPosition, _Mapping]] = ..., description: _Optional[str] = ..., maximum_ticks: _Optional[int] = ...) -> None: ...
 
 class PathPlan(_message.Message):
-    __slots__ = ("status", "start", "steps", "blocks_to_break", "blocks_to_place", "maximum_ticks", "partial_reason", "search_mode", "quality_bound", "route_cost", "expanded_states", "generated_transitions", "search_elapsed_millis", "frontier_reason", "initial_epsilon", "final_epsilon", "repair_iterations", "repaired_inconsistent_states", "incumbent_improvements", "required_quality_bound")
+    __slots__ = ("status", "start", "steps", "blocks_to_break", "blocks_to_place", "maximum_ticks", "partial_reason", "search_mode", "quality_bound", "route_cost", "expanded_states", "generated_transitions", "search_elapsed_millis", "frontier_reason", "initial_epsilon", "final_epsilon", "repair_iterations", "repaired_inconsistent_states", "incumbent_improvements", "required_quality_bound", "world_revision", "unavailable_chunks")
     STATUS_FIELD_NUMBER: _ClassVar[int]
     START_FIELD_NUMBER: _ClassVar[int]
     STEPS_FIELD_NUMBER: _ClassVar[int]
@@ -111,6 +121,8 @@ class PathPlan(_message.Message):
     REPAIRED_INCONSISTENT_STATES_FIELD_NUMBER: _ClassVar[int]
     INCUMBENT_IMPROVEMENTS_FIELD_NUMBER: _ClassVar[int]
     REQUIRED_QUALITY_BOUND_FIELD_NUMBER: _ClassVar[int]
+    WORLD_REVISION_FIELD_NUMBER: _ClassVar[int]
+    UNAVAILABLE_CHUNKS_FIELD_NUMBER: _ClassVar[int]
     status: PathPlanStatus
     start: _common_pb2.BlockPosition
     steps: _containers.RepeatedCompositeFieldContainer[PathStep]
@@ -131,7 +143,9 @@ class PathPlan(_message.Message):
     repaired_inconsistent_states: int
     incumbent_improvements: int
     required_quality_bound: float
-    def __init__(self, status: _Optional[_Union[PathPlanStatus, str]] = ..., start: _Optional[_Union[_common_pb2.BlockPosition, _Mapping]] = ..., steps: _Optional[_Iterable[_Union[PathStep, _Mapping]]] = ..., blocks_to_break: _Optional[_Iterable[_Union[_common_pb2.BlockPosition, _Mapping]]] = ..., blocks_to_place: _Optional[_Iterable[_Union[_common_pb2.BlockPosition, _Mapping]]] = ..., maximum_ticks: _Optional[int] = ..., partial_reason: _Optional[str] = ..., search_mode: _Optional[_Union[_bot_live_pb2.PathfindSearchMode, str]] = ..., quality_bound: _Optional[float] = ..., route_cost: _Optional[_Union[PathRouteCost, _Mapping]] = ..., expanded_states: _Optional[int] = ..., generated_transitions: _Optional[int] = ..., search_elapsed_millis: _Optional[int] = ..., frontier_reason: _Optional[_Union[PathFrontierReason, str]] = ..., initial_epsilon: _Optional[float] = ..., final_epsilon: _Optional[float] = ..., repair_iterations: _Optional[int] = ..., repaired_inconsistent_states: _Optional[int] = ..., incumbent_improvements: _Optional[int] = ..., required_quality_bound: _Optional[float] = ...) -> None: ...
+    world_revision: int
+    unavailable_chunks: _containers.RepeatedCompositeFieldContainer[PathChunk]
+    def __init__(self, status: _Optional[_Union[PathPlanStatus, str]] = ..., start: _Optional[_Union[_common_pb2.BlockPosition, _Mapping]] = ..., steps: _Optional[_Iterable[_Union[PathStep, _Mapping]]] = ..., blocks_to_break: _Optional[_Iterable[_Union[_common_pb2.BlockPosition, _Mapping]]] = ..., blocks_to_place: _Optional[_Iterable[_Union[_common_pb2.BlockPosition, _Mapping]]] = ..., maximum_ticks: _Optional[int] = ..., partial_reason: _Optional[str] = ..., search_mode: _Optional[_Union[_bot_live_pb2.PathfindSearchMode, str]] = ..., quality_bound: _Optional[float] = ..., route_cost: _Optional[_Union[PathRouteCost, _Mapping]] = ..., expanded_states: _Optional[int] = ..., generated_transitions: _Optional[int] = ..., search_elapsed_millis: _Optional[int] = ..., frontier_reason: _Optional[_Union[PathFrontierReason, str]] = ..., initial_epsilon: _Optional[float] = ..., final_epsilon: _Optional[float] = ..., repair_iterations: _Optional[int] = ..., repaired_inconsistent_states: _Optional[int] = ..., incumbent_improvements: _Optional[int] = ..., required_quality_bound: _Optional[float] = ..., world_revision: _Optional[int] = ..., unavailable_chunks: _Optional[_Iterable[_Union[PathChunk, _Mapping]]] = ...) -> None: ...
 
 class PlanPathRequest(_message.Message):
     __slots__ = ("instance_id", "bot_id", "goal", "options", "include_descriptions")

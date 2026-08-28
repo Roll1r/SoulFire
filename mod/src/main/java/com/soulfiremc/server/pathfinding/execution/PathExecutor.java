@@ -58,6 +58,7 @@ public final class PathExecutor implements ControlTask {
   private static final int MAX_CONSECUTIVE_STALLED_ACTIONS = 5;
   private static final int PRECONDITION_LOOKAHEAD_ACTIONS = 4;
   private static final int PARTIAL_ROUTE_PREFETCH_ACTIONS = 8;
+  private static final int WORLD_DATA_WAIT_TIMEOUT_TICKS = 20 * 30;
   private final Queue<WorldAction> worldActionQueue = new LinkedBlockingQueue<>();
   private final Set<SFVec3i> completedBlockBreaks = new HashSet<>();
   private final BotConnection connection;
@@ -73,6 +74,8 @@ public final class PathExecutor implements ControlTask {
   private volatile CompletableFuture<PlannedRoute> prefetchedRoute;
   private volatile SFVec3i prefetchedRouteStart;
   private volatile SFVec3i partialRouteEndpoint;
+  private volatile RouteFinder.RouteSearchMetadata partialRouteMetadata;
+  private volatile WorldDataWait worldDataWait;
   private int totalMovements;
   private int ticks;
   private int movementNumber = 1;
@@ -144,7 +147,11 @@ public final class PathExecutor implements ControlTask {
   }
 
   public Progress progress() {
-    return new Progress(awaitingPath, movementNumber, totalMovements);
+    return new Progress(
+      awaitingPath || worldDataWait != null,
+      movementNumber,
+      totalMovements
+    );
   }
 
   public Set<SFVec3i> completedBlockBreaks() {
@@ -157,6 +164,7 @@ public final class PathExecutor implements ControlTask {
     }
 
     awaitingPath = false;
+    worldDataWait = null;
     cancelPrefetch();
     stopActiveBlockBreak();
     worldActionQueue.clear();
@@ -190,8 +198,10 @@ public final class PathExecutor implements ControlTask {
     }
 
     awaitingPath = true;
+    worldDataWait = null;
     cancelPrefetch();
     partialRouteEndpoint = null;
+    partialRouteMetadata = null;
     stopActiveBlockBreak();
     worldActionQueue.clear();
     connection.controlState().resetAll();
@@ -251,7 +261,7 @@ public final class PathExecutor implements ControlTask {
 
             log.info("Found path with {} actions!", newActions.size());
 
-            preparePath(newActions, null);
+            preparePath(newActions, null, null);
           };
           case RouteFinder.NoRouteFoundResult _ ->
             throw UnreachableGoalException.noRoute();
@@ -268,10 +278,13 @@ public final class PathExecutor implements ControlTask {
             preparePartialPath(
               partialRouteResult.actions(),
               partialRouteResult.endpoint(),
+              partialRouteResult.metadata(),
               routeSearchResult.start(),
               isInitial
             );
           };
+          case RouteFinder.WorldDataPendingResult pending -> () ->
+            beginWorldDataWait(pending.metadata());
           case RouteFinder.SearchInterruptedResult _ -> throw new IllegalStateException("Route search was interrupted before finding a route!");
         });
   }
@@ -279,6 +292,7 @@ public final class PathExecutor implements ControlTask {
   private void preparePartialPath(
     List<WorldAction> actions,
     SFVec3i routeEndpoint,
+    RouteFinder.RouteSearchMetadata metadata,
     SFVec3i start,
     boolean isInitial
   ) {
@@ -295,20 +309,23 @@ public final class PathExecutor implements ControlTask {
       repositionIfNeeded(actions, start, isInitial, findPath)
     );
     log.info("Found path with {} actions!", newActions.size());
-    preparePath(newActions, routeEndpoint);
+    preparePath(newActions, routeEndpoint, metadata);
   }
 
   public void preparePath(List<WorldAction> worldActions) {
-    preparePath(worldActions, null);
+    preparePath(worldActions, null, null);
   }
 
   private void preparePath(
     List<WorldAction> worldActions,
-    SFVec3i routeEndpoint
+    SFVec3i routeEndpoint,
+    RouteFinder.RouteSearchMetadata metadata
   ) {
     this.worldActionQueue.clear();
     this.worldActionQueue.addAll(worldActions);
     this.partialRouteEndpoint = routeEndpoint;
+    this.partialRouteMetadata = metadata;
+    this.worldDataWait = null;
     this.totalMovements = worldActions.size();
     this.ticks = 0;
     this.movementNumber = 1;
@@ -318,6 +335,12 @@ public final class PathExecutor implements ControlTask {
   @Override
   public void tick() {
     if (isDone()) {
+      return;
+    }
+
+    var wait = worldDataWait;
+    if (wait != null) {
+      continueWorldDataWait(wait);
       return;
     }
 
@@ -468,7 +491,7 @@ public final class PathExecutor implements ControlTask {
 
   @Override
   public void onResumed() {
-    if (!isDone() && !awaitingPath) {
+    if (!isDone() && !awaitingPath && worldDataWait == null) {
       log.info("Resuming path execution, recalculating path...");
       recalculatePath();
     }
@@ -481,6 +504,7 @@ public final class PathExecutor implements ControlTask {
     }
 
     awaitingPath = false;
+    worldDataWait = null;
     cancelPrefetch();
     stopActiveBlockBreak();
     worldActionQueue.clear();
@@ -502,11 +526,13 @@ public final class PathExecutor implements ControlTask {
   public void recalculatePath() {
     cancelPrefetch();
     partialRouteEndpoint = null;
+    partialRouteMetadata = null;
     submitForPathCalculation(false);
   }
 
   private void maybePrefetchPartialRoute() {
     var endpoint = partialRouteEndpoint;
+    var metadata = partialRouteMetadata;
     if (
       endpoint == null
         || prefetchedRoute != null
@@ -515,6 +541,14 @@ public final class PathExecutor implements ControlTask {
         action instanceof BlockBreakAction
           || action instanceof BlockPlaceAction
           || action instanceof JumpAndPlaceBelowAction)
+    ) {
+      return;
+    }
+    if (
+      metadata != null
+        && metadata.frontierReason()
+          == RouteFinder.FrontierReason.LEVEL_BOUNDARY
+        && !findPath.hasNewWorldData(metadata)
     ) {
       return;
     }
@@ -527,6 +561,15 @@ public final class PathExecutor implements ControlTask {
   private void continuePartialRoute() {
     var future = prefetchedRoute;
     if (future == null) {
+      var metadata = partialRouteMetadata;
+      if (
+        metadata != null
+          && metadata.frontierReason()
+            == RouteFinder.FrontierReason.LEVEL_BOUNDARY
+      ) {
+        beginWorldDataWait(metadata);
+        return;
+      }
       log.info("Calculating the next partial route...");
       recalculatePath();
       return;
@@ -554,6 +597,7 @@ public final class PathExecutor implements ControlTask {
     prefetchedRoute = null;
     prefetchedRouteStart = null;
     partialRouteEndpoint = null;
+    partialRouteMetadata = null;
     awaitingPath = false;
 
     var playerStart = SFVec3i.fromInt(
@@ -570,7 +614,33 @@ public final class PathExecutor implements ControlTask {
     }
 
     try {
-      acceptPlannedRoute(future.join(), false);
+      var route = future.join();
+      if (
+        route.routeSearchResult()
+          instanceof RouteFinder.WorldDataPendingResult pending
+      ) {
+        beginWorldDataWait(pending.metadata());
+        return;
+      }
+      if (
+        !(route.routeSearchResult()
+          instanceof RouteFinder.FoundRouteResult)
+          && !(route.routeSearchResult()
+          instanceof RouteFinder.PartialRouteResult)
+      ) {
+        log.debug(
+          "Discarding advisory prefetch result {} and searching from live state",
+          route.routeSearchResult().getClass().getSimpleName()
+        );
+        submitForPathCalculation(false);
+        return;
+      }
+      if (findPath.isStale(route.routeSearchResult().metadata())) {
+        log.debug("Discarding a prefetched route from an old world revision");
+        submitForPathCalculation(false);
+        return;
+      }
+      acceptPlannedRoute(route, false);
     } catch (Throwable t) {
       log.warn("The prefetched route failed; calculating from live state", t);
       submitForPathCalculation(false);
@@ -583,6 +653,62 @@ public final class PathExecutor implements ControlTask {
     prefetchedRouteStart = null;
     if (future != null) {
       future.cancel(true);
+    }
+  }
+
+  private void beginWorldDataWait(
+    RouteFinder.RouteSearchMetadata metadata
+  ) {
+    if (metadata.unavailableChunks().isEmpty()) {
+      throw new IllegalStateException(
+        "A world-data-pending route did not report missing chunks"
+      );
+    }
+    cancelPrefetch();
+    partialRouteEndpoint = null;
+    partialRouteMetadata = null;
+    stopActiveBlockBreak();
+    worldActionQueue.clear();
+    connection.controlState().resetAll();
+    awaitingPath = false;
+    worldDataWait = new WorldDataWait(
+      metadata,
+      new WorldDataWaitGuard(
+        metadata.worldRevision(),
+        WORLD_DATA_WAIT_TIMEOUT_TICKS
+      )
+    );
+    log.info(
+      "Waiting for {} navigation chunks after world revision {}",
+      metadata.unavailableChunks().size(),
+      metadata.worldRevision()
+    );
+  }
+
+  private void continueWorldDataWait(WorldDataWait wait) {
+    if (wait != worldDataWait) {
+      return;
+    }
+    var decision = wait.guard().tick(
+      findPath.currentWorldRevision(),
+      findPath.areChunksLoaded(wait.metadata())
+    );
+    switch (decision) {
+      case WAIT -> connection.controlState().resetAll();
+      case RETRY -> {
+        log.info("Navigation world data changed; retrying from live state");
+        worldDataWait = null;
+        submitForPathCalculation(false);
+      }
+      case TIMED_OUT -> {
+        worldDataWait = null;
+        pathCompletionFuture.completeExceptionally(
+          UnreachableGoalException.worldDataTimeout(
+            wait.metadata().worldRevision(),
+            wait.metadata().unavailableChunks().size()
+          )
+        );
+      }
     }
   }
 
@@ -647,9 +773,22 @@ public final class PathExecutor implements ControlTask {
       }
 
       var routeFinder =
-        new RouteFinder(new MinecraftGraph(level, inventory, pathConstraint), goalScorer, bot.scheduler());
+        new RouteFinder(
+          new MinecraftGraph(
+            level,
+            inventory,
+            pathConstraint,
+            bot.navigationWorldState().revision(level)
+          ),
+          goalScorer,
+          bot.scheduler()
+        );
 
-      log.info("Starting calculations at: {}", start.formatXYZ());
+      log.info(
+        "Starting calculations at {} for goal {}",
+        start.formatXYZ(),
+        goalScorer
+      );
       var routeStart = start;
       var routeSearchResultFuture = routeFinder.findRouteFuture(NodeState.forInfo(start, inventory));
       bot.shutdownHooks().add(() -> routeSearchResultFuture.cancel(true));
@@ -666,6 +805,37 @@ public final class PathExecutor implements ControlTask {
       });
       return plannedRouteFuture;
     }
+
+    public long currentWorldRevision() {
+      var level = Objects.requireNonNull(
+        bot.minecraft().level,
+        "Bot level is not available"
+      );
+      return bot.navigationWorldState().revision(level);
+    }
+
+    public boolean areChunksLoaded(
+      RouteFinder.RouteSearchMetadata metadata
+    ) {
+      var level = Objects.requireNonNull(
+        bot.minecraft().level,
+        "Bot level is not available"
+      );
+      return metadata.unavailableChunks().stream().allMatch(chunk ->
+        level.getChunkSource().hasChunk(chunk.x(), chunk.z())
+      );
+    }
+
+    public boolean hasNewWorldData(
+      RouteFinder.RouteSearchMetadata metadata
+    ) {
+      return currentWorldRevision() > metadata.worldRevision()
+        && areChunksLoaded(metadata);
+    }
+
+    public boolean isStale(RouteFinder.RouteSearchMetadata metadata) {
+      return currentWorldRevision() != metadata.worldRevision();
+    }
   }
 
   public record PlannedRoute(
@@ -674,6 +844,46 @@ public final class PathExecutor implements ControlTask {
   ) {}
 
   public record Progress(boolean planning, int currentMovement, int totalMovements) {
+  }
+
+  private record WorldDataWait(
+    RouteFinder.RouteSearchMetadata metadata,
+    WorldDataWaitGuard guard
+  ) {}
+
+  static final class WorldDataWaitGuard {
+    private final long snapshotRevision;
+    private final int maximumWaitTicks;
+    private int waitedTicks;
+
+    WorldDataWaitGuard(long snapshotRevision, int maximumWaitTicks) {
+      if (maximumWaitTicks < 1) {
+        throw new IllegalArgumentException(
+          "maximumWaitTicks must be positive"
+        );
+      }
+      this.snapshotRevision = snapshotRevision;
+      this.maximumWaitTicks = maximumWaitTicks;
+    }
+
+    WorldDataWaitDecision tick(
+      long currentRevision,
+      boolean dependenciesLoaded
+    ) {
+      if (currentRevision > snapshotRevision && dependenciesLoaded) {
+        return WorldDataWaitDecision.RETRY;
+      }
+      waitedTicks++;
+      return waitedTicks >= maximumWaitTicks
+        ? WorldDataWaitDecision.TIMED_OUT
+        : WorldDataWaitDecision.WAIT;
+    }
+  }
+
+  enum WorldDataWaitDecision {
+    WAIT,
+    RETRY,
+    TIMED_OUT
   }
 
   static final class ActionStallGuard {

@@ -71,6 +71,7 @@ import {
 } from "./liquids.js";
 import {
   BEAT_GAME_CHECKPOINT_SCHEMA_VERSION,
+  BeatGameDurableSkillKind,
   BeatGamePhase,
   BeatGameRunStatus,
   BeatGameTeamRole,
@@ -89,12 +90,14 @@ import {
   type BeatGameObservation,
   type BeatGameOptions,
   type BeatGamePlannerState,
+  type BeatGamePortalWorkspace,
   type BeatGameResult,
   type BeatGamePosition,
   type BeatGameSnapshot,
   type BeatGameStrategy,
   type BeatGameStrategyOptions,
   type BeatGameTeamRunOptions,
+  type BeatGameWorldPlace,
 } from "./model.js";
 import {
   decideBeatGameAction,
@@ -119,6 +122,14 @@ import {
   URGENT_HUNGER_FOOD_LEVEL,
   requirementCount,
 } from "./requirements.js";
+import {
+  advanceDurableSkill,
+  completeDurableSkill,
+  latestResumablePortalWorkspace,
+  startOrResumeDurableSkill,
+  startDurableSkillIfIdle,
+  suspendDurableSkill,
+} from "./skills.js";
 import {
   assertValidCheckpoint,
   InMemoryBeatGameCheckpointStore,
@@ -676,6 +687,7 @@ const CAUGHT_MELEE_COMMIT_MINIMUM_HEALTH = MELEE_DISENGAGE_HEALTH;
 const THREAT_ESCAPE_SAFE_DISTANCE = 24;
 const SINGLE_THREAT_MAXIMUM_ESCAPES = 4;
 const DURABLE_DEATH_RECOVERY_WINDOW_MS = 8 * 60 * 60 * 1_000;
+const DROPPED_ITEM_LOADED_LIFETIME_MS = 5 * 60 * 1_000;
 const CHAINED_DEATH_RESPAWN_BASE_COOLDOWN_MS = 60_000;
 const CHAINED_DEATH_RESPAWN_MAXIMUM_COOLDOWN_MS = 8 * 60_000;
 const RENEWABLE_DEATH_RECOVERY_MAX_DISTANCE = 64;
@@ -747,6 +759,7 @@ interface PendingDeath {
   readonly observedAt: string;
   readonly position: BeatGamePosition;
   readonly recoverItems: boolean;
+  readonly observedLive?: boolean;
   readonly inventoryCounts?: Readonly<Record<string, number>>;
   readonly message?: string;
 }
@@ -1222,6 +1235,10 @@ function runLoop(
       yield* runDecisionWithRetry(state, decision, observation).pipe(
         Effect.ensuring(releaseActionClaim(state, claim)),
       );
+      yield* Effect.sleep(Math.max(
+        1,
+        Math.min(MINIMUM_RECOVERY_POLL_MS, state.strategy.observationPollMs),
+      ));
     }
     return yield* Effect.die(
       new Error("The beat-game loop ended without a terminal phase"),
@@ -1244,22 +1261,45 @@ function runNightShelterAction(
   observation: BeatGameObservation,
 ): Effect.Effect<void, BeatGameError | BeatGameDriverError> {
   return Effect.gen(function* () {
-    yield* persist(state, (checkpoint) => ({
-      ...checkpoint,
-      planner: {
-        ...checkpoint.planner,
-        currentAction: NIGHT_SHELTER_ACTION,
-        currentActionId: crypto.randomUUID(),
-        retryCount: 0,
-        updatedAt: new Date().toISOString(),
-      },
-    }));
+    yield* persist(state, (checkpoint) => {
+      const now = new Date().toISOString();
+      const withSkill = startDurableSkillIfIdle(
+        checkpoint,
+        BeatGameDurableSkillKind.PROTECTED_STRUCTURE,
+        NIGHT_SHELTER_ACTION,
+        now,
+      );
+      return {
+        ...withSkill,
+        planner: {
+          ...withSkill.planner,
+          currentAction: NIGHT_SHELTER_ACTION,
+          currentActionId: crypto.randomUUID(),
+          retryCount: 0,
+          updatedAt: now,
+        },
+      };
+    });
     yield* emit(state, {
       type: "action-started",
       action: NIGHT_SHELTER_ACTION,
       attempt: 1,
     });
     const reachedMorning = yield* shelterUntilMorning(state, observation);
+    yield* persist(state, (checkpoint) =>
+      reachedMorning
+        ? completeDurableSkill(
+          checkpoint,
+          NIGHT_SHELTER_ACTION,
+          "morning reached from a protected shelter",
+          new Date().toISOString(),
+        )
+        : suspendDurableSkill(
+          checkpoint,
+          "shelter ended before morning",
+          new Date().toISOString(),
+        )
+    );
     yield* emit(state, {
       type: reachedMorning ? "action-succeeded" : "action-failed",
       action: NIGHT_SHELTER_ACTION,
@@ -1360,7 +1400,7 @@ function isTreeCanopySurface(blockId: string | undefined): boolean {
 function shelterUntilMorning(
   state: RunState,
   observation: BeatGameObservation,
-): Effect.Effect<boolean, BeatGameDriverError> {
+): Effect.Effect<boolean, BeatGameError | BeatGameDriverError> {
   return Effect.gen(function* () {
     let shelterObservation = observation;
     const needsRecoveryMeal =
@@ -1529,6 +1569,20 @@ function shelterUntilMorning(
       z: Math.floor(surfaceOrigin.z),
       dimension: surfaceOrigin.dimension,
     };
+    yield* persist(state, (checkpoint) =>
+      checkpoint.activeSkill?.action === NIGHT_SHELTER_ACTION
+        ? advanceDurableSkill(
+          checkpoint,
+          "construct-shelter",
+          new Date().toISOString(),
+          {
+            targets: [playerBlock],
+            protectedItemIds: [...NIGHT_SHELTER_BLOCK_ITEM_IDS],
+            requiredResources: { shelterBlocks: 1 },
+          },
+        )
+        : checkpoint
+    );
     const overhead = yield* queryExactBlock(state.driver, {
       ...playerBlock,
       y: playerBlock.y + 2,
@@ -1567,6 +1621,21 @@ function shelterUntilMorning(
         : "Waiting in a sealed shelter until morning",
       data: { position: surfaceOrigin, sealPosition },
     });
+    yield* persist(state, (checkpoint) =>
+      checkpoint.activeSkill?.action === NIGHT_SHELTER_ACTION
+        ? advanceDurableSkill(
+          rememberWorldPlace(checkpoint, "SHELTER", surfaceOrigin, 1),
+          "wait-for-morning",
+          new Date().toISOString(),
+          {
+            targets: [playerBlock],
+            protectedBlocks: sealPosition === undefined ? [] : [sealPosition],
+            completedWorldChanges:
+              sealPosition === undefined ? [] : [sealPosition],
+          },
+        )
+        : rememberWorldPlace(checkpoint, "SHELTER", surfaceOrigin, 1)
+    );
     let daylightConfirmations = 0;
     while (daylightConfirmations < NIGHT_SHELTER_DAYLIGHT_CONFIRMATIONS) {
       const environment = yield* state.driver.environment!;
@@ -2035,10 +2104,17 @@ function runDecisionWithRetry(
         action,
         attempt: number,
       });
-      const actionCheckpoint = yield* persist(state, (checkpoint) => ({
-        ...checkpoint,
-        planner: {
-          ...checkpoint.planner,
+      const actionCheckpoint = yield* persist(state, (checkpoint) => {
+        const now = new Date().toISOString();
+        const withSkill = startOrResumeDurableSkill(
+          checkpoint,
+          decision,
+          now,
+        );
+        return {
+          ...withSkill,
+          planner: {
+          ...withSkill.planner,
           currentAction: action,
           currentActionId:
             number === 1
@@ -2047,9 +2123,10 @@ function runDecisionWithRetry(
               ? checkpoint.planner.currentActionId
               : crypto.randomUUID(),
           retryCount: number - 1,
-          updatedAt: new Date().toISOString(),
+          updatedAt: now,
         },
-      }));
+        };
+      });
       const result = yield* cancellable(
         state,
         executeDecision(
@@ -2076,6 +2153,13 @@ function runDecisionWithRetry(
                 attempt: number,
                 detail: error.message,
               });
+              yield* persist(state, (checkpoint) =>
+                suspendDurableSkill(
+                  checkpoint,
+                  `retry:${error.message}`,
+                  new Date().toISOString(),
+                )
+              );
               yield* Effect.sleep(backoffDuration(number));
               const fresh = yield* observeFresh(state);
               if (actionObservedComplete(
@@ -2083,8 +2167,15 @@ function runDecisionWithRetry(
                 fresh,
                 state.strategy,
               )) {
-                yield* persist(state, (checkpoint) => ({
-                  ...checkpoint,
+                yield* persist(state, (checkpoint) => {
+                  const completed = completeDurableSkill(
+                    checkpoint,
+                    action,
+                    "fresh observation confirmed completion before retry",
+                    new Date().toISOString(),
+                  );
+                  return {
+                  ...completed,
                   connectionEpoch: fresh.player.connectionEpoch,
                   lastStableAction: stableActionResult(
                     action,
@@ -2094,17 +2185,18 @@ function runDecisionWithRetry(
                   ),
                   planner: withoutCurrentAction({
                     ...plannerWithObservation(
-                      checkpoint.planner,
+                      completed.planner,
                       fresh,
                       state.strategy,
                     ),
                     retryCount: 0,
                     completedActions: [
-                      ...checkpoint.planner.completedActions,
+                      ...completed.planner.completedActions,
                       action,
                     ].slice(-128),
                   }),
-                }));
+                  };
+                });
                 yield* emit(state, {
                   type: "action-succeeded",
                   action,
@@ -2116,7 +2208,13 @@ function runDecisionWithRetry(
               }
               return yield* attempt(number + 1, fresh);
             })
-            : Effect.fail(error)
+            : persist(state, (checkpoint) =>
+              suspendDurableSkill(
+                checkpoint,
+                `failed:${error.message}`,
+                new Date().toISOString(),
+              )
+            ).pipe(Effect.zipRight(Effect.fail(error)))
         ),
       );
       if (result === undefined) {
@@ -2129,19 +2227,27 @@ function runDecisionWithRetry(
             result.completedPendingDeath,
           );
         }
-        yield* persist(state, (checkpoint) => ({
-          ...(result.completedPendingDeath === undefined
+        yield* persist(state, (checkpoint) => {
+          const current = result.completedPendingDeath === undefined
             ? checkpoint
             : forgetDeathPosition(
               checkpoint,
               result.completedPendingDeath,
-            )),
+            );
+          const suspended = suspendDurableSkill(
+            current,
+            result.replanReason ?? "replan",
+            new Date().toISOString(),
+          );
+          return {
+          ...suspended,
           planner: withoutCurrentAction({
-            ...checkpoint.planner,
+            ...suspended.planner,
             retryCount: 0,
             updatedAt: new Date().toISOString(),
           }),
-        }));
+          };
+        });
         yield* emit(state, {
           type: "action-failed",
           action,
@@ -2162,8 +2268,16 @@ function runDecisionWithRetry(
       const latestObservation = yield* Ref.get(state.observation);
       yield* persist(state, (checkpoint) => {
         const transformed = result.checkpoint?.(checkpoint) ?? checkpoint;
+        const completed = completeDurableSkill(
+          transformed,
+          action,
+          result.phase === undefined
+            ? "task result confirmed completion"
+            : "observed phase transition confirmed completion",
+          new Date().toISOString(),
+        );
         return {
-          ...transformed,
+          ...completed,
           lastStableAction: stableActionResult(
             action,
             actionCheckpoint,
@@ -2171,10 +2285,10 @@ function runDecisionWithRetry(
             result.phase === undefined ? "TASK_RESULT" : "OBSERVED_STATE",
           ),
           planner: withoutCurrentAction({
-            ...transformed.planner,
+            ...completed.planner,
             retryCount: 0,
             completedActions: [
-              ...transformed.planner.completedActions,
+              ...completed.planner.completedActions,
               action,
             ].slice(-128),
             updatedAt: new Date().toISOString(),
@@ -2236,6 +2350,7 @@ function executeDecision(
             recoverItems: hasMeaningfulRecoveryInventory(
               lastLivingObservation,
             ),
+            observedLive: true,
             inventoryCounts: lastLivingObservation.inventory.counts,
           };
           yield* enqueuePendingDeath(state, pendingDeath);
@@ -2401,7 +2516,10 @@ function executeDecision(
                   respawned,
                 );
               }
-              if (nearbyCorpseDrops?.length === 0) {
+              if (
+                nearbyCorpseDrops?.length === 0
+                && pendingDeath.observedLive !== true
+              ) {
                 return yield* abandonPendingDeath(
                   state,
                   pendingDeath,
@@ -2720,93 +2838,11 @@ function executeDecision(
           > =>
             knownPortal
               ? Effect.succeed({})
-              : (
-                useCastPortal
-                  ? preparePortalCastingLavaPool(state, observation)
-                  : Effect.succeed(true)
-              ).pipe(
-                Effect.flatMap((ready) =>
-                  ready
-                    ? state.driver.observe.pipe(
-                      Effect.flatMap((current) =>
-                        useCastPortal
-                          ? ensurePortalMiningPickaxe(
-                            state,
-                            current,
-                            RESOURCE_SEARCH_PICKAXE_DURABILITY_RESERVE,
-                          ).pipe(Effect.zipRight(state.driver.observe))
-                          : Effect.succeed(current)
-                      ),
-                      Effect.flatMap((current) =>
-                        resolvePortalBuildFrame(
-                          state.driver,
-                          current,
-                        )
-                      ),
-                      Effect.flatMap((frame) =>
-                        useCastPortal
-                          ? castNetherPortal(state.driver, {
-                            origin: frame.origin,
-                            axis: frame.axis,
-                            path: {
-                              ...state.strategy.path,
-                              avoidFluids: true,
-                            },
-                          })
-                          : buildNetherPortal(state.driver, {
-                            origin: frame.origin,
-                            axis: frame.axis,
-                            path: state.strategy.path,
-                          })
-                      ),
-                      Effect.tap((frame) => {
-                        const observedAt = new Date().toISOString();
-                        return state.coordinator.publishDiscovery(
-                          actionCheckpoint.teamId,
-                          {
-                            key: `portal:${positionKey(frame.origin)}`,
-                            kind: "portal",
-                            botId: actionCheckpoint.botId,
-                            position: frame.origin,
-                            observedAt,
-                            confidence: 0.9,
-                          },
-                        );
-                      }),
-                      Effect.flatMap((frame) =>
-                        enterPortal(state.driver, {
-                          portal: frame.interior[0] ?? frame.origin,
-                          path: state.strategy.path,
-                        }).pipe(Effect.as(frame))
-                      ),
-                      Effect.map((frame): ActionResult => ({
-                        checkpoint: (checkpoint) => ({
-                          ...checkpoint,
-                          memory: {
-                            ...checkpoint.memory,
-                            portals: [
-                              ...checkpoint.memory.portals,
-                              {
-                                key: `portal:${positionKey(frame.origin)}`,
-                                value: {
-                                  blockId: "minecraft:nether_portal",
-                                  position: frame.origin,
-                                  properties: {},
-                                  diggable: false,
-                                  replaceable: false,
-                                  interactive: false,
-                                  observedAt: new Date().toISOString(),
-                                },
-                                observedAt: new Date().toISOString(),
-                                confidence: 0.9,
-                              },
-                            ].slice(-32),
-                          },
-                        }),
-                      })),
-                    )
-                    : Effect.succeed({} satisfies ActionResult)
-                ),
+              : buildAndEnterDurablePortal(
+                state,
+                actionCheckpoint,
+                observation,
+                useCastPortal,
               )
           ),
         );
@@ -2919,7 +2955,16 @@ function executeDecision(
           ),
           Effect.map((found): ActionResult =>
             found
-              ? { phase: BeatGamePhase.ACTIVATE_END_PORTAL }
+              ? {
+                phase: BeatGamePhase.ACTIVATE_END_PORTAL,
+                checkpoint: (checkpoint) => rememberWorldPlace(
+                  checkpoint,
+                  "END_ENTRY",
+                  actionCheckpoint.memory.strongholdEstimate
+                    ?? observation.player.position,
+                  1,
+                ),
+              }
               : {}
           ),
         );
@@ -2937,6 +2982,13 @@ function executeDecision(
           })),
           Effect.as({
             phase: BeatGamePhase.FIGHT_ENDER_DRAGON,
+            checkpoint: (checkpoint: BeatGameCheckpoint) =>
+              rememberWorldPlace(
+                checkpoint,
+                "END_ENTRY",
+                observation.player.position,
+                1,
+              ),
           } satisfies ActionResult),
         );
       case "fight-ender-dragon":
@@ -3121,6 +3173,7 @@ function findImmediateActionThreat(
             ? { escapeTarget: threat.target }
             : { defenseTarget: threat.target }
         ),
+        replanDelayMs: MINIMUM_RECOVERY_POLL_MS,
       } satisfies ActionResult;
     }),
   );
@@ -3201,6 +3254,7 @@ function monitorActionSafety(
                           ? { escapeTarget: threat.target }
                           : { defenseTarget: threat.target }
                         ),
+                        replanDelayMs: MINIMUM_RECOVERY_POLL_MS,
                       } satisfies ActionResult);
                   }),
                 );
@@ -7616,11 +7670,18 @@ function satisfyFoodRequirement(
   }
   if (rawFoodCount === 0) {
     return recoverNearbyFurnaceContents(state, observation).pipe(
-      Effect.flatMap(({ observation: current, recovered }) =>
-        recovered
-          ? Effect.void
-          : huntForFoodRequirement(state, current, 1)
-      ),
+      Effect.flatMap(({ observation: current, recovered }) => {
+        if (recovered) {
+          return Effect.void;
+        }
+        return tryFishForFood(state, current).pipe(
+          Effect.flatMap((fished) =>
+            fished
+              ? Effect.void
+              : huntForFoodRequirement(state, current, 1)
+          ),
+        );
+      }),
     );
   }
   const batch = rawFood[0];
@@ -7918,6 +7979,7 @@ function tryFishForFood(
         if (caughtFoodCount(current) > caughtFoodBeforeCollection) {
           return true;
         }
+        return false;
       }
     }
     return false;
@@ -9291,10 +9353,15 @@ function satisfyIronRequirement(
   });
 }
 
+interface PortalLavaPoolPreparation {
+  readonly ready: boolean;
+  readonly candidateLavaSources: readonly BeatGameBlockPosition[];
+}
+
 function preparePortalCastingLavaPool(
   state: RunState,
   observation: BeatGameObservation,
-): Effect.Effect<boolean, BeatGameDriverError> {
+): Effect.Effect<PortalLavaPoolPreparation, BeatGameDriverError> {
   return Effect.gen(function* () {
     const sources = yield* state.driver.queryBlocks({
       center: observation.player.position,
@@ -9312,7 +9379,10 @@ function preparePortalCastingLavaPool(
         sources,
         { path: state.strategy.path },
       );
-      return true;
+      return {
+        ready: true,
+        candidateLavaSources: sources.map(({ position }) => position),
+      };
     }
 
     yield* ensurePortalMiningPickaxe(
@@ -9338,7 +9408,7 @@ function preparePortalCastingLavaPool(
         current.player.position,
         targetY,
       );
-      return false;
+      return { ready: false, candidateLavaSources: [] };
     }
 
     yield* advanceExplorationFrontier(
@@ -9349,7 +9419,7 @@ function preparePortalCastingLavaPool(
       searchPath,
       false,
     );
-    return false;
+    return { ready: false, candidateLavaSources: [] };
   });
 }
 
@@ -10046,6 +10116,7 @@ function huntOrExplore(
     let attacked = 0;
     let explorationHops = 0;
     while (true) {
+      yield* Effect.sleep(1);
       let current = yield* state.driver.observe;
       const collected = expectedDropCount(current) - initialExpectedDropCount;
       if (
@@ -10150,6 +10221,24 @@ function huntOrExplore(
           Math.max(64, maximumTargets + attemptedTargets.size),
         ),
       });
+      const observedBlaze = observedTargets.find(({ entityType }) =>
+        entityType === "minecraft:blaze"
+      );
+      if (
+        observedBlaze !== undefined
+        && !checkpoint.memory.places.some(({ key }) =>
+          key === worldPlaceKey("FORTRESS", observedBlaze.position)
+        )
+      ) {
+        yield* persist(state, (currentCheckpoint) =>
+          rememberWorldPlace(
+            currentCheckpoint,
+            "FORTRESS",
+            observedBlaze.position,
+            0.8,
+          )
+        );
+      }
       const targets = confirmedVisibleTarget === undefined
         ? observedTargets
         : [
@@ -11886,16 +11975,29 @@ function advanceExplorationFrontier(
                     );
                     return [updated, updated] as const;
                   })();
-              })
+              }).pipe(Effect.map((frontiers) => ({
+                frontiers,
+                position: observation.player.position,
+              })))
             ),
-            Effect.flatMap((frontiers) =>
-              persist(state, (checkpoint) => ({
-                ...checkpoint,
-                memory: {
-                  ...checkpoint.memory,
-                  explorationFrontiers: frontiers,
-                },
-              }))
+            Effect.flatMap(({ frontiers, position }) =>
+              persist(state, (checkpoint) => {
+                const remembered = isNether(position.dimension)
+                  ? rememberWorldPlace(
+                    checkpoint,
+                    "SAFE_CORRIDOR",
+                    position,
+                    0.75,
+                  )
+                  : checkpoint;
+                return {
+                  ...remembered,
+                  memory: {
+                    ...remembered.memory,
+                    explorationFrontiers: frontiers,
+                  },
+                };
+              })
             ),
             Effect.ignore,
           ),
@@ -13010,13 +13112,447 @@ function moveToEyeBaseline(
       192,
       state.strategy.explorationRadius,
     ));
-    yield* state.driver.pathfind({
-      x: latest.origin.x - latest.direction.z * baseline,
-      y: latest.origin.y,
-      z: latest.origin.z + latest.direction.x * baseline,
-      dimension: latest.origin.dimension,
-    }, 4, state.strategy.path);
+    const candidates = [1, -1].flatMap((side) =>
+      [1, 0.75, 0.5].map((scale) => ({
+        x: latest.origin.x
+          - latest.direction.z * baseline * scale * side,
+        y: latest.origin.y,
+        z: latest.origin.z
+          + latest.direction.x * baseline * scale * side,
+        dimension: latest.origin.dimension,
+      }))
+    );
+    for (const [index, target] of candidates.entries()) {
+      const reached = yield* state.driver.pathfind(
+        target,
+        4,
+        state.strategy.path,
+      ).pipe(Effect.either);
+      if (reached._tag === "Right") {
+        return;
+      }
+      if (
+        !isRouteUnavailable(reached.left)
+        || index === candidates.length - 1
+      ) {
+        return yield* Effect.fail(reached.left);
+      }
+    }
   });
+}
+
+function isRouteUnavailable(error: BeatGameDriverError): boolean {
+  return error.operation === "pathfind"
+    && /No route found|search limit|certified bound|no progress/iu.test(
+      error.message,
+    );
+}
+
+interface DurablePortalPlan {
+  readonly frame: PortalFrame;
+  readonly workspace: BeatGamePortalWorkspace;
+  readonly resumed: boolean;
+}
+
+function buildAndEnterDurablePortal(
+  state: RunState,
+  actionCheckpoint: BeatGameCheckpoint,
+  observation: BeatGameObservation,
+  preferCasting: boolean,
+): Effect.Effect<ActionResult, BeatGameError | BeatGameDriverError> {
+  return reservePortalWorkspace(state, observation, preferCasting).pipe(
+    Effect.flatMap((plan) => {
+      if (plan === undefined) {
+        return Effect.succeed({} satisfies ActionResult);
+      }
+      const path = portalPrecisionPathPolicy(state.strategy.path);
+      const prepare = plan.workspace.method === "CAST" && plan.resumed
+        ? updatePortalSkill(state, plan.workspace, "prepare-liquid", {
+          status: "BUILDING",
+        }).pipe(
+          Effect.zipRight(preparePortalCastingLavaPool(state, observation)),
+          Effect.flatMap((preparation) =>
+            preparation.ready
+              ? updatePortalSkill(state, plan.workspace, "prepare-liquid", {
+                candidateLavaSources: preparation.candidateLavaSources,
+              }).pipe(
+                Effect.zipRight(state.driver.observe),
+                Effect.flatMap((current) =>
+                  ensurePortalMiningPickaxe(
+                    state,
+                    current,
+                    RESOURCE_SEARCH_PICKAXE_DURABILITY_RESERVE,
+                  )
+                ),
+                Effect.as(true),
+              )
+              : Effect.succeed(false)
+          ),
+        )
+        : Effect.succeed(true);
+      return prepare.pipe(
+        Effect.flatMap((ready) =>
+          ready
+            ? updatePortalSkill(state, plan.workspace, "construct-frame", {
+              status: "BUILDING",
+            }).pipe(
+              Effect.zipRight(
+                constructPortalWithDurableObservation(
+                  state,
+                  plan,
+                  path,
+                ),
+              ),
+              Effect.tap(({ frame }) => {
+                const observedAt = new Date().toISOString();
+                return state.coordinator.publishDiscovery(
+                  actionCheckpoint.teamId,
+                  {
+                    key: `portal:${positionKey(frame.origin)}`,
+                    kind: "portal",
+                    botId: actionCheckpoint.botId,
+                    position: frame.origin,
+                    observedAt,
+                    confidence: 1,
+                  },
+                );
+              }),
+              Effect.flatMap(({ frame, workspace }) => {
+                const entering = {
+                  ...workspace,
+                  status: "ENTERING" as const,
+                  entryAttempts: workspace.entryAttempts + 1,
+                  updatedAt: new Date().toISOString(),
+                };
+                return updatePortalSkill(
+                  state,
+                  entering,
+                  "enter-portal",
+                ).pipe(
+                  Effect.zipRight(enterPortal(state.driver, {
+                    portal: frame.interior[0] ?? frame.origin,
+                    path,
+                  })),
+                  Effect.zipRight(updatePortalSkill(
+                    state,
+                    {
+                      ...entering,
+                      status: "ENTERED",
+                      updatedAt: new Date().toISOString(),
+                    },
+                    "confirm-dimension",
+                  )),
+                  Effect.as(frame),
+                );
+              }),
+              Effect.map((frame): ActionResult => ({
+                checkpoint: (checkpoint) => rememberPortal(checkpoint, frame),
+              })),
+            )
+            : Effect.succeed({} satisfies ActionResult)
+        ),
+      );
+    }),
+  );
+}
+
+function constructPortalWithDurableObservation(
+  state: RunState,
+  plan: DurablePortalPlan,
+  path: BeatGameStrategy["path"],
+): Effect.Effect<
+  Readonly<{ frame: PortalFrame; workspace: BeatGamePortalWorkspace }>,
+  BeatGameError | BeatGameDriverError
+> {
+  return Effect.scoped(Effect.gen(function* () {
+    const workspace = yield* Ref.make(plan.workspace);
+    yield* Effect.forever(
+      Effect.sleep(1_000).pipe(
+        Effect.zipRight(Ref.get(workspace)),
+        Effect.flatMap((current) =>
+          observeCompletedPortalWorkspace(state, current, plan.frame)
+        ),
+        Effect.flatMap((current) => Ref.set(workspace, current)),
+        Effect.catchAll(() => Effect.void),
+      ),
+    ).pipe(Effect.forkScoped);
+    const frame = yield* (plan.workspace.method === "CAST"
+      ? castNetherPortal(state.driver, {
+        origin: plan.frame.origin,
+        axis: plan.frame.axis,
+        path: { ...path, avoidFluids: true },
+      })
+      : buildNetherPortal(state.driver, {
+        origin: plan.frame.origin,
+        axis: plan.frame.axis,
+        path,
+      }));
+    const latest = yield* Ref.get(workspace);
+    const observed = yield* observeCompletedPortalWorkspace(
+      state,
+      latest,
+      frame,
+    );
+    return { frame, workspace: observed };
+  }));
+}
+
+function reservePortalWorkspace(
+  state: RunState,
+  observation: BeatGameObservation,
+  preferCasting: boolean,
+): Effect.Effect<
+  DurablePortalPlan | undefined,
+  BeatGameError | BeatGameDriverError
+> {
+  return Effect.gen(function* () {
+    const checkpoint = yield* Ref.get(state.checkpoint);
+    const resumable = latestResumablePortalWorkspace(checkpoint);
+    if (
+      resumable !== undefined
+      && resumable.origin.dimension === observation.player.position.dimension
+    ) {
+      return {
+        frame: createNetherPortalFrame(resumable.origin, resumable.axis),
+        workspace: resumable,
+        resumed: true,
+      };
+    }
+    let current = observation;
+    let candidateLavaSources: readonly BeatGameBlockPosition[] = [];
+    if (preferCasting) {
+      yield* persist(state, (currentCheckpoint) =>
+        advanceDurableSkill(
+          currentCheckpoint,
+          "find-lava-pool",
+          new Date().toISOString(),
+          {
+            protectedItemIds: [
+              "minecraft:water_bucket",
+              "minecraft:lava_bucket",
+              "minecraft:iron_pickaxe",
+              "minecraft:flint_and_steel",
+            ],
+            requiredResources: {
+              "minecraft:water_bucket": 1,
+              "minecraft:lava_bucket": 1,
+            },
+          },
+        )
+      );
+      const preparation = yield* preparePortalCastingLavaPool(
+        state,
+        observation,
+      );
+      if (!preparation.ready) {
+        return undefined;
+      }
+      candidateLavaSources = preparation.candidateLavaSources;
+      current = yield* state.driver.observe;
+      yield* ensurePortalMiningPickaxe(
+        state,
+        current,
+        RESOURCE_SEARCH_PICKAXE_DURABILITY_RESERVE,
+      );
+      current = yield* state.driver.observe;
+    }
+    const frame = yield* resolvePortalBuildFrame(state.driver, current);
+    const now = new Date().toISOString();
+    const workspace: BeatGamePortalWorkspace = {
+      workspaceId: `${checkpoint.activeSkill?.skillId ?? crypto.randomUUID()}:portal`,
+      origin: frame.origin,
+      axis: frame.axis,
+      method: preferCasting ? "CAST" : "OBSIDIAN",
+      status: "RESERVED",
+      targetFrame: frame.blocks,
+      observedFrame: [],
+      interior: frame.interior,
+      protectedBlocks: frame.blocks,
+      candidateLavaSources,
+      rejectedLavaSources: [],
+      waterFlow: [],
+      bucketState:
+        (current.inventory.counts["minecraft:water_bucket"] ?? 0) > 0
+          ? "WATER"
+          : (current.inventory.counts["minecraft:lava_bucket"] ?? 0) > 0
+          ? "LAVA"
+          : (current.inventory.counts["minecraft:bucket"] ?? 0) > 0
+          ? "EMPTY"
+          : "UNKNOWN",
+      ignitionState: "NOT_ATTEMPTED",
+      interiorState: "UNKNOWN",
+      entryAttempts: 0,
+      observedAt: now,
+      updatedAt: now,
+    };
+    yield* updatePortalSkill(state, workspace, "reserve-workspace");
+    return { frame, workspace, resumed: false };
+  });
+}
+
+function updatePortalSkill(
+  state: RunState,
+  workspace: BeatGamePortalWorkspace,
+  substep: string,
+  workspaceUpdate: Partial<BeatGamePortalWorkspace> = {},
+): Effect.Effect<BeatGameCheckpoint, BeatGameError> {
+  const updatedWorkspace = {
+    ...workspace,
+    ...workspaceUpdate,
+    updatedAt: new Date().toISOString(),
+  };
+  return persist(state, (checkpoint) =>
+    advanceDurableSkill(
+      checkpoint,
+      substep,
+      updatedWorkspace.updatedAt,
+      {
+        portalWorkspace: updatedWorkspace,
+        targets: [updatedWorkspace.origin],
+        protectedBlocks: updatedWorkspace.protectedBlocks,
+        completedWorldChanges: updatedWorkspace.observedFrame,
+        protectedItemIds: [
+          "minecraft:obsidian",
+          "minecraft:water_bucket",
+          "minecraft:lava_bucket",
+          "minecraft:flint_and_steel",
+        ],
+        requiredResources: updatedWorkspace.method === "CAST"
+          ? { "minecraft:water_bucket": 1, "minecraft:lava_bucket": 1 }
+          : { "minecraft:obsidian": NETHER_PORTAL_FRAME_OBSIDIAN_COUNT },
+      },
+    )
+  );
+}
+
+function observeCompletedPortalWorkspace(
+  state: RunState,
+  workspace: BeatGamePortalWorkspace,
+  frame: PortalFrame,
+): Effect.Effect<BeatGamePortalWorkspace, BeatGameError | BeatGameDriverError> {
+  const center = {
+    ...frame.origin,
+    x: frame.origin.x + (frame.axis === "x" ? 1.5 : 0.5),
+    y: frame.origin.y + 2,
+    z: frame.origin.z + (frame.axis === "z" ? 1.5 : 0.5),
+  };
+  return Effect.all([
+    state.driver.queryBlocks({
+      center,
+      radius: 5,
+      selector: {
+        blockIds: ["minecraft:obsidian", "minecraft:nether_portal"],
+      },
+      maximumResults: 64,
+    }),
+    state.driver.queryBlocks({
+      center,
+      radius: 5,
+      selector: { blockIds: ["minecraft:water"] },
+      maximumResults: 64,
+    }),
+  ], { concurrency: 2 }).pipe(
+    Effect.flatMap(([blocks, water]) => {
+      const observedKeys = new Set(blocks.map(({ position }) =>
+        positionKey(position)
+      ));
+      const observedFrame = frame.blocks.filter((position) =>
+        observedKeys.has(positionKey(position))
+      );
+      const portalObserved = frame.interior.some((position) =>
+        observedKeys.has(positionKey(position))
+      );
+      const waterSource = water.find(({ properties }) =>
+        properties.level === "0"
+      )?.position;
+      const updated: BeatGamePortalWorkspace = {
+        ...workspace,
+        status: portalObserved ? "IGNITED" : "BUILDING",
+        observedFrame,
+        ...(waterSource === undefined ? {} : { waterSource }),
+        waterFlow: water.map(({ position }) => position),
+        ignitionState: portalObserved ? "IGNITED" : "NOT_ATTEMPTED",
+        interiorState: portalObserved ? "PORTAL" : "CLEAR",
+        updatedAt: new Date().toISOString(),
+      };
+      if (
+        updated.status === workspace.status
+        && updated.ignitionState === workspace.ignitionState
+        && updated.interiorState === workspace.interiorState
+        && samePositionSet(updated.observedFrame, workspace.observedFrame)
+        && samePositionSet(updated.waterFlow, workspace.waterFlow)
+        && (
+          updated.waterSource === undefined
+            ? workspace.waterSource === undefined
+            : workspace.waterSource !== undefined
+              && samePosition(updated.waterSource, workspace.waterSource)
+        )
+      ) {
+        return Effect.succeed(workspace);
+      }
+      return updatePortalSkill(
+        state,
+        updated,
+        portalObserved ? "portal-ignited" : "repair-frame",
+      ).pipe(Effect.as(updated));
+    }),
+  );
+}
+
+function samePositionSet(
+  left: readonly BeatGamePosition[],
+  right: readonly BeatGamePosition[],
+): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  const rightKeys = new Set(right.map(positionKey));
+  return left.every((position) => rightKeys.has(positionKey(position)));
+}
+
+function rememberPortal(
+  checkpoint: BeatGameCheckpoint,
+  frame: PortalFrame,
+): BeatGameCheckpoint {
+  const observedAt = new Date().toISOString();
+  return {
+    ...checkpoint,
+    memory: {
+      ...checkpoint.memory,
+      portals: [
+        ...checkpoint.memory.portals.filter(({ key }) =>
+          key !== `portal:${positionKey(frame.origin)}`
+        ),
+        {
+          key: `portal:${positionKey(frame.origin)}`,
+          value: {
+            blockId: "minecraft:nether_portal",
+            position: frame.interior[0] ?? frame.origin,
+            properties: { axis: frame.axis },
+            diggable: false,
+            replaceable: false,
+            interactive: false,
+            observedAt,
+          },
+          observedAt,
+          confidence: 1,
+        },
+      ].slice(-32),
+    },
+  };
+}
+
+function portalPrecisionPathPolicy(
+  path: BeatGameStrategy["path"],
+): BeatGameStrategy["path"] {
+  return {
+    ...path,
+    searchMode: "PRECISION",
+    maximumQualityBound: 1,
+    maxParkourGap: 0,
+    smoothCamera: false,
+    sprint: false,
+  };
 }
 
 function enterKnownPortal(
@@ -13025,6 +13561,9 @@ function enterKnownPortal(
   observation: BeatGameObservation,
 ): Effect.Effect<boolean, BeatGameError | BeatGameDriverError> {
   return Effect.gen(function* () {
+    const resumableWorkspace = latestResumablePortalWorkspace(
+      yield* Ref.get(state.checkpoint),
+    );
     const nearby = yield* state.driver.queryBlocks({
       center: observation.player.position,
       radius: 48,
@@ -13037,7 +13576,43 @@ function enterKnownPortal(
         portal: immediate.position,
         path: state.strategy.path,
       });
+      if (
+        resumableWorkspace !== undefined
+        && distanceSquared(immediate.position, resumableWorkspace.origin)
+          <= 8 ** 2
+      ) {
+        yield* markPortalWorkspaceEntered(state, resumableWorkspace);
+      }
       return true;
+    }
+
+    if (
+      resumableWorkspace !== undefined
+      && resumableWorkspace.origin.dimension
+        === observation.player.position.dimension
+    ) {
+      const approached = yield* state.driver.pathfind(
+        resumableWorkspace.origin,
+        8,
+        portalPrecisionPathPolicy(state.strategy.path),
+      ).pipe(Effect.either);
+      if (approached._tag === "Right") {
+        const revalidated = yield* state.driver.queryBlocks({
+          center: resumableWorkspace.origin,
+          radius: 8,
+          selector: { blockIds: ["minecraft:nether_portal"] },
+          maximumResults: 16,
+        });
+        const portal = revalidated[0];
+        if (portal !== undefined) {
+          yield* enterPortal(state.driver, {
+            portal: portal.position,
+            path: portalPrecisionPathPolicy(state.strategy.path),
+          });
+          yield* markPortalWorkspaceEntered(state, resumableWorkspace);
+          return true;
+        }
+      }
     }
 
     const remembered = checkpoint.memory.portals
@@ -13076,6 +13651,24 @@ function enterKnownPortal(
     }
     return false;
   });
+}
+
+function markPortalWorkspaceEntered(
+  state: RunState,
+  workspace: BeatGamePortalWorkspace,
+): Effect.Effect<BeatGameCheckpoint, BeatGameError> {
+  return updatePortalSkill(
+    state,
+    {
+      ...workspace,
+      status: "ENTERED",
+      interiorState: "PORTAL",
+      ignitionState: "IGNITED",
+      entryAttempts: workspace.entryAttempts + 1,
+      updatedAt: new Date().toISOString(),
+    },
+    "confirm-dimension",
+  );
 }
 
 function searchStronghold(
@@ -13343,14 +13936,62 @@ function isWithinDirectedHuntDetour(
 
 function fightDragon(
   state: RunState,
-): Effect.Effect<ActionResult, BeatGameDriverError> {
+): Effect.Effect<ActionResult, BeatGameError | BeatGameDriverError> {
   return Effect.gen(function* () {
+    const observation = yield* state.driver.observe;
+    yield* persist(state, (checkpoint) =>
+      rememberWorldPlace(
+        checkpoint,
+        "END_FIGHT",
+        observation.player.position,
+        1,
+      )
+    );
     yield* fightEnderDragon(state.driver, {
       searchRadius: 320,
       path: state.strategy.path,
     });
     return { phase: BeatGamePhase.COLLECT_DRAGON_EGG };
   });
+}
+
+function rememberWorldPlace(
+  checkpoint: BeatGameCheckpoint,
+  kind: BeatGameWorldPlace["kind"],
+  position: BeatGamePosition,
+  confidence: number,
+): BeatGameCheckpoint {
+  const observedAt = new Date().toISOString();
+  const normalized = floorBlockPosition(position);
+  const key = worldPlaceKey(kind, normalized);
+  return {
+    ...checkpoint,
+    memory: {
+      ...checkpoint.memory,
+      places: [
+        ...checkpoint.memory.places.filter((place) => place.key !== key),
+        {
+          key,
+          kind,
+          position: normalized,
+          observedAt,
+          confidence,
+        },
+      ].slice(-128),
+    },
+  };
+}
+
+function worldPlaceKey(
+  kind: BeatGameWorldPlace["kind"],
+  position: BeatGamePosition,
+): string {
+  if (kind === "SAFE_CORRIDOR" || kind === "FORTRESS") {
+    return `${kind}:${position.dimension}:${Math.floor(position.x / 32)}:${
+      Math.floor(position.z / 32)
+    }`;
+  }
+  return `${kind}:${positionKey(position)}`;
 }
 
 function advancePhase(
@@ -13593,6 +14234,7 @@ function updateObservedState(
       recoverItems: hasMeaningfulRecoveryInventory(
         lastLivingObservation,
       ),
+      observedLive: true,
       inventoryCounts: lastLivingObservation.inventory.counts,
     });
   });
@@ -13647,6 +14289,7 @@ function monitorDriverEvents(
             recoverItems: hasMeaningfulRecoveryInventory(
               lastLivingObservation,
             ),
+            observedLive: true,
             inventoryCounts: lastLivingObservation.inventory.counts,
             ...(event.message === undefined
               ? {}
@@ -13695,11 +14338,14 @@ function enqueuePendingDeath(
       return [pendingDeath, pendingDeaths] as const;
     }
     const recoverItems = duplicate.recoverItems || pendingDeath.recoverItems;
+    const observedLive = duplicate.observedLive === true
+      || pendingDeath.observedLive === true;
     const inventoryCounts =
       pendingDeath.inventoryCounts ?? duplicate.inventoryCounts;
     const merged = {
       ...duplicate,
       recoverItems,
+      ...(observedLive ? { observedLive: true } : {}),
       ...(inventoryCounts === undefined ? {} : { inventoryCounts }),
       ...(duplicate.message !== undefined
         ? {}
@@ -13709,6 +14355,7 @@ function enqueuePendingDeath(
     };
     if (
       recoverItems === duplicate.recoverItems
+      && observedLive === (duplicate.observedLive === true)
       && inventoryCounts === duplicate.inventoryCounts
       && merged.message === duplicate.message
     ) {
@@ -13739,6 +14386,11 @@ function rememberDeathPosition(
   pendingDeath: PendingDeath,
 ): BeatGameCheckpoint {
   const key = `death:${pendingDeath.observedAt}`;
+  const observedAtMs = Date.parse(pendingDeath.observedAt);
+  const itemExpiresAt = new Date(
+    (Number.isFinite(observedAtMs) ? observedAtMs : Date.now())
+      + DROPPED_ITEM_LOADED_LIFETIME_MS,
+  ).toISOString();
   const latestDeath = {
     key,
     value: pendingDeath.position,
@@ -13761,11 +14413,13 @@ function rememberDeathPosition(
             key,
             value: {
               ...pendingDeath.position,
+              itemExpiresAt,
               ...(pendingDeath.inventoryCounts === undefined
                 ? {}
                 : { inventoryCounts: pendingDeath.inventoryCounts }),
             },
             observedAt: pendingDeath.observedAt,
+            expiresAt: itemExpiresAt,
             confidence: 1,
           },
         ].slice(-16),
@@ -13778,7 +14432,7 @@ function restorePendingDeaths(
   observation: BeatGameObservation,
 ): readonly PendingDeath[] {
   return checkpoint.memory.deathPositions.flatMap((entry) => {
-    const { inventoryCounts, ...position } = entry.value;
+    const { inventoryCounts, itemExpiresAt: _, ...position } = entry.value;
     if (
       inventoryCounts === undefined && observation.player.dead
       || (
@@ -14292,7 +14946,17 @@ function prepareForDistantDeathRecovery(
         deathRecoveryTravelFoodCount(current)
             >= DEATH_RECOVERY_FOOD_RESERVE_COUNT
         || hasViableStagingFood
-        || isRecentActiveCorpse(pendingDeath)
+        || (
+          isRecentActiveCorpse(pendingDeath)
+          && (
+            current.player.food > URGENT_HUNGER_FOOD_LEVEL
+            || (
+              horizontalRecoveryDistanceSquared
+                  <= DEATH_RECOVERY_PREPARATION_STAGING_DISTANCE ** 2
+              && current.player.food > CRITICAL_HUNGER_FOOD_LEVEL
+            )
+          )
+        )
       )
       && (
         !recoveryRequiresPreparedExcavation

@@ -57,11 +57,17 @@ final class AnytimeRepairingAStar<S, E> {
   private long sequence;
   private long expandedStates;
   private long generatedTransitions;
-  private long firstBoundaryExpansion = -1;
+  private long reachedBoundaries;
+  private long progressiveBoundaries;
+  private long validBoundaries;
+  private long firstProgressBoundaryExpansion = -1;
   private int repairIterations;
   private int repairedInconsistentStates;
   private @Nullable Solution<S, E> incumbent;
   private @Nullable PartialCandidate<S, E> bestBoundary;
+  private @Nullable SearchRecord<S, E> blockedStart;
+  private @Nullable SearchRecord<S, E> closestRecord;
+  private @Nullable SearchRecord<S, E> closestExpandedRecord;
   private double epsilon;
   private double bestCertifiedBound = Double.POSITIVE_INFINITY;
 
@@ -131,6 +137,13 @@ final class AnytimeRepairingAStar<S, E> {
         }
         if (bestBoundary != null) {
           return partialOutcome(termination);
+        }
+        if (
+          blockedStart != null
+            && (termination == Termination.EXHAUSTED
+            || termination == Termination.FRONTIER_LIMIT)
+        ) {
+          return worldDataPendingOutcome();
         }
         var status = switch (termination) {
           case EXHAUSTED -> Status.UNREACHABLE;
@@ -209,25 +222,38 @@ final class AnytimeRepairingAStar<S, E> {
       }
       closed.add(current);
       expandedStates++;
+      if (
+        closestExpandedRecord == null
+          || current.heuristic < closestExpandedRecord.heuristic
+      ) {
+        closestExpandedRecord = current;
+      }
 
       var reachedBoundary = domain.expand(
         current.state,
         transition -> relax(current, transition)
       );
+      if (reachedBoundary) {
+        reachedBoundaries++;
+        considerBlockedStart(current);
+      }
       if (
         reachedBoundary
           && current.parent != null
           && current.heuristic < startHeuristic
-          && domain.isValidFrontier(current.state, current.incomingEdge)
       ) {
-        considerBoundary(current);
-        if (firstBoundaryExpansion < 0) {
-          firstBoundaryExpansion = expandedStates;
+        progressiveBoundaries++;
+        if (domain.isValidFrontier(current.state, current.incomingEdge)) {
+          validBoundaries++;
+          if (firstProgressBoundaryExpansion < 0) {
+            firstProgressBoundaryExpansion = expandedStates;
+          }
+          considerBoundary(current);
         }
       }
       if (
-        firstBoundaryExpansion >= 0
-          && expandedStates - firstBoundaryExpansion
+        firstProgressBoundaryExpansion >= 0
+          && expandedStates - firstProgressBoundaryExpansion
             >= configuration.maximumExpansionsAfterFrontier()
       ) {
         return incumbent != null
@@ -343,6 +369,12 @@ final class AnytimeRepairingAStar<S, E> {
     }
   }
 
+  private void considerBlockedStart(SearchRecord<S, E> record) {
+    if (record.parent == null) {
+      blockedStart = record;
+    }
+  }
+
   private void updateIncumbent(
     List<E> path,
     S endpoint,
@@ -414,12 +446,39 @@ final class AnytimeRepairingAStar<S, E> {
   }
 
   private SearchRecord<S, E> record(S state) {
-    return records.computeIfAbsent(
+    var result = records.computeIfAbsent(
       state,
       value -> new SearchRecord<>(
         value,
         checkedHeuristic(domain.heuristic(value))
       )
+    );
+    if (
+      closestRecord == null
+        || result.heuristic < closestRecord.heuristic
+    ) {
+      closestRecord = result;
+    }
+    return result;
+  }
+
+  BoundaryDiagnostics<S> boundaryDiagnostics() {
+    var closest = closestRecord;
+    if (closest == null) {
+      throw new IllegalStateException("The search has no start record");
+    }
+    var closestExpanded = closestExpandedRecord;
+    if (closestExpanded == null) {
+      throw new IllegalStateException("The search expanded no records");
+    }
+    return new BoundaryDiagnostics<>(
+      closest.state,
+      closest.heuristic,
+      closestExpanded.state,
+      closestExpanded.heuristic,
+      reachedBoundaries,
+      progressiveBoundaries,
+      validBoundaries
     );
   }
 
@@ -510,6 +569,27 @@ final class AnytimeRepairingAStar<S, E> {
         case EXPANSION_BUDGET -> StopReason.EXPANSION_BUDGET;
         case CANCELLED, STAGE_COMPLETE -> throw new IllegalStateException();
       }
+    );
+  }
+
+  private Outcome<S, E> worldDataPendingOutcome() {
+    var boundary = blockedStart;
+    if (boundary == null) {
+      throw new IllegalStateException("No blocked frontier is available");
+    }
+    return new Outcome<>(
+      Status.WORLD_DATA_PENDING,
+      List.of(),
+      boundary.state,
+      0,
+      0,
+      epsilon,
+      repairIterations,
+      repairedInconsistentStates,
+      expandedStates,
+      generatedTransitions,
+      List.copyOf(incumbentCosts),
+      StopReason.FRONTIER
     );
   }
 
@@ -637,6 +717,7 @@ final class AnytimeRepairingAStar<S, E> {
   enum Status {
     FOUND,
     PARTIAL,
+    WORLD_DATA_PENDING,
     UNREACHABLE,
     SEARCH_LIMIT,
     INTERRUPTED,
@@ -669,6 +750,16 @@ final class AnytimeRepairingAStar<S, E> {
       incumbentCosts = List.copyOf(incumbentCosts);
     }
   }
+
+  record BoundaryDiagnostics<S>(
+    S closestState,
+    double closestHeuristic,
+    S closestExpandedState,
+    double closestExpandedHeuristic,
+    long reachedBoundaries,
+    long progressiveBoundaries,
+    long validBoundaries
+  ) {}
 
   private enum Termination {
     STAGE_COMPLETE,

@@ -368,6 +368,33 @@ final class PathfindingTest {
   }
 
   @Test
+  void pathfindingCrossesANegativeChunkBoundaryTowardPositiveX() {
+    var accessor = new TestBlockAccessorBuilder();
+    for (var x = -1024; x <= -992; x++) {
+      accessor.setBlockAt(x, 48, -1296, Blocks.STONE);
+    }
+    var constraint = new NoBlockActionsConstraint(TestPathConstraint.INSTANCE);
+    var inventory = new ProjectedInventory(
+      List.of(),
+      TestMiningCostCalculator.INSTANCE,
+      constraint
+    );
+    var routeFinder = new RouteFinder(
+      new MinecraftGraph(accessor.build(), inventory, constraint),
+      new PosGoal(-992, 49, -1296)
+    );
+
+    var route = routeFinder.findRouteFuture(
+      NodeState.forInfo(new SFVec3i(-1024, 49, -1296), inventory)
+    ).join();
+
+    var found = assertInstanceOf(RouteFinder.FoundRouteResult.class, route);
+    assertEquals(32, found.actions().stream()
+      .filter(MovementAction.class::isInstance)
+      .count());
+  }
+
+  @Test
   void pathfindingCarvesOutBesideASupportingBlock() {
     var accessor = new TestBlockAccessorBuilder();
     accessor.setBlockAt(0, 0, 0, Blocks.OAK_LOG);
@@ -496,6 +523,46 @@ final class PathfindingTest {
     );
     assertEquals(new SFVec3i(3, 1, 0), lastMovement.blockPosition());
     assertEquals(lastMovement.blockPosition(), partialRoute.endpoint());
+    assertFalse(partialRoute.metadata().unavailableChunks().isEmpty());
+  }
+
+  @Test
+  void waitsForWorldDataWhenTheStartTouchesAnUnloadedBoundary() {
+    var accessor = new TestBlockAccessorBuilder();
+    accessor.setBlockAt(0, 0, 0, Blocks.STONE);
+    var loadedAreaConstraint = new DelegatePathConstraint() {
+      @Override
+      public boolean isOutOfLevel(BlockState blockState, SFVec3i position) {
+        return position.x > 0;
+      }
+
+      @Override
+      public PathConstraint delegate() {
+        return TestPathConstraint.INSTANCE;
+      }
+    };
+    var constraint = new NoBlockActionsConstraint(loadedAreaConstraint);
+    var inventory = new ProjectedInventory(
+      List.of(),
+      TestMiningCostCalculator.INSTANCE,
+      constraint
+    );
+    var routeFinder = new RouteFinder(
+      new MinecraftGraph(accessor.build(), inventory, constraint, 19),
+      new PosGoal(10, 1, 0)
+    );
+
+    var route = routeFinder.findRouteFuture(
+      NodeState.forInfo(new SFVec3i(0, 1, 0), inventory)
+    ).join();
+
+    var pending = assertInstanceOf(
+      RouteFinder.WorldDataPendingResult.class,
+      route
+    );
+    assertEquals(new SFVec3i(0, 1, 0), pending.endpoint());
+    assertEquals(19, pending.metadata().worldRevision());
+    assertFalse(pending.metadata().unavailableChunks().isEmpty());
   }
 
   @Test

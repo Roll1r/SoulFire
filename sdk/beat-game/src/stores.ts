@@ -3,6 +3,8 @@ import { Effect } from "effect";
 import { BeatGameCheckpointError } from "./errors.js";
 import {
   BEAT_GAME_CHECKPOINT_SCHEMA_VERSION,
+  BeatGameDurableSkillKind,
+  BeatGameDurableSkillStatus,
   BeatGamePhase,
   BeatGameRunStatus,
   BeatGameTeamRole,
@@ -191,6 +193,9 @@ export function assertValidCheckpoint(
   timestamp(checkpoint.updatedAt, "checkpoint.updatedAt");
   plannerState(checkpoint.planner);
   worldMemory(checkpoint.memory);
+  if (checkpoint.activeSkill !== undefined) {
+    durableSkill(checkpoint.activeSkill, "checkpoint.activeSkill");
+  }
   if (checkpoint.lastStableAction !== undefined) {
     stableActionResult(checkpoint.lastStableAction);
   }
@@ -307,6 +312,44 @@ function worldMemory(value: unknown): void {
     blockObservation,
   );
   memoryEntries(memory.portals, "checkpoint.memory.portals", blockObservation);
+  if (!Array.isArray(memory.portalWorkspaces)) {
+    throw new TypeError("checkpoint.memory.portalWorkspaces must be an array");
+  }
+  memory.portalWorkspaces.forEach((workspace, index) =>
+    portalWorkspace(
+      workspace,
+      `checkpoint.memory.portalWorkspaces[${index}]`,
+    )
+  );
+  if (!Array.isArray(memory.places)) {
+    throw new TypeError("checkpoint.memory.places must be an array");
+  }
+  memory.places.forEach((place, index) => {
+    const name = `checkpoint.memory.places[${index}]`;
+    const item = record(place, name);
+    nonEmptyString(item.key, `${name}.key`);
+    enumValue(item.kind, [
+      "FORTRESS",
+      "BASTION",
+      "BLAZE_SPAWNER",
+      "SAFE_CORRIDOR",
+      "SHELTER",
+      "END_ENTRY",
+      "END_FIGHT",
+    ], `${name}.kind`);
+    position(item.position, `${name}.position`);
+    timestamp(item.observedAt, `${name}.observedAt`);
+    confidence(item.confidence, `${name}.confidence`);
+    if (item.invalidationReason !== undefined) {
+      nonEmptyString(item.invalidationReason, `${name}.invalidationReason`);
+    }
+  });
+  if (!Array.isArray(memory.skillHistory)) {
+    throw new TypeError("checkpoint.memory.skillHistory must be an array");
+  }
+  memory.skillHistory.forEach((skill, index) =>
+    durableSkill(skill, `checkpoint.memory.skillHistory[${index}]`)
+  );
   memoryEntries(
     memory.unreachable,
     "checkpoint.memory.unreachable",
@@ -380,16 +423,124 @@ function worldMemory(value: unknown): void {
   }
 }
 
+function durableSkill(value: unknown, name: string): void {
+  const skill = record(value, name);
+  nonEmptyString(skill.skillId, `${name}.skillId`);
+  enumValue(
+    skill.kind,
+    Object.values(BeatGameDurableSkillKind),
+    `${name}.kind`,
+  );
+  enumValue(skill.phase, Object.values(BeatGamePhase), `${name}.phase`);
+  nonEmptyString(skill.action, `${name}.action`);
+  enumValue(
+    skill.status,
+    Object.values(BeatGameDurableSkillStatus),
+    `${name}.status`,
+  );
+  nonEmptyString(skill.substep, `${name}.substep`);
+  positionArray(skill.targets, `${name}.targets`);
+  positionArray(skill.protectedBlocks, `${name}.protectedBlocks`);
+  stringArray(skill.protectedItemIds, `${name}.protectedItemIds`);
+  positionArray(
+    skill.completedWorldChanges,
+    `${name}.completedWorldChanges`,
+  );
+  nonNegativeIntegerRecord(
+    skill.requiredResources,
+    `${name}.requiredResources`,
+  );
+  nonNegativeIntegerRecord(skill.retries, `${name}.retries`);
+  if (skill.completionEvidence !== undefined) {
+    nonEmptyString(skill.completionEvidence, `${name}.completionEvidence`);
+  }
+  if (skill.portalWorkspace !== undefined) {
+    portalWorkspace(skill.portalWorkspace, `${name}.portalWorkspace`);
+  }
+  timestamp(skill.startedAt, `${name}.startedAt`);
+  timestamp(skill.updatedAt, `${name}.updatedAt`);
+}
+
+function portalWorkspace(value: unknown, name: string): void {
+  const workspace = record(value, name);
+  nonEmptyString(workspace.workspaceId, `${name}.workspaceId`);
+  position(workspace.origin, `${name}.origin`);
+  enumValue(workspace.axis, ["x", "z"], `${name}.axis`);
+  enumValue(workspace.method, ["OBSIDIAN", "CAST"], `${name}.method`);
+  enumValue(workspace.status, [
+    "RESERVED",
+    "BUILDING",
+    "IGNITED",
+    "ENTERING",
+    "ENTERED",
+    "ABANDONED",
+  ], `${name}.status`);
+  positionArray(workspace.targetFrame, `${name}.targetFrame`);
+  positionArray(workspace.observedFrame, `${name}.observedFrame`);
+  positionArray(workspace.interior, `${name}.interior`);
+  positionArray(workspace.protectedBlocks, `${name}.protectedBlocks`);
+  positionArray(
+    workspace.candidateLavaSources,
+    `${name}.candidateLavaSources`,
+  );
+  positionArray(
+    workspace.rejectedLavaSources,
+    `${name}.rejectedLavaSources`,
+  );
+  if (workspace.waterSource !== undefined) {
+    position(workspace.waterSource, `${name}.waterSource`);
+  }
+  positionArray(workspace.waterFlow, `${name}.waterFlow`);
+  enumValue(
+    workspace.bucketState,
+    ["UNKNOWN", "EMPTY", "WATER", "LAVA"],
+    `${name}.bucketState`,
+  );
+  enumValue(
+    workspace.ignitionState,
+    ["NOT_ATTEMPTED", "IGNITED"],
+    `${name}.ignitionState`,
+  );
+  enumValue(
+    workspace.interiorState,
+    ["UNKNOWN", "CLEAR", "PORTAL"],
+    `${name}.interiorState`,
+  );
+  nonNegativeInteger(workspace.entryAttempts, `${name}.entryAttempts`);
+  timestamp(workspace.observedAt, `${name}.observedAt`);
+  timestamp(workspace.updatedAt, `${name}.updatedAt`);
+  if (workspace.abandonedReason !== undefined) {
+    nonEmptyString(workspace.abandonedReason, `${name}.abandonedReason`);
+  }
+}
+
+function positionArray(value: unknown, name: string): void {
+  if (!Array.isArray(value)) {
+    throw new TypeError(`${name} must be an array`);
+  }
+  value.forEach((item, index) => position(item, `${name}[${index}]`));
+}
+
+function nonNegativeIntegerRecord(value: unknown, name: string): void {
+  const values = record(value, name);
+  for (const [key, count] of Object.entries(values)) {
+    nonEmptyString(key, `${name} key`);
+    nonNegativeInteger(count, `${name}.${key}`);
+  }
+}
+
 function deathPosition(value: unknown, path: string): void {
   position(value, path);
   const item = record(value, path);
-  if (item.inventoryCounts === undefined) {
-    return;
+  if (item.inventoryCounts !== undefined) {
+    const counts = record(item.inventoryCounts, `${path}.inventoryCounts`);
+    for (const [itemId, count] of Object.entries(counts)) {
+      nonEmptyString(itemId, `${path}.inventoryCounts item ID`);
+      nonNegativeInteger(count, `${path}.inventoryCounts.${itemId}`);
+    }
   }
-  const counts = record(item.inventoryCounts, `${path}.inventoryCounts`);
-  for (const [itemId, count] of Object.entries(counts)) {
-    nonEmptyString(itemId, `${path}.inventoryCounts item ID`);
-    nonNegativeInteger(count, `${path}.inventoryCounts.${itemId}`);
+  if (item.itemExpiresAt !== undefined) {
+    timestamp(item.itemExpiresAt, `${path}.itemExpiresAt`);
   }
 }
 

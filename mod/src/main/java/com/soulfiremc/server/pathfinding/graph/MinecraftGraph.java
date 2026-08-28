@@ -28,6 +28,7 @@ import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
@@ -64,6 +65,21 @@ public record MinecraftGraph(BlockGetter blockAccessor,
       inventory,
       pathConstraint,
       new NavigationSnapshot(blockAccessor),
+      new GraphTransitionCache()
+    );
+  }
+
+  public MinecraftGraph(
+    BlockGetter blockAccessor,
+    ProjectedInventory inventory,
+    PathConstraint pathConstraint,
+    long worldRevision
+  ) {
+    this(
+      blockAccessor,
+      inventory,
+      pathConstraint,
+      new NavigationSnapshot(blockAccessor, worldRevision),
       new GraphTransitionCache()
     );
   }
@@ -122,7 +138,7 @@ public record MinecraftGraph(BlockGetter blockAccessor,
     }
   }
 
-  public boolean insertActions(
+  public GraphExpansion insertActions(
     com.soulfiremc.server.pathfinding.NodeState node,
     Consumer<GraphInstructions> callback
   ) {
@@ -133,22 +149,28 @@ public record MinecraftGraph(BlockGetter blockAccessor,
     );
     if (cached != null) {
       cached.instructions().forEach(callback);
-      return cached.reachedLevelBoundary();
+      return new GraphExpansion(cached.unavailableChunks());
     }
 
     var instructions = new ArrayList<GraphInstructions>();
-    var reachedLevelBoundary = calculateActions(
-      node,
-      generateTemplateActions(node.supportOrigin()),
-      instructions::add
-    );
+    snapshot.beginBoundaryCapture();
+    Set<NavigationChunk> unavailableChunks;
+    try {
+      calculateActions(
+        node,
+        generateTemplateActions(node.supportOrigin()),
+        instructions::add
+      );
+    } finally {
+      unavailableChunks = snapshot.endBoundaryCapture();
+    }
     var entry = new GraphTransitionCache.Entry(
       instructions,
-      reachedLevelBoundary
+      unavailableChunks
     );
     transitionCache.put(node.blockPosition(), node.supportOrigin(), entry);
     entry.instructions().forEach(callback);
-    return reachedLevelBoundary;
+    return new GraphExpansion(entry.unavailableChunks());
   }
 
   private GraphAction[] generateTemplateActions(SupportOrigin supportOrigin) {
@@ -203,6 +225,7 @@ public record MinecraftGraph(BlockGetter blockAccessor,
         blockState = snapshot.blockState(absolutePositionBlock);
 
         if (pathConstraint.isOutOfLevel(blockState, absolutePositionBlock)) {
+          snapshot.markUnavailable(absolutePositionBlock);
           for (var unavailableSubscriber : value) {
             actions[unavailableSubscriber.actionIndex] = null;
           }
@@ -232,6 +255,16 @@ public record MinecraftGraph(BlockGetter blockAccessor,
   public enum SubscriptionSingleResult {
     CONTINUE,
     IMPOSSIBLE
+  }
+
+  public record GraphExpansion(Set<NavigationChunk> unavailableChunks) {
+    public GraphExpansion {
+      unavailableChunks = Set.copyOf(unavailableChunks);
+    }
+
+    public boolean reachedLevelBoundary() {
+      return !unavailableChunks.isEmpty();
+    }
   }
 
   public interface MovementSubscription<M extends GraphAction> {

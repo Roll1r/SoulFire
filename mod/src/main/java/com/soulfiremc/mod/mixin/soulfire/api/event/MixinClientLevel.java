@@ -74,7 +74,14 @@ public class MixinClientLevel {
     if (!cir.getReturnValueZ() || previousState == null || Objects.equals(previousState, state)) {
       return;
     }
-    BotConnection.currentOptional().ifPresent(connection ->
-      SoulFireAPI.postEvent(new BotBlockUpdateEvent(connection, position.immutable(), previousState, state)));
+    BotConnection.currentOptional().ifPresent(connection -> {
+      connection.navigationWorldState().markChanged();
+      SoulFireAPI.postEvent(new BotBlockUpdateEvent(
+        connection,
+        position.immutable(),
+        previousState,
+        state
+      ));
+    });
   }
 }

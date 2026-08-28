@@ -1,4 +1,4 @@
-export const BEAT_GAME_CHECKPOINT_SCHEMA_VERSION = 1 as const;
+export const BEAT_GAME_CHECKPOINT_SCHEMA_VERSION = 2 as const;
 
 export const BeatGamePhase = {
   PREPARE_OVERWORLD: "PREPARE_OVERWORLD",
@@ -70,6 +70,32 @@ export const BeatGamePathSearchMode = {
 
 export type BeatGamePathSearchMode =
   typeof BeatGamePathSearchMode[keyof typeof BeatGamePathSearchMode];
+
+export const BeatGameDurableSkillKind = {
+  PORTAL_CONSTRUCTION: "PORTAL_CONSTRUCTION",
+  LIQUID_HANDLING: "LIQUID_HANDLING",
+  PROTECTED_STRUCTURE: "PROTECTED_STRUCTURE",
+  STRONGHOLD_TRIANGULATION: "STRONGHOLD_TRIANGULATION",
+  NETHER_CORRIDOR: "NETHER_CORRIDOR",
+  BLAZE_COMBAT: "BLAZE_COMBAT",
+  PEARL_ACQUISITION: "PEARL_ACQUISITION",
+  END_PORTAL_ENTRY: "END_PORTAL_ENTRY",
+  DRAGON_COMBAT: "DRAGON_COMBAT",
+  DEATH_RECOVERY: "DEATH_RECOVERY",
+} as const;
+
+export type BeatGameDurableSkillKind =
+  typeof BeatGameDurableSkillKind[keyof typeof BeatGameDurableSkillKind];
+
+export const BeatGameDurableSkillStatus = {
+  ACTIVE: "ACTIVE",
+  SUSPENDED: "SUSPENDED",
+  COMPLETED: "COMPLETED",
+  ABANDONED: "ABANDONED",
+} as const;
+
+export type BeatGameDurableSkillStatus =
+  typeof BeatGameDurableSkillStatus[keyof typeof BeatGameDurableSkillStatus];
 
 export interface BeatGamePosition {
   readonly x: number;
@@ -261,6 +287,7 @@ export interface BeatGameMemoryEntry<T> {
 
 export interface BeatGameDeathPosition extends BeatGamePosition {
   readonly inventoryCounts?: Readonly<Record<string, number>>;
+  readonly itemExpiresAt?: string;
 }
 
 export interface BeatGameExplorationFrontier {
@@ -270,11 +297,67 @@ export interface BeatGameExplorationFrontier {
   readonly totalAdvances?: number;
 }
 
+export interface BeatGamePortalWorkspace {
+  readonly workspaceId: string;
+  readonly origin: BeatGameBlockPosition;
+  readonly axis: "x" | "z";
+  readonly method: "OBSIDIAN" | "CAST";
+  readonly status: "RESERVED" | "BUILDING" | "IGNITED" | "ENTERING"
+    | "ENTERED" | "ABANDONED";
+  readonly targetFrame: readonly BeatGameBlockPosition[];
+  readonly observedFrame: readonly BeatGameBlockPosition[];
+  readonly interior: readonly BeatGameBlockPosition[];
+  readonly protectedBlocks: readonly BeatGameBlockPosition[];
+  readonly candidateLavaSources: readonly BeatGameBlockPosition[];
+  readonly rejectedLavaSources: readonly BeatGameBlockPosition[];
+  readonly waterSource?: BeatGameBlockPosition;
+  readonly waterFlow: readonly BeatGameBlockPosition[];
+  readonly bucketState: "UNKNOWN" | "EMPTY" | "WATER" | "LAVA";
+  readonly ignitionState: "NOT_ATTEMPTED" | "IGNITED";
+  readonly interiorState: "UNKNOWN" | "CLEAR" | "PORTAL";
+  readonly entryAttempts: number;
+  readonly observedAt: string;
+  readonly updatedAt: string;
+  readonly abandonedReason?: string;
+}
+
+export interface BeatGameDurableSkillState {
+  readonly skillId: string;
+  readonly kind: BeatGameDurableSkillKind;
+  readonly phase: BeatGamePhase;
+  readonly action: string;
+  readonly status: BeatGameDurableSkillStatus;
+  readonly substep: string;
+  readonly targets: readonly BeatGamePosition[];
+  readonly protectedBlocks: readonly BeatGameBlockPosition[];
+  readonly protectedItemIds: readonly string[];
+  readonly completedWorldChanges: readonly BeatGameBlockPosition[];
+  readonly requiredResources: Readonly<Record<string, number>>;
+  readonly retries: Readonly<Record<string, number>>;
+  readonly completionEvidence?: string;
+  readonly portalWorkspace?: BeatGamePortalWorkspace;
+  readonly startedAt: string;
+  readonly updatedAt: string;
+}
+
+export interface BeatGameWorldPlace {
+  readonly key: string;
+  readonly kind: "FORTRESS" | "BASTION" | "BLAZE_SPAWNER"
+    | "SAFE_CORRIDOR" | "SHELTER" | "END_ENTRY" | "END_FIGHT";
+  readonly position: BeatGamePosition;
+  readonly observedAt: string;
+  readonly confidence: number;
+  readonly invalidationReason?: string;
+}
+
 export interface BeatGameWorldMemory {
   readonly blocks: readonly BeatGameMemoryEntry<BeatGameBlockObservation>[];
   readonly entities: readonly BeatGameMemoryEntry<BeatGameEntityObservation>[];
   readonly containers: readonly BeatGameMemoryEntry<BeatGameBlockObservation>[];
   readonly portals: readonly BeatGameMemoryEntry<BeatGameBlockObservation>[];
+  readonly portalWorkspaces: readonly BeatGamePortalWorkspace[];
+  readonly places: readonly BeatGameWorldPlace[];
+  readonly skillHistory: readonly BeatGameDurableSkillState[];
   readonly unreachable: readonly BeatGameMemoryEntry<BeatGamePosition>[];
   readonly eyeSamples: readonly BeatGameEyeSample[];
   readonly deathPositions: readonly BeatGameMemoryEntry<
@@ -293,6 +376,9 @@ export const emptyBeatGameWorldMemory = (): BeatGameWorldMemory => ({
   entities: [],
   containers: [],
   portals: [],
+  portalWorkspaces: [],
+  places: [],
+  skillHistory: [],
   unreachable: [],
   eyeSamples: [],
   deathPositions: [],
@@ -389,6 +475,7 @@ export interface BeatGameCheckpoint {
   readonly connectionEpoch: string;
   readonly planner: BeatGamePlannerState;
   readonly memory: BeatGameWorldMemory;
+  readonly activeSkill?: BeatGameDurableSkillState;
   readonly lastStableAction?: BeatGameStableActionResult;
   readonly createdAt: string;
   readonly updatedAt: string;

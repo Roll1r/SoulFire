@@ -28,11 +28,16 @@ import com.soulfiremc.server.pathfinding.execution.WorldAction;
 import com.soulfiremc.server.pathfinding.goals.GoalScorer;
 import com.soulfiremc.server.pathfinding.graph.GraphInstructions;
 import com.soulfiremc.server.pathfinding.graph.MinecraftGraph;
+import com.soulfiremc.server.pathfinding.graph.NavigationChunk;
 import com.soulfiremc.server.util.structs.CancellationToken;
 import lombok.extern.slf4j.Slf4j;
 import org.jspecify.annotations.Nullable;
 
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
@@ -83,9 +88,10 @@ public record RouteFinder(
       suppliedStart.resources(),
       SupportOrigin.WORLD
     );
+    var domain = new MinecraftSearchDomain(scorer.snapshot());
     var search = new AnytimeRepairingAStar<>(
       start,
-      new MinecraftSearchDomain(scorer.snapshot()),
+      domain,
       new AnytimeRepairingAStar.Configuration(
         searchMode.initialEpsilon(),
         constraint.maximumQualityBound(),
@@ -100,6 +106,12 @@ public record RouteFinder(
       )
     );
     var outcome = search.search();
+    var boundaryDiagnostics = search.boundaryDiagnostics();
+    var closestTransitions = new ArrayList<SFVec3i>();
+    var closestExpansion = baseGraph.insertActions(
+      boundaryDiagnostics.closestExpandedState(),
+      instructions -> closestTransitions.add(instructions.blockPosition())
+    );
     stopwatch.stop();
 
     var routeCost = routeCost(outcome.path());
@@ -116,7 +128,11 @@ public record RouteFinder(
       frontierReason(outcome.stopReason()),
       outcome.repairIterations(),
       outcome.repairedInconsistentStates(),
-      Math.max(0, outcome.incumbentCosts().size() - 1)
+      Math.max(0, outcome.incumbentCosts().size() - 1),
+      baseGraph.snapshot().worldRevision(),
+      domain.unavailableChunks(outcome.endpoint()).stream()
+        .sorted()
+        .toList()
     );
     RouteSearchResult result = switch (outcome.status()) {
       case FOUND -> new FoundRouteResult(
@@ -128,6 +144,10 @@ public record RouteFinder(
         requireEndpoint(outcome.endpoint()),
         metadata
       );
+      case WORLD_DATA_PENDING -> new WorldDataPendingResult(
+        requireEndpoint(outcome.endpoint()),
+        metadata
+      );
       case UNREACHABLE -> new NoRouteFoundResult(metadata);
       case SEARCH_LIMIT -> new SearchLimitReachedResult(metadata);
       case INTERRUPTED -> new SearchInterruptedResult(metadata);
@@ -136,16 +156,29 @@ public record RouteFinder(
     };
 
     log.info(
-      "ARA* finished with {} after {}ms, {} expansions, {} repairs, certified bound {}, final epsilon {}, and {}/{} graph cache hits",
+      "ARA* finished with {} after {}ms, {} expansions, {} repairs, certified bound {}, final epsilon {}, closest generated/expanded states {}/{} at heuristics {}/{}, {}/{}/{} reached/progressive/valid boundaries, and {}/{} graph cache hits",
       result.getClass().getSimpleName(),
       metadata.elapsedMillis(),
       metadata.expandedStates(),
       metadata.repairIterations(),
       metadata.qualityBound(),
       metadata.finalEpsilon(),
+      boundaryDiagnostics.closestState().blockPosition(),
+      boundaryDiagnostics.closestExpandedState().blockPosition(),
+      boundaryDiagnostics.closestHeuristic(),
+      boundaryDiagnostics.closestExpandedHeuristic(),
+      boundaryDiagnostics.reachedBoundaries(),
+      boundaryDiagnostics.progressiveBoundaries(),
+      boundaryDiagnostics.validBoundaries(),
       baseGraph.transitionCache().hits(),
       baseGraph.transitionCache().hits()
         + baseGraph.transitionCache().misses()
+    );
+    log.info(
+      "Closest expanded state {} generated {} and touched {}",
+      boundaryDiagnostics.closestExpandedState(),
+      closestTransitions,
+      closestExpansion.unavailableChunks()
     );
     return result;
   }
@@ -189,6 +222,9 @@ public record RouteFinder(
   private final class MinecraftSearchDomain implements
     AnytimeRepairingAStar.Domain<NodeState, GraphInstructions> {
     private final GoalScorer goal;
+    private final Map<NodeState, Set<NavigationChunk>> boundaryChunks =
+      new HashMap<>();
+    private boolean firstExpansion = true;
 
     private MinecraftSearchDomain(GoalScorer goal) {
       this.goal = goal;
@@ -223,10 +259,44 @@ public record RouteFinder(
         AnytimeRepairingAStar.Transition<NodeState, GraphInstructions>
       > output
     ) {
-      return baseGraph.insertActions(
+      var initialExpansion = firstExpansion;
+      firstExpansion = false;
+      var generatedPositions = initialExpansion
+        ? new ArrayList<SFVec3i>()
+        : null;
+      var expansion = baseGraph.insertActions(
         state,
-        instructions -> createTransition(state, instructions, output)
+        instructions -> createTransition(
+          state,
+          instructions,
+          transition -> {
+            if (generatedPositions != null) {
+              generatedPositions.add(transition.state().blockPosition());
+            }
+            output.accept(transition);
+          }
+        )
       );
+      if (expansion.reachedLevelBoundary()) {
+        boundaryChunks.put(state, expansion.unavailableChunks());
+      }
+      if (generatedPositions != null) {
+        log.info(
+          "Initial route expansion from {} generated {} and touched {}",
+          state.blockPosition(),
+          generatedPositions,
+          expansion.unavailableChunks()
+        );
+      }
+      return expansion.reachedLevelBoundary();
+    }
+
+    private Set<NavigationChunk> unavailableChunks(
+      @Nullable NodeState state
+    ) {
+      return state == null
+        ? Set.of()
+        : boundaryChunks.getOrDefault(state, Set.of());
     }
 
     private void createTransition(
@@ -348,8 +418,14 @@ public record RouteFinder(
     FrontierReason frontierReason,
     int repairIterations,
     int repairedInconsistentStates,
-    int incumbentImprovements
-  ) {}
+    int incumbentImprovements,
+    long worldRevision,
+    List<NavigationChunk> unavailableChunks
+  ) {
+    public RouteSearchMetadata {
+      unavailableChunks = List.copyOf(unavailableChunks);
+    }
+  }
 
   public sealed interface RouteSearchResult {
     RouteSearchMetadata metadata();
@@ -364,6 +440,11 @@ public record RouteFinder(
   ) implements RouteSearchResult {}
 
   public record SearchLimitReachedResult(
+    RouteSearchMetadata metadata
+  ) implements RouteSearchResult {}
+
+  public record WorldDataPendingResult(
+    SFVec3i endpoint,
     RouteSearchMetadata metadata
   ) implements RouteSearchResult {}
 

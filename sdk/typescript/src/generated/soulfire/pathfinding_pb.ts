@@ -17,7 +17,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file soulfire/pathfinding.proto.
  */
 export const file_soulfire_pathfinding: GenFile = /*@__PURE__*/
-  fileDesc("Chpzb3VsZmlyZS9wYXRoZmluZGluZy5wcm90bxILc291bGZpcmUudjEipgEKDVBhdGhSb3V0ZUNvc3QSFwoPZXhwZWN0ZWRfZGFtYWdlGAEgASgBEhwKFGlycmV2ZXJzaWJsZV9jaGFuZ2VzGAIgASgNEhUKDXBsYWNlZF9ibG9ja3MYAyABKA0SFQoNYnJva2VuX2Jsb2NrcxgEIAEoDRIVCg1kdXJhdGlvbl9jb3N0GAUgASgBEhkKEW9wdGltaXphdGlvbl9jb3N0GAYgASgBIqsBCghQYXRoU3RlcBISCgVpbmRleBgBIAEoDUID4EECEiwKBGtpbmQYAiABKA4yGS5zb3VsZmlyZS52MS5QYXRoU3RlcEtpbmRCA+BBAhIxCghwb3NpdGlvbhgDIAEoCzIaLnNvdWxmaXJlLnYxLkJsb2NrUG9zaXRpb25CA+BBAhITCgtkZXNjcmlwdGlvbhgEIAEoCRIVCg1tYXhpbXVtX3RpY2tzGAUgASgNIoIGCghQYXRoUGxhbhIwCgZzdGF0dXMYASABKA4yGy5zb3VsZmlyZS52MS5QYXRoUGxhblN0YXR1c0ID4EECEi4KBXN0YXJ0GAIgASgLMhouc291bGZpcmUudjEuQmxvY2tQb3NpdGlvbkID4EECEiQKBXN0ZXBzGAMgAygLMhUuc291bGZpcmUudjEuUGF0aFN0ZXASMwoPYmxvY2tzX3RvX2JyZWFrGAQgAygLMhouc291bGZpcmUudjEuQmxvY2tQb3NpdGlvbhIzCg9ibG9ja3NfdG9fcGxhY2UYBSADKAsyGi5zb3VsZmlyZS52MS5CbG9ja1Bvc2l0aW9uEhUKDW1heGltdW1fdGlja3MYBiABKAQSGwoOcGFydGlhbF9yZWFzb24YByABKAlIAIgBARI0CgtzZWFyY2hfbW9kZRgIIAEoDjIfLnNvdWxmaXJlLnYxLlBhdGhmaW5kU2VhcmNoTW9kZRIVCg1xdWFsaXR5X2JvdW5kGAkgASgBEi4KCnJvdXRlX2Nvc3QYCiABKAsyGi5zb3VsZmlyZS52MS5QYXRoUm91dGVDb3N0EhcKD2V4cGFuZGVkX3N0YXRlcxgLIAEoBBIdChVnZW5lcmF0ZWRfdHJhbnNpdGlvbnMYDCABKAQSHQoVc2VhcmNoX2VsYXBzZWRfbWlsbGlzGA0gASgEEjgKD2Zyb250aWVyX3JlYXNvbhgOIAEoDjIfLnNvdWxmaXJlLnYxLlBhdGhGcm9udGllclJlYXNvbhIXCg9pbml0aWFsX2Vwc2lsb24YDyABKAESFQoNZmluYWxfZXBzaWxvbhgQIAEoARIZChFyZXBhaXJfaXRlcmF0aW9ucxgRIAEoDRIkChxyZXBhaXJlZF9pbmNvbnNpc3RlbnRfc3RhdGVzGBIgASgNEh4KFmluY3VtYmVudF9pbXByb3ZlbWVudHMYEyABKA0SHgoWcmVxdWlyZWRfcXVhbGl0eV9ib3VuZBgUIAEoAUIRCg9fcGFydGlhbF9yZWFzb24izwEKD1BsYW5QYXRoUmVxdWVzdBIiCgtpbnN0YW5jZV9pZBgBIAEoCUIN4EEC0vMYBgoEdXVpZBIdCgZib3RfaWQYAiABKAlCDeBBAtLzGAYKBHV1aWQSLAoEZ29hbBgDIAEoCzIZLnNvdWxmaXJlLnYxLlBhdGhmaW5kR29hbEID4EECEi0KB29wdGlvbnMYBCABKAsyHC5zb3VsZmlyZS52MS5QYXRoZmluZE9wdGlvbnMSHAoUaW5jbHVkZV9kZXNjcmlwdGlvbnMYBSABKAgiPAoQUGxhblBhdGhSZXNwb25zZRIoCgRwbGFuGAEgASgLMhUuc291bGZpcmUudjEuUGF0aFBsYW5CA+BBAirdAQoMUGF0aFN0ZXBLaW5kEh4KGlBBVEhfU1RFUF9LSU5EX1VOU1BFQ0lGSUVEEAASFwoTUEFUSF9TVEVQX0tJTkRfTU9WRRABEh4KGlBBVEhfU1RFUF9LSU5EX0JSRUFLX0JMT0NLEAISHgoaUEFUSF9TVEVQX0tJTkRfUExBQ0VfQkxPQ0sQAxIXChNQQVRIX1NURVBfS0lORF9KVU1QEAQSGwoXUEFUSF9TVEVQX0tJTkRfSU5URVJBQ1QQBRIeChpQQVRIX1NURVBfS0lORF9SRUNBTENVTEFURRAGKoICCg5QYXRoUGxhblN0YXR1cxIgChxQQVRIX1BMQU5fU1RBVFVTX1VOU1BFQ0lGSUVEEAASHQoZUEFUSF9QTEFOX1NUQVRVU19DT01QTEVURRABEhwKGFBBVEhfUExBTl9TVEFUVVNfUEFSVElBTBACEiAKHFBBVEhfUExBTl9TVEFUVVNfVU5SRUFDSEFCTEUQAxIjCh9QQVRIX1BMQU5fU1RBVFVTX1NFQVJDSF9FWFBJUkVEEAQSHgoaUEFUSF9QTEFOX1NUQVRVU19DQU5DRUxMRUQQBRIqCiZQQVRIX1BMQU5fU1RBVFVTX1FVQUxJVFlfQk9VTkRfTk9UX01FVBAGKtQBChJQYXRoRnJvbnRpZXJSZWFzb24SJAogUEFUSF9GUk9OVElFUl9SRUFTT05fVU5TUEVDSUZJRUQQABIdChlQQVRIX0ZST05USUVSX1JFQVNPTl9OT05FEAESJwojUEFUSF9GUk9OVElFUl9SRUFTT05fTEVWRUxfQk9VTkRBUlkQAhIoCiRQQVRIX0ZST05USUVSX1JFQVNPTl9TRUFSQ0hfREVBRExJTkUQAxImCiJQQVRIX0ZST05USUVSX1JFQVNPTl9TRUFSQ0hfQlVER0VUEAQyiAIKEVBhdGhmaW5kZXJTZXJ2aWNlEvIBCghQbGFuUGF0aBIcLnNvdWxmaXJlLnYxLlBsYW5QYXRoUmVxdWVzdBodLnNvdWxmaXJlLnYxLlBsYW5QYXRoUmVzcG9uc2UiqAHK8xhgCg1QbGFuIGJvdCBwYXRoGg1SRUFEX0JPVF9JTkZPIgxpbnN0YW5jZS5ib3QyMlNlYXJjaGVzIGxvYWRlZCB3b3JsZCBkYXRhIHdpdGhvdXQgbW92aW5nIHRoZSBib3QugtPkkwI+OgEqIjkvdjEvaW5zdGFuY2VzL3tpbnN0YW5jZV9pZH0vYm90cy97Ym90X2lkfS9wYXRoZmluZGVyOnBsYW5CIQodY29tLnNvdWxmaXJlbWMuZ3JwYy5nZW5lcmF0ZWRQAWIGcHJvdG8z", [file_google_api_annotations, file_google_api_field_behavior, file_soulfire_api_docs, file_soulfire_bot_live, file_soulfire_common]);
+  fileDesc("Chpzb3VsZmlyZS9wYXRoZmluZGluZy5wcm90bxILc291bGZpcmUudjEipgEKDVBhdGhSb3V0ZUNvc3QSFwoPZXhwZWN0ZWRfZGFtYWdlGAEgASgBEhwKFGlycmV2ZXJzaWJsZV9jaGFuZ2VzGAIgASgNEhUKDXBsYWNlZF9ibG9ja3MYAyABKA0SFQoNYnJva2VuX2Jsb2NrcxgEIAEoDRIVCg1kdXJhdGlvbl9jb3N0GAUgASgBEhkKEW9wdGltaXphdGlvbl9jb3N0GAYgASgBIisKCVBhdGhDaHVuaxIOCgF4GAEgASgFQgPgQQISDgoBehgCIAEoBUID4EECIqsBCghQYXRoU3RlcBISCgVpbmRleBgBIAEoDUID4EECEiwKBGtpbmQYAiABKA4yGS5zb3VsZmlyZS52MS5QYXRoU3RlcEtpbmRCA+BBAhIxCghwb3NpdGlvbhgDIAEoCzIaLnNvdWxmaXJlLnYxLkJsb2NrUG9zaXRpb25CA+BBAhITCgtkZXNjcmlwdGlvbhgEIAEoCRIVCg1tYXhpbXVtX3RpY2tzGAUgASgNIs4GCghQYXRoUGxhbhIwCgZzdGF0dXMYASABKA4yGy5zb3VsZmlyZS52MS5QYXRoUGxhblN0YXR1c0ID4EECEi4KBXN0YXJ0GAIgASgLMhouc291bGZpcmUudjEuQmxvY2tQb3NpdGlvbkID4EECEiQKBXN0ZXBzGAMgAygLMhUuc291bGZpcmUudjEuUGF0aFN0ZXASMwoPYmxvY2tzX3RvX2JyZWFrGAQgAygLMhouc291bGZpcmUudjEuQmxvY2tQb3NpdGlvbhIzCg9ibG9ja3NfdG9fcGxhY2UYBSADKAsyGi5zb3VsZmlyZS52MS5CbG9ja1Bvc2l0aW9uEhUKDW1heGltdW1fdGlja3MYBiABKAQSGwoOcGFydGlhbF9yZWFzb24YByABKAlIAIgBARI0CgtzZWFyY2hfbW9kZRgIIAEoDjIfLnNvdWxmaXJlLnYxLlBhdGhmaW5kU2VhcmNoTW9kZRIVCg1xdWFsaXR5X2JvdW5kGAkgASgBEi4KCnJvdXRlX2Nvc3QYCiABKAsyGi5zb3VsZmlyZS52MS5QYXRoUm91dGVDb3N0EhcKD2V4cGFuZGVkX3N0YXRlcxgLIAEoBBIdChVnZW5lcmF0ZWRfdHJhbnNpdGlvbnMYDCABKAQSHQoVc2VhcmNoX2VsYXBzZWRfbWlsbGlzGA0gASgEEjgKD2Zyb250aWVyX3JlYXNvbhgOIAEoDjIfLnNvdWxmaXJlLnYxLlBhdGhGcm9udGllclJlYXNvbhIXCg9pbml0aWFsX2Vwc2lsb24YDyABKAESFQoNZmluYWxfZXBzaWxvbhgQIAEoARIZChFyZXBhaXJfaXRlcmF0aW9ucxgRIAEoDRIkChxyZXBhaXJlZF9pbmNvbnNpc3RlbnRfc3RhdGVzGBIgASgNEh4KFmluY3VtYmVudF9pbXByb3ZlbWVudHMYEyABKA0SHgoWcmVxdWlyZWRfcXVhbGl0eV9ib3VuZBgUIAEoARIWCg53b3JsZF9yZXZpc2lvbhgVIAEoBBIyChJ1bmF2YWlsYWJsZV9jaHVua3MYFiADKAsyFi5zb3VsZmlyZS52MS5QYXRoQ2h1bmtCEQoPX3BhcnRpYWxfcmVhc29uIs8BCg9QbGFuUGF0aFJlcXVlc3QSIgoLaW5zdGFuY2VfaWQYASABKAlCDeBBAtLzGAYKBHV1aWQSHQoGYm90X2lkGAIgASgJQg3gQQLS8xgGCgR1dWlkEiwKBGdvYWwYAyABKAsyGS5zb3VsZmlyZS52MS5QYXRoZmluZEdvYWxCA+BBAhItCgdvcHRpb25zGAQgASgLMhwuc291bGZpcmUudjEuUGF0aGZpbmRPcHRpb25zEhwKFGluY2x1ZGVfZGVzY3JpcHRpb25zGAUgASgIIjwKEFBsYW5QYXRoUmVzcG9uc2USKAoEcGxhbhgBIAEoCzIVLnNvdWxmaXJlLnYxLlBhdGhQbGFuQgPgQQIq3QEKDFBhdGhTdGVwS2luZBIeChpQQVRIX1NURVBfS0lORF9VTlNQRUNJRklFRBAAEhcKE1BBVEhfU1RFUF9LSU5EX01PVkUQARIeChpQQVRIX1NURVBfS0lORF9CUkVBS19CTE9DSxACEh4KGlBBVEhfU1RFUF9LSU5EX1BMQUNFX0JMT0NLEAMSFwoTUEFUSF9TVEVQX0tJTkRfSlVNUBAEEhsKF1BBVEhfU1RFUF9LSU5EX0lOVEVSQUNUEAUSHgoaUEFUSF9TVEVQX0tJTkRfUkVDQUxDVUxBVEUQBiqrAgoOUGF0aFBsYW5TdGF0dXMSIAocUEFUSF9QTEFOX1NUQVRVU19VTlNQRUNJRklFRBAAEh0KGVBBVEhfUExBTl9TVEFUVVNfQ09NUExFVEUQARIcChhQQVRIX1BMQU5fU1RBVFVTX1BBUlRJQUwQAhIgChxQQVRIX1BMQU5fU1RBVFVTX1VOUkVBQ0hBQkxFEAMSIwofUEFUSF9QTEFOX1NUQVRVU19TRUFSQ0hfRVhQSVJFRBAEEh4KGlBBVEhfUExBTl9TVEFUVVNfQ0FOQ0VMTEVEEAUSKgomUEFUSF9QTEFOX1NUQVRVU19RVUFMSVRZX0JPVU5EX05PVF9NRVQQBhInCiNQQVRIX1BMQU5fU1RBVFVTX1dPUkxEX0RBVEFfUEVORElORxAHKtQBChJQYXRoRnJvbnRpZXJSZWFzb24SJAogUEFUSF9GUk9OVElFUl9SRUFTT05fVU5TUEVDSUZJRUQQABIdChlQQVRIX0ZST05USUVSX1JFQVNPTl9OT05FEAESJwojUEFUSF9GUk9OVElFUl9SRUFTT05fTEVWRUxfQk9VTkRBUlkQAhIoCiRQQVRIX0ZST05USUVSX1JFQVNPTl9TRUFSQ0hfREVBRExJTkUQAxImCiJQQVRIX0ZST05USUVSX1JFQVNPTl9TRUFSQ0hfQlVER0VUEAQyiAIKEVBhdGhmaW5kZXJTZXJ2aWNlEvIBCghQbGFuUGF0aBIcLnNvdWxmaXJlLnYxLlBsYW5QYXRoUmVxdWVzdBodLnNvdWxmaXJlLnYxLlBsYW5QYXRoUmVzcG9uc2UiqAHK8xhgCg1QbGFuIGJvdCBwYXRoGg1SRUFEX0JPVF9JTkZPIgxpbnN0YW5jZS5ib3QyMlNlYXJjaGVzIGxvYWRlZCB3b3JsZCBkYXRhIHdpdGhvdXQgbW92aW5nIHRoZSBib3QugtPkkwI+OgEqIjkvdjEvaW5zdGFuY2VzL3tpbnN0YW5jZV9pZH0vYm90cy97Ym90X2lkfS9wYXRoZmluZGVyOnBsYW5CIQodY29tLnNvdWxmaXJlbWMuZ3JwYy5nZW5lcmF0ZWRQAWIGcHJvdG8z", [file_google_api_annotations, file_google_api_field_behavior, file_soulfire_api_docs, file_soulfire_bot_live, file_soulfire_common]);
 
 /**
  * @generated from message soulfire.v1.PathRouteCost
@@ -64,6 +64,28 @@ export const PathRouteCostSchema: GenMessage<PathRouteCost> = /*@__PURE__*/
   messageDesc(file_soulfire_pathfinding, 0);
 
 /**
+ * @generated from message soulfire.v1.PathChunk
+ */
+export type PathChunk = Message<"soulfire.v1.PathChunk"> & {
+  /**
+   * @generated from field: int32 x = 1;
+   */
+  x: number;
+
+  /**
+   * @generated from field: int32 z = 2;
+   */
+  z: number;
+};
+
+/**
+ * Describes the message soulfire.v1.PathChunk.
+ * Use `create(PathChunkSchema)` to create a new message.
+ */
+export const PathChunkSchema: GenMessage<PathChunk> = /*@__PURE__*/
+  messageDesc(file_soulfire_pathfinding, 1);
+
+/**
  * @generated from message soulfire.v1.PathStep
  */
 export type PathStep = Message<"soulfire.v1.PathStep"> & {
@@ -98,7 +120,7 @@ export type PathStep = Message<"soulfire.v1.PathStep"> & {
  * Use `create(PathStepSchema)` to create a new message.
  */
 export const PathStepSchema: GenMessage<PathStep> = /*@__PURE__*/
-  messageDesc(file_soulfire_pathfinding, 1);
+  messageDesc(file_soulfire_pathfinding, 2);
 
 /**
  * @generated from message soulfire.v1.PathPlan
@@ -212,6 +234,20 @@ export type PathPlan = Message<"soulfire.v1.PathPlan"> & {
    * @generated from field: double required_quality_bound = 20;
    */
   requiredQualityBound: number;
+
+  /**
+   * Navigation-world revision captured before this search started.
+   *
+   * @generated from field: uint64 world_revision = 21;
+   */
+  worldRevision: bigint;
+
+  /**
+   * Chunks read by the search but absent from the captured client world.
+   *
+   * @generated from field: repeated soulfire.v1.PathChunk unavailable_chunks = 22;
+   */
+  unavailableChunks: PathChunk[];
 };
 
 /**
@@ -219,7 +255,7 @@ export type PathPlan = Message<"soulfire.v1.PathPlan"> & {
  * Use `create(PathPlanSchema)` to create a new message.
  */
 export const PathPlanSchema: GenMessage<PathPlan> = /*@__PURE__*/
-  messageDesc(file_soulfire_pathfinding, 2);
+  messageDesc(file_soulfire_pathfinding, 3);
 
 /**
  * @generated from message soulfire.v1.PlanPathRequest
@@ -256,7 +292,7 @@ export type PlanPathRequest = Message<"soulfire.v1.PlanPathRequest"> & {
  * Use `create(PlanPathRequestSchema)` to create a new message.
  */
 export const PlanPathRequestSchema: GenMessage<PlanPathRequest> = /*@__PURE__*/
-  messageDesc(file_soulfire_pathfinding, 3);
+  messageDesc(file_soulfire_pathfinding, 4);
 
 /**
  * @generated from message soulfire.v1.PlanPathResponse
@@ -273,7 +309,7 @@ export type PlanPathResponse = Message<"soulfire.v1.PlanPathResponse"> & {
  * Use `create(PlanPathResponseSchema)` to create a new message.
  */
 export const PlanPathResponseSchema: GenMessage<PlanPathResponse> = /*@__PURE__*/
-  messageDesc(file_soulfire_pathfinding, 4);
+  messageDesc(file_soulfire_pathfinding, 5);
 
 /**
  * @generated from enum soulfire.v1.PathStepKind
@@ -359,6 +395,11 @@ export enum PathPlanStatus {
    * @generated from enum value: PATH_PLAN_STATUS_QUALITY_BOUND_NOT_MET = 6;
    */
   QUALITY_BOUND_NOT_MET = 6,
+
+  /**
+   * @generated from enum value: PATH_PLAN_STATUS_WORLD_DATA_PENDING = 7;
+   */
+  WORLD_DATA_PENDING = 7,
 }
 
 /**

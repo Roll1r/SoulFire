@@ -22,8 +22,16 @@ jobs:
       update_sdk: true
     secrets: inherit
 
-  build:
+  beat-game-qualification:
     needs: set-release-version
+    uses: ./.github/workflows/beat-game-qualification.yml
+    with:
+      runs: 1
+      controlled: false
+      seed: SoulFire beat-game qualification v1
+
+  build:
+    needs: beat-game-qualification
     runs-on: blacksmith-2vcpu-ubuntu-2404
     permissions:
       contents: write

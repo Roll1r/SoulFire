@@ -175,6 +175,80 @@ final class AnytimeRepairingAStarTest {
   }
 
   @Test
+  void reportsAStationaryWorldFrontierWithoutInventingProgress() {
+    var outcome = search(
+      new StringDomain(
+        Map.of("S", List.of()),
+        Map.of("S", 1D),
+        "G",
+        Set.of("S")
+      ),
+      configuration(1, 1, 100)
+    );
+
+    assertEquals(
+      AnytimeRepairingAStar.Status.WORLD_DATA_PENDING,
+      outcome.status()
+    );
+    assertEquals(AnytimeRepairingAStar.StopReason.FRONTIER, outcome.stopReason());
+    assertEquals(1, outcome.expandedStates());
+    assertEquals("S", outcome.endpoint());
+    assertTrue(outcome.path().isEmpty());
+  }
+
+  @Test
+  void doesNotWaitAtARegressiveWorldFrontier() {
+    var graph = Map.of(
+      "S", List.of(new Edge("A", 1)),
+      "A", List.<Edge>of()
+    );
+    var outcome = search(
+      new StringDomain(
+        graph,
+        Map.of("S", 1D, "A", 2D),
+        "G",
+        Set.of("A")
+      ),
+      configuration(1, 1, 100)
+    );
+
+    assertEquals(AnytimeRepairingAStar.Status.UNREACHABLE, outcome.status());
+    assertTrue(outcome.path().isEmpty());
+  }
+
+  @Test
+  void ignoresABlockedDirectionWhileLoadedProgressRemains() {
+    var graph = Map.of(
+      "S", List.of(new Edge("A", 1)),
+      "A", List.of(new Edge("B", 1)),
+      "B", List.of(new Edge("G", 1)),
+      "G", List.<Edge>of()
+    );
+    var domain = new StringDomain(
+      graph,
+      Map.of("S", 3D, "A", 2D, "B", 1D, "G", 0D),
+      "G",
+      Set.of("S")
+    );
+    var outcome = search(
+      domain,
+      new AnytimeRepairingAStar.Configuration(
+        1,
+        1,
+        0.5,
+        System.nanoTime() + Duration.ofSeconds(5).toNanos(),
+        Duration.ofSeconds(1).toNanos(),
+        100,
+        1,
+        () -> false
+      )
+    );
+
+    assertEquals(AnytimeRepairingAStar.Status.FOUND, outcome.status());
+    assertEquals("G", outcome.endpoint());
+  }
+
+  @Test
   void retainsARequiredResourceTradeoff() {
     var start = new ResourceNode("S", 0);
     var search = new AnytimeRepairingAStar<>(

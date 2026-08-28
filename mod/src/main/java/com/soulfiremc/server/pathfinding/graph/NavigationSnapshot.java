@@ -30,16 +30,59 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.FluidState;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.LinkedHashSet;
+import java.util.Set;
+
 /// A lazy and stable view of the blocks read during one route search.
 public final class NavigationSnapshot {
   private final BlockGetter blockAccessor;
   private final BlockGetter collisionAccessor;
+  private final long worldRevision;
   private final Long2ObjectOpenHashMap<BlockState> blockStates = new Long2ObjectOpenHashMap<>();
   private final Long2ObjectOpenHashMap<NavigationCell> cells = new Long2ObjectOpenHashMap<>();
+  private final Set<NavigationChunk> unavailableChunks = new LinkedHashSet<>();
+  private Set<NavigationChunk> boundaryCapture;
 
   public NavigationSnapshot(BlockGetter blockAccessor) {
+    this(blockAccessor, 0);
+  }
+
+  public NavigationSnapshot(BlockGetter blockAccessor, long worldRevision) {
     this.blockAccessor = blockAccessor;
+    this.worldRevision = worldRevision;
     this.collisionAccessor = new SnapshotBlockGetter();
+  }
+
+  public long worldRevision() {
+    return worldRevision;
+  }
+
+  public void markUnavailable(SFVec3i position) {
+    var chunk = NavigationChunk.containing(position);
+    unavailableChunks.add(chunk);
+    if (boundaryCapture != null) {
+      boundaryCapture.add(chunk);
+    }
+  }
+
+  void beginBoundaryCapture() {
+    if (boundaryCapture != null) {
+      throw new IllegalStateException("A navigation boundary capture is active");
+    }
+    boundaryCapture = new LinkedHashSet<>();
+  }
+
+  Set<NavigationChunk> endBoundaryCapture() {
+    var captured = boundaryCapture;
+    if (captured == null) {
+      throw new IllegalStateException("No navigation boundary capture is active");
+    }
+    boundaryCapture = null;
+    return Set.copyOf(captured);
+  }
+
+  public Set<NavigationChunk> unavailableChunks() {
+    return Set.copyOf(unavailableChunks);
   }
 
   public BlockState blockState(SFVec3i position) {

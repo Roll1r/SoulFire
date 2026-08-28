@@ -23,6 +23,7 @@ import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import org.checkerframework.checker.nullness.qual.Nullable;
 
 import java.util.List;
+import java.util.Set;
 
 /// Search-local cache for deterministic graph transitions.
 public final class GraphTransitionCache {
@@ -61,10 +62,11 @@ public final class GraphTransitionCache {
 
   public record Entry(
     List<GraphInstructions> instructions,
-    boolean reachedLevelBoundary
+    Set<NavigationChunk> unavailableChunks
   ) {
     public Entry {
       instructions = List.copyOf(instructions);
+      unavailableChunks = Set.copyOf(unavailableChunks);
     }
   }
 }

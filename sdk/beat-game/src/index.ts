@@ -129,6 +129,8 @@ export {
 } from "./geometry.js";
 export {
   BEAT_GAME_CHECKPOINT_SCHEMA_VERSION,
+  BeatGameDurableSkillKind,
+  BeatGameDurableSkillStatus,
   BeatGameObjective,
   BeatGamePathSearchMode,
   BeatGamePhase,
@@ -142,6 +144,7 @@ export {
   type BeatGameCheckpoint,
   type BeatGameClaim,
   type BeatGameDeathPosition,
+  type BeatGameDurableSkillState,
   type BeatGameExplorationFrontier,
   type BeatGameEntityObservation,
   type BeatGameEntityReference,
@@ -155,6 +158,7 @@ export {
   type BeatGamePathPolicy,
   type BeatGamePlannerState,
   type BeatGamePlayerObservation,
+  type BeatGamePortalWorkspace,
   type BeatGamePosition,
   type BeatGameResult,
   type BeatGameRotation,
@@ -169,8 +173,18 @@ export {
   type BeatGameTeamRunOptions,
   type BeatGameTeamSnapshot,
   type BeatGameWorldMemory,
+  type BeatGameWorldPlace,
   type EyeTriangulation,
 } from "./model.js";
+export {
+  advanceDurableSkill,
+  completeDurableSkill,
+  durableSkillKindForDecision,
+  latestResumablePortalWorkspace,
+  startOrResumeDurableSkill,
+  startDurableSkillIfIdle,
+  suspendDurableSkill,
+} from "./skills.js";
 export {
   decideBeatGameAction,
   isEnd,
