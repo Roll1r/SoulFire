@@ -19,22 +19,28 @@ package com.soulfiremc.server.pathfinding.execution;
 
 import com.soulfiremc.server.bot.BotConnection;
 import com.soulfiremc.server.pathfinding.SFVec3i;
+import com.soulfiremc.server.util.SFBlockHelpers;
 import com.soulfiremc.server.util.VectorHelper;
 import lombok.Getter;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import net.minecraft.world.level.BlockGetter;
 
 @Slf4j
-@RequiredArgsConstructor
 public final class GapJumpAction implements WorldAction {
   private static final int MINIMUM_RUN_UP_TICKS = 2;
   private static final int MAXIMUM_RUN_UP_TICKS = 3;
   private static final double MINIMUM_FORWARD_SPEED = 0.08;
 
+  private final SFVec3i startPosition;
   @Getter
   private final SFVec3i blockPosition;
   private int runUpTicks;
   private boolean startedJumping;
+
+  public GapJumpAction(SFVec3i startPosition, SFVec3i blockPosition) {
+    this.startPosition = startPosition;
+    this.blockPosition = blockPosition;
+  }
 
   @Override
   public boolean isCompleted(BotConnection connection) {
@@ -56,6 +62,42 @@ public final class GapJumpAction implements WorldAction {
     }
 
     return MovementAction.horizontalDistance(botPosition, targetMiddleBlock) <= 0.3;
+  }
+
+  @Override
+  public boolean isValid(BotConnection connection) {
+    return MovementAction.hasValidTarget(connection, blockPosition)
+      && hasClearTrajectory(
+      connection.minecraft().level,
+      startPosition,
+      blockPosition
+    );
+  }
+
+  static boolean hasClearTrajectory(
+    BlockGetter level,
+    SFVec3i start,
+    SFVec3i target
+  ) {
+    var deltaX = target.x - start.x;
+    var deltaZ = target.z - start.z;
+    var steps = Math.max(Math.abs(deltaX), Math.abs(deltaZ));
+    if (steps < 1 || start.y != target.y) {
+      return false;
+    }
+    var stepX = Integer.signum(deltaX);
+    var stepZ = Integer.signum(deltaZ);
+    for (var step = 1; step < steps; step++) {
+      var position = start.add(stepX * step, 0, stepZ * step);
+      for (var y = 0; y <= 2; y++) {
+        if (!SFBlockHelpers.isBlockFree(
+          level.getBlockState(position.add(0, y, 0).toBlockPos())
+        )) {
+          return false;
+        }
+      }
+    }
+    return true;
   }
 
   @Override

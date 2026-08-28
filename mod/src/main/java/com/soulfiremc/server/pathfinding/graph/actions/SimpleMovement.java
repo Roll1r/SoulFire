@@ -285,6 +285,9 @@ public final class SimpleMovement extends GraphAction implements Cloneable {
 
   @Override
   public List<GraphInstructions> getInstructions(MinecraftGraph graph, SFVec3i node) {
+    if (modifier.fallDistance() > graph.pathConstraint().maximumFallDistance()) {
+      return Collections.emptyList();
+    }
     if (
       diagonal
         && modifier == MovementModifier.JUMP_UP_BLOCK
@@ -394,8 +397,8 @@ public final class SimpleMovement extends GraphAction implements Cloneable {
     return this.clone();
   }
 
-  public void currentFloorProjected(boolean currentFloorProjected) {
-    this.currentFloorProjected = currentFloorProjected;
+  public void currentFloorProjected(boolean value) {
+    this.currentFloorProjected = value;
   }
 
   @Override

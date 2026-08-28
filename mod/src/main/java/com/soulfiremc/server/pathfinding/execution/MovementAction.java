@@ -22,16 +22,17 @@ import com.soulfiremc.server.bot.BotConnection;
 import com.soulfiremc.server.pathfinding.SFVec3i;
 import com.soulfiremc.server.pathfinding.graph.constraint.PathConstraint;
 import com.soulfiremc.server.util.MathHelper;
+import com.soulfiremc.server.util.SFBlockHelpers;
 import com.soulfiremc.server.util.VectorHelper;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.util.Mth;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
-import java.util.concurrent.ThreadLocalRandom;
 
 @Slf4j
 @RequiredArgsConstructor
@@ -73,6 +74,43 @@ public final class MovementAction implements WorldAction {
     } else {
       return isAtTargetXZ(clientEntity, botPosition, targetMiddleBlock);
     }
+  }
+
+  @Override
+  public boolean isValid(BotConnection connection) {
+    return hasValidTarget(connection, blockPosition);
+  }
+
+  static boolean hasValidTarget(
+    BotConnection connection,
+    SFVec3i target
+  ) {
+    var level = connection.minecraft().level;
+    var feet = level.getBlockState(target.toBlockPos());
+    var head = level.getBlockState(target.add(0, 1, 0).toBlockPos());
+    var floor = level.getBlockState(target.sub(0, 1, 0).toBlockPos());
+    return hasValidTargetStates(feet, head, floor);
+  }
+
+  static boolean hasValidTargetStates(
+    BlockState feet,
+    BlockState head,
+    BlockState floor
+  ) {
+    var supportInsideFeet = SFBlockHelpers.canSupportFeetInBlock(feet);
+    var climbable = feet.is(net.minecraft.tags.BlockTags.CLIMBABLE)
+      || feet.is(net.minecraft.world.level.block.Blocks.LADDER)
+      || feet.is(net.minecraft.world.level.block.Blocks.SCAFFOLDING);
+    var feetPassable = SFBlockHelpers.isBodyPassableBlock(feet)
+      || supportInsideFeet
+      || climbable;
+    if (!feetPassable || !SFBlockHelpers.isBodyPassableBlock(head)) {
+      return false;
+    }
+    return SFBlockHelpers.isWalkableFloorBlock(floor)
+      || supportInsideFeet
+      || SFBlockHelpers.isSwimmableWaterBlock(feet)
+      || climbable;
   }
 
   static boolean hasReachedTargetHeight(
@@ -129,19 +167,15 @@ public final class MovementAction implements WorldAction {
     var blockMeta = level.getBlockState(blockPosition.toBlockPos());
     var targetMiddleBlock = VectorHelper.topMiddleOfBlock(blockPosition, blockMeta);
 
-    var xRot = 0F;
-    var yRot = 0F;
-
-    if (pathConstraint.yRotJitter().min() < pathConstraint.yRotJitter().max()) {
-      yRot =
-        ThreadLocalRandom.current().nextFloat((float) pathConstraint.yRotJitter().min(), (float) pathConstraint.yRotJitter().max());
+    if (pathConstraint.smoothCamera()) {
+      connection.rotationControl().lookHorizontallyAtSmoothly(
+        targetMiddleBlock,
+        8,
+        3
+      );
+    } else {
+      connection.rotationControl().lookHorizontallyAt(targetMiddleBlock, 0, 0);
     }
-    if (pathConstraint.xRotJitter().min() < pathConstraint.xRotJitter().max()) {
-      xRot =
-        ThreadLocalRandom.current().nextFloat((float) pathConstraint.xRotJitter().min(), (float) pathConstraint.xRotJitter().max());
-    }
-
-    connection.rotationControl().lookHorizontallyAt(targetMiddleBlock, yRot, xRot);
 
     var botPosition = clientEntity.position();
     var movingInFluid = clientEntity.isInWater() || clientEntity.isInLava();

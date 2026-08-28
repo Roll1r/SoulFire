@@ -6,6 +6,7 @@ import {
   goals,
   Hand,
   InventoryArea,
+  PathfindSearchMode,
   QuerySort,
   type BlockSnapshot,
   type SchematicBlock,
@@ -23,6 +24,7 @@ import type {
   BeatGamePathPolicy,
   BeatGamePosition,
 } from "./model.js";
+import { BeatGamePathSearchMode } from "./model.js";
 
 const CONTROL_LEASE_TTL_SECONDS = 90;
 const CONTROL_LEASE_RENEWAL_INTERVAL_MS = 30_000;
@@ -581,6 +583,32 @@ export function makeSoulFireBeatGameDriver(
     ...(policy.maximumY === undefined
       ? {}
       : { maximumY: policy.maximumY }),
+    searchMode: ((): PathfindSearchMode => {
+      switch (policy.searchMode) {
+        case BeatGamePathSearchMode.PRECISION:
+          return PathfindSearchMode.PRECISION;
+        case BeatGamePathSearchMode.URGENT:
+          return PathfindSearchMode.URGENT;
+        case BeatGamePathSearchMode.ESCAPE:
+          return PathfindSearchMode.ESCAPE;
+        case BeatGamePathSearchMode.NORMAL:
+        case undefined:
+          return PathfindSearchMode.NORMAL;
+        default:
+          return PathfindSearchMode.NORMAL;
+      }
+    })(),
+    ...(policy.maximumQualityBound === undefined
+      ? {}
+      : { maximumQualityBound: policy.maximumQualityBound }),
+    ...(policy.maximumExpandedStates === undefined
+      ? {}
+      : { maximumExpandedStates: policy.maximumExpandedStates }),
+    maximumFallDistance: policy.maxFallDistance,
+    ...(policy.maxParkourGap === undefined
+      ? {}
+      : { maximumParkourGap: policy.maxParkourGap }),
+    smoothCamera: policy.smoothCamera ?? false,
     timeoutSeconds: Math.max(1, Math.ceil(policy.maxSearchTimeMs / 1_000)),
     searchTimeoutSeconds: Math.max(
       1,

@@ -34,7 +34,7 @@ import java.util.function.Consumer;
 
 public final class ParkourMovement extends GraphAction implements Cloneable {
   private static final SFVec3i FEET_POSITION_RELATIVE_BLOCK = SFVec3i.ZERO;
-  private static final int MAX_GAP_LENGTH = 2;
+  private static final int MAX_GAP_LENGTH = 3;
   private final ParkourDirection direction;
   private final int gapLength;
   private final SFVec3i targetFeetBlock;
@@ -91,6 +91,9 @@ public final class ParkourMovement extends GraphAction implements Cloneable {
 
   @Override
   public List<GraphInstructions> getInstructions(MinecraftGraph graph, SFVec3i node) {
+    if (gapLength > graph.pathConstraint().maximumParkourGap()) {
+      return Collections.emptyList();
+    }
     var absoluteTargetFeetBlock = node.add(targetFeetBlock);
 
     return Collections.singletonList(new GraphInstructions(
@@ -99,7 +102,7 @@ public final class ParkourMovement extends GraphAction implements Cloneable {
       false,
       actionDirection,
       Costs.gapJumpCost(gapLength),
-      List.of(new GapJumpAction(absoluteTargetFeetBlock))
+      List.of(new GapJumpAction(node, absoluteTargetFeetBlock))
     ));
   }
 

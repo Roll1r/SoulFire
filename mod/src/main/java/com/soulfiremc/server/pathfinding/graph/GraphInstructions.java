@@ -17,7 +17,11 @@
  */
 package com.soulfiremc.server.pathfinding.graph;
 
+import com.soulfiremc.server.pathfinding.RouteCost;
 import com.soulfiremc.server.pathfinding.SFVec3i;
+import com.soulfiremc.server.pathfinding.execution.BlockBreakAction;
+import com.soulfiremc.server.pathfinding.execution.BlockPlaceAction;
+import com.soulfiremc.server.pathfinding.execution.JumpAndPlaceBelowAction;
 import com.soulfiremc.server.pathfinding.execution.WorldAction;
 import com.soulfiremc.server.pathfinding.graph.actions.movement.ActionDirection;
 import lombok.With;
@@ -31,5 +35,45 @@ public record GraphInstructions(
   boolean requiresOneBlock,
   ActionDirection moveDirection,
   double actionCost,
-  List<WorldAction> actions
-) {}
+  List<WorldAction> actions,
+  double expectedDamage
+) {
+  public GraphInstructions(
+    SFVec3i blockPosition,
+    int deltaUsableBlockItems,
+    boolean requiresOneBlock,
+    ActionDirection moveDirection,
+    double actionCost,
+    List<WorldAction> actions
+  ) {
+    this(
+      blockPosition,
+      deltaUsableBlockItems,
+      requiresOneBlock,
+      moveDirection,
+      actionCost,
+      actions,
+      0
+    );
+  }
+
+  public RouteCost routeCost() {
+    var placedBlocks = 0;
+    var brokenBlocks = 0;
+    for (var action : actions) {
+      switch (action) {
+        case BlockBreakAction _ -> brokenBlocks++;
+        case BlockPlaceAction _, JumpAndPlaceBelowAction _ -> placedBlocks++;
+        default -> {
+        }
+      }
+    }
+    return new RouteCost(
+      expectedDamage,
+      0,
+      placedBlocks,
+      brokenBlocks,
+      actionCost
+    );
+  }
+}

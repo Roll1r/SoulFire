@@ -26,6 +26,7 @@ import com.soulfiremc.server.pathfinding.RouteFinder;
 import com.soulfiremc.server.pathfinding.SFVec3i;
 import com.soulfiremc.server.pathfinding.execution.BlockBreakAction;
 import com.soulfiremc.server.pathfinding.execution.BlockPlaceAction;
+import com.soulfiremc.server.pathfinding.execution.ClimbAction;
 import com.soulfiremc.server.pathfinding.execution.GapJumpAction;
 import com.soulfiremc.server.pathfinding.execution.InteractBlockAction;
 import com.soulfiremc.server.pathfinding.execution.JumpAndPlaceBelowAction;
@@ -119,9 +120,36 @@ public final class PathfinderServiceImpl
     boolean includeDescriptions
   ) {
     var result = route.routeSearchResult();
+    var metadata = result.metadata();
+    var cost = metadata.routeCost();
     var builder = PathPlan.newBuilder()
       .setStatus(status(result))
-      .setStart(position(route.start(), dimension));
+      .setStart(position(route.start(), dimension))
+      .setSearchMode(switch (metadata.searchMode()) {
+        case PRECISION -> PathfindSearchMode.PATHFIND_SEARCH_MODE_PRECISION;
+        case NORMAL -> PathfindSearchMode.PATHFIND_SEARCH_MODE_NORMAL;
+        case URGENT -> PathfindSearchMode.PATHFIND_SEARCH_MODE_URGENT;
+        case ESCAPE -> PathfindSearchMode.PATHFIND_SEARCH_MODE_ESCAPE;
+      })
+      .setQualityBound(metadata.qualityBound())
+      .setRouteCost(PathRouteCost.newBuilder()
+        .setExpectedDamage(cost.expectedDamage())
+        .setIrreversibleChanges(cost.irreversibleChanges())
+        .setPlacedBlocks(cost.placedBlocks())
+        .setBrokenBlocks(cost.brokenBlocks())
+        .setDurationCost(cost.durationCost()))
+      .setExpandedStates(metadata.expandedStates())
+      .setGeneratedTransitions(metadata.generatedTransitions())
+      .setSearchElapsedMillis(metadata.elapsedMillis())
+      .setFrontierReason(switch (metadata.frontierReason()) {
+        case NONE -> PathFrontierReason.PATH_FRONTIER_REASON_NONE;
+        case LEVEL_BOUNDARY ->
+          PathFrontierReason.PATH_FRONTIER_REASON_LEVEL_BOUNDARY;
+        case SEARCH_DEADLINE ->
+          PathFrontierReason.PATH_FRONTIER_REASON_SEARCH_DEADLINE;
+        case SEARCH_BUDGET ->
+          PathFrontierReason.PATH_FRONTIER_REASON_SEARCH_BUDGET;
+      });
     var actions = actions(result);
     long maximumTicks = 0;
     for (var index = 0; index < actions.size(); index++) {
@@ -160,12 +188,17 @@ public final class PathfinderServiceImpl
     }
     builder.setMaximumTicks(maximumTicks);
     switch (result) {
-      case RouteFinder.PartialRouteResult _ ->
-        builder.setPartialReason("The route reached the edge of loaded world data");
+      case RouteFinder.PartialRouteResult partial ->
+        builder.setPartialReason(switch (partial.metadata().frontierReason()) {
+          case LEVEL_BOUNDARY -> "The route reached the edge of loaded world data";
+          case SEARCH_DEADLINE -> "The route reached a valid search-deadline frontier";
+          case SEARCH_BUDGET -> "The route reached the state-expansion budget";
+          case NONE -> "The route ended at a valid intermediate frontier";
+        });
       case RouteFinder.NoRouteFoundResult _ ->
         builder.setPartialReason("No route could reach the goal");
-      case RouteFinder.SearchExpiredResult _ ->
-        builder.setPartialReason("The configured path search timeout expired");
+      case RouteFinder.SearchLimitReachedResult _ ->
+        builder.setPartialReason("The route search reached its state-expansion budget");
       case RouteFinder.SearchInterruptedResult _ ->
         builder.setPartialReason("The path search was interrupted");
       default -> {
@@ -180,7 +213,6 @@ public final class PathfinderServiceImpl
     return switch (result) {
       case RouteFinder.FoundRouteResult found -> found.actions();
       case RouteFinder.PartialRouteResult partial -> partial.actions();
-      case RouteFinder.SearchExpiredResult expired -> expired.actions();
       default -> List.of();
     };
   }
@@ -193,7 +225,7 @@ public final class PathfinderServiceImpl
         PathPlanStatus.PATH_PLAN_STATUS_PARTIAL;
       case RouteFinder.NoRouteFoundResult _ ->
         PathPlanStatus.PATH_PLAN_STATUS_UNREACHABLE;
-      case RouteFinder.SearchExpiredResult _ ->
+      case RouteFinder.SearchLimitReachedResult _ ->
         PathPlanStatus.PATH_PLAN_STATUS_SEARCH_EXPIRED;
       case RouteFinder.SearchInterruptedResult _ ->
         PathPlanStatus.PATH_PLAN_STATUS_CANCELLED;
@@ -202,7 +234,8 @@ public final class PathfinderServiceImpl
 
   private static PathStepKind kind(WorldAction action) {
     return switch (action) {
-      case MovementAction _ -> PathStepKind.PATH_STEP_KIND_MOVE;
+      case MovementAction _, ClimbAction _ ->
+        PathStepKind.PATH_STEP_KIND_MOVE;
       case BlockBreakAction _ -> PathStepKind.PATH_STEP_KIND_BREAK_BLOCK;
       case BlockPlaceAction _ -> PathStepKind.PATH_STEP_KIND_PLACE_BLOCK;
       case JumpAndPlaceBelowAction _, GapJumpAction _ ->
@@ -219,6 +252,7 @@ public final class PathfinderServiceImpl
   ) {
     return switch (action) {
       case MovementAction movement -> movement.blockPosition();
+      case ClimbAction climb -> climb.blockPosition();
       case BlockBreakAction breakAction -> breakAction.blockPosition();
       case BlockPlaceAction placeAction -> placeAction.blockPosition();
       case JumpAndPlaceBelowAction jumpAndPlace ->

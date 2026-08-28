@@ -15,31 +15,27 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-package com.soulfiremc.server.pathfinding.execution;
+package com.soulfiremc.server.pathfinding;
 
-import com.soulfiremc.server.bot.BotConnection;
-import com.soulfiremc.server.pathfinding.SFVec3i;
-
-public sealed interface WorldAction
-  permits BlockBreakAction,
-  BlockPlaceAction,
-  ClimbAction,
-  GapJumpAction,
-  InteractBlockAction,
-  JumpAndPlaceBelowAction,
-  MovementAction,
-  RecalculatePathAction {
-  boolean isCompleted(BotConnection connection);
-
-  /// Returns whether live world state still satisfies the action's immediate
-  /// movement preconditions.
-  default boolean isValid(BotConnection connection) {
-    return true;
+/// The inventory values that can change available navigation transitions.
+public record ResourceState(
+  int usableBlockItems
+) {
+  public ResourceState {
+    if (usableBlockItems < 0) {
+      throw new IllegalArgumentException("Usable block item count must be non-negative");
+    }
   }
 
-  SFVec3i targetPosition(BotConnection connection);
+  public static ResourceState withUsableBlockItems(int usableBlockItems) {
+    return new ResourceState(usableBlockItems);
+  }
 
-  void tick(BotConnection connection);
+  public boolean dominates(ResourceState other) {
+    return usableBlockItems >= other.usableBlockItems;
+  }
 
-  int getAllowedTicks();
+  public ResourceState addUsableBlockItems(int delta) {
+    return new ResourceState(Math.addExact(usableBlockItems, delta));
+  }
 }

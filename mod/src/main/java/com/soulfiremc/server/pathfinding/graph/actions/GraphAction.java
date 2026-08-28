@@ -30,7 +30,8 @@ import java.util.List;
 @Setter
 @RequiredArgsConstructor
 public abstract sealed class GraphAction
-  permits DownMovement, ParkourMovement, SimpleMovement, UpMovement {
+  permits ClimbMovement, DownMovement, ParkourMovement, SimpleMovement,
+  UpMovement, WaterLandingMovement {
   public final ActionDirection actionDirection;
   private int subscriptionCounter;
 

@@ -362,7 +362,14 @@ public final class PathfindingSupport {
     if (options.hasBreakBlockPenalty()
       || options.hasPlaceBlockPenalty()
       || options.getSearchTimeoutSeconds() > 0
-      || options.hasSprint()) {
+      || options.hasSprint()
+      || options.getSearchMode()
+        != com.soulfiremc.grpc.generated.PathfindSearchMode.PATHFIND_SEARCH_MODE_UNSPECIFIED
+      || options.hasMaximumQualityBound()
+      || options.getMaximumExpandedStates() != 0
+      || options.hasMaximumFallDistance()
+      || options.hasMaximumParkourGap()
+      || options.hasSmoothCamera()) {
       var breakPenalty = optionalPenalty(
         options.hasBreakBlockPenalty(),
         options.getBreakBlockPenalty(),
@@ -379,6 +386,56 @@ public final class PathfindingSupport {
           options.getSearchTimeoutSeconds(),
           3_600
         )));
+      var searchMode = switch (options.getSearchMode()) {
+        case PATHFIND_SEARCH_MODE_UNSPECIFIED -> java.util.Optional.<RouteSearchMode>empty();
+        case PATHFIND_SEARCH_MODE_PRECISION -> java.util.Optional.of(RouteSearchMode.PRECISION);
+        case PATHFIND_SEARCH_MODE_NORMAL -> java.util.Optional.of(RouteSearchMode.NORMAL);
+        case PATHFIND_SEARCH_MODE_URGENT -> java.util.Optional.of(RouteSearchMode.URGENT);
+        case PATHFIND_SEARCH_MODE_ESCAPE -> java.util.Optional.of(RouteSearchMode.ESCAPE);
+        case UNRECOGNIZED -> throw Status.INVALID_ARGUMENT
+          .withDescription("search_mode is not recognized")
+          .asRuntimeException();
+      };
+      var maximumQualityBound = options.hasMaximumQualityBound()
+        ? OptionalDouble.of(options.getMaximumQualityBound())
+        : OptionalDouble.empty();
+      var modeBound = searchMode.orElse(RouteSearchMode.NORMAL)
+        .heuristicWeight();
+      if (
+        maximumQualityBound.isPresent()
+          && (
+            !Double.isFinite(maximumQualityBound.getAsDouble())
+              || maximumQualityBound.getAsDouble() < 1
+              || maximumQualityBound.getAsDouble() > modeBound
+          )
+      ) {
+        throw Status.INVALID_ARGUMENT
+          .withDescription(
+            "maximum_quality_bound must be between 1.0 and the search mode bound"
+          )
+          .asRuntimeException();
+      }
+      var requestedExpandedStates = Integer.toUnsignedLong(
+        options.getMaximumExpandedStates()
+      );
+      var maximumExpandedStates = requestedExpandedStates == 0
+        ? OptionalInt.empty()
+        : OptionalInt.of(Math.toIntExact(Math.min(
+          requestedExpandedStates,
+          1_000_000
+        )));
+      var maximumFallDistance = boundedOptionalDistance(
+        options.hasMaximumFallDistance(),
+        options.getMaximumFallDistance(),
+        "maximum_fall_distance",
+        3
+      );
+      var maximumParkourGap = boundedOptionalDistance(
+        options.hasMaximumParkourGap(),
+        options.getMaximumParkourGap(),
+        "maximum_parkour_gap",
+        3
+      );
       constraint = new ConfiguredPathConstraint(
         constraint,
         breakPenalty,
@@ -386,6 +443,14 @@ public final class PathfindingSupport {
         searchTimeout,
         options.hasSprint()
           ? java.util.Optional.of(options.getSprint())
+          : java.util.Optional.empty(),
+        searchMode,
+        maximumQualityBound,
+        maximumExpandedStates,
+        maximumFallDistance,
+        maximumParkourGap,
+        options.hasSmoothCamera()
+          ? java.util.Optional.of(options.getSmoothCamera())
           : java.util.Optional.empty()
       );
     }
@@ -420,6 +485,23 @@ public final class PathfindingSupport {
         .asRuntimeException();
     }
     return OptionalDouble.of(value);
+  }
+
+  private static OptionalInt boundedOptionalDistance(
+    boolean present,
+    int value,
+    String field,
+    int maximum
+  ) {
+    if (!present) {
+      return OptionalInt.empty();
+    }
+    if (value < 0 || value > maximum) {
+      throw Status.INVALID_ARGUMENT
+        .withDescription(field + " must be between 0 and " + maximum)
+        .asRuntimeException();
+    }
+    return OptionalInt.of(value);
   }
 
   private static void requirePositiveRadius(float radius, String field) {

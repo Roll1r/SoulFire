@@ -53,12 +53,18 @@ public final class Costs {
   /// Submerged travel is slower and consumes air. Prefer the water surface
   /// whenever both routes cover the same horizontal distance.
   public static final double SUBMERGED_MOVEMENT = 4;
+  /// Vertical climbables are slower than walking one horizontal block.
+  public static final double CLIMB = 2;
   /// Falling 1 block takes ~5.63 ticks.
   public static final double FALL_1 = 5.63 / TICKS_PER_BLOCK;
   /// Falling 2 blocks takes ~7.79 ticks.
   public static final double FALL_2 = 7.79 / TICKS_PER_BLOCK;
   /// Falling 3 blocks takes ~9.48 ticks.
   public static final double FALL_3 = 9.48 / TICKS_PER_BLOCK;
+  /// Conservative conversion from geometric goal distance to route cost.
+  /// A vertical three-block fall is the cheapest supported movement per
+  /// block of displacement.
+  public static final double HEURISTIC_COST_PER_BLOCK = FALL_3 / 3;
   /// Sliding around a corner is roughly like walking two blocks.
   /// That's why even through the distance from A to B diagonally is DIAGONAL, the cost is actually 2.
   /// That is why we need to add 2 - DIAGONAL to the cost of sliding around a corner as that adds

@@ -31,7 +31,6 @@ import com.soulfiremc.server.pathfinding.graph.ProjectedInventory;
 import com.soulfiremc.server.pathfinding.graph.constraint.PathConstraint;
 import com.soulfiremc.server.util.SFBlockHelpers;
 import com.soulfiremc.server.util.SFHelpers;
-import com.soulfiremc.server.util.TimeUtil;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
@@ -57,6 +56,8 @@ public final class PathExecutor implements ControlTask {
   private static final int MAX_ERROR_DISTANCE = 20;
   private static final int MAX_CONSECUTIVE_STATIONARY_PARTIAL_ROUTES = 3;
   private static final int MAX_CONSECUTIVE_STALLED_ACTIONS = 5;
+  private static final int PRECONDITION_LOOKAHEAD_ACTIONS = 4;
+  private static final int PARTIAL_ROUTE_PREFETCH_ACTIONS = 8;
   private final Queue<WorldAction> worldActionQueue = new LinkedBlockingQueue<>();
   private final Set<SFVec3i> completedBlockBreaks = new HashSet<>();
   private final BotConnection connection;
@@ -69,6 +70,9 @@ public final class PathExecutor implements ControlTask {
   private final ActionStallGuard actionStallGuard =
     new ActionStallGuard(MAX_CONSECUTIVE_STALLED_ACTIONS);
   private volatile boolean awaitingPath;
+  private volatile CompletableFuture<PlannedRoute> prefetchedRoute;
+  private volatile SFVec3i prefetchedRouteStart;
+  private volatile SFVec3i partialRouteEndpoint;
   private int totalMovements;
   private int ticks;
   private int movementNumber = 1;
@@ -153,6 +157,7 @@ public final class PathExecutor implements ControlTask {
     }
 
     awaitingPath = false;
+    cancelPrefetch();
     stopActiveBlockBreak();
     worldActionQueue.clear();
     connection.controlState().resetAll();
@@ -185,30 +190,55 @@ public final class PathExecutor implements ControlTask {
     }
 
     awaitingPath = true;
+    cancelPrefetch();
+    partialRouteEndpoint = null;
     stopActiveBlockBreak();
     worldActionQueue.clear();
     connection.controlState().resetAll();
 
-    connection.scheduler().schedule(() -> {
-      try {
-        if (isDone()) {
-          return;
-        }
+    connection.scheduler().schedule(() -> calculatePath(isInitial));
+  }
 
-        if (!isInitial) {
-          log.info("Waiting for one second for bot to finish falling...");
-          TimeUtil.waitTime(1, TimeUnit.SECONDS);
-          if (isDone()) {
-            return;
-          }
-        }
+  private void calculatePath(boolean isInitial) {
+    try {
+      if (isDone()) {
+        return;
+      }
 
-        var routeSearchResult = findPath.findPath();
-        if (isDone()) {
-          return;
-        }
+      var player = connection.minecraft().player;
+      if (
+        !isInitial
+          && !player.onGround()
+          && !player.isInWater()
+          && !player.isInLava()
+          && !player.onClimbable()
+      ) {
+        connection.scheduler().schedule(
+          () -> calculatePath(false),
+          50,
+          TimeUnit.MILLISECONDS
+        );
+        return;
+      }
 
-        SFHelpers.mustSupply(() -> switch (routeSearchResult.routeSearchResult()) {
+      var routeSearchResult = findPath.findPath();
+      if (isDone()) {
+        return;
+      }
+
+      acceptPlannedRoute(routeSearchResult, isInitial);
+    } catch (Throwable t) {
+      log.error("Error while calculating path", t);
+      awaitingPath = false;
+      pathCompletionFuture.completeExceptionally(t);
+    }
+  }
+
+  private void acceptPlannedRoute(
+    PlannedRoute routeSearchResult,
+    boolean isInitial
+  ) {
+    SFHelpers.mustSupply(() -> switch (routeSearchResult.routeSearchResult()) {
           case RouteFinder.FoundRouteResult foundRouteResult -> () -> {
             partialRouteProgressGuard.reset();
             var newActions = repositionIfNeeded(foundRouteResult.actions(), routeSearchResult.start(), isInitial, this.findPath);
@@ -221,45 +251,32 @@ public final class PathExecutor implements ControlTask {
 
             log.info("Found path with {} actions!", newActions.size());
 
-            preparePath(newActions);
+            preparePath(newActions, null);
           };
           case RouteFinder.NoRouteFoundResult _ ->
             throw UnreachableGoalException.noRoute();
+          case RouteFinder.SearchLimitReachedResult limit ->
+            throw UnreachableGoalException.searchLimit(
+              Math.toIntExact(limit.metadata().expandedStates())
+            );
           case RouteFinder.PartialRouteResult partialRouteResult -> () -> {
             preparePartialPath(
               partialRouteResult.actions(),
-              routeSearchResult.start(),
-              isInitial
-            );
-          };
-          case RouteFinder.SearchExpiredResult searchExpiredResult -> () -> {
-            log.info(
-              "Using the best partial route found before the search deadline"
-            );
-            preparePartialPath(
-              searchExpiredResult.actions(),
+              partialRouteResult.endpoint(),
               routeSearchResult.start(),
               isInitial
             );
           };
           case RouteFinder.SearchInterruptedResult _ -> throw new IllegalStateException("Route search was interrupted before finding a route!");
         });
-      } catch (Throwable t) {
-        log.error("Error while calculating path", t);
-        awaitingPath = false;
-        pathCompletionFuture.completeExceptionally(t);
-      }
-    });
   }
 
   private void preparePartialPath(
     List<WorldAction> actions,
+    SFVec3i routeEndpoint,
     SFVec3i start,
     boolean isInitial
   ) {
-    var routeEndpoint = actions.isEmpty()
-      ? start
-      : actions.getLast().targetPosition(connection);
     if (partialRouteProgressGuard.shouldAbort(routeEndpoint)) {
       awaitingPath = false;
       pathCompletionFuture.completeExceptionally(
@@ -273,12 +290,20 @@ public final class PathExecutor implements ControlTask {
       repositionIfNeeded(actions, start, isInitial, findPath)
     );
     log.info("Found path with {} actions!", newActions.size());
-    preparePath(newActions);
+    preparePath(newActions, routeEndpoint);
   }
 
   public void preparePath(List<WorldAction> worldActions) {
+    preparePath(worldActions, null);
+  }
+
+  private void preparePath(
+    List<WorldAction> worldActions,
+    SFVec3i routeEndpoint
+  ) {
     this.worldActionQueue.clear();
     this.worldActionQueue.addAll(worldActions);
+    this.partialRouteEndpoint = routeEndpoint;
     this.totalMovements = worldActions.size();
     this.ticks = 0;
     this.movementNumber = 1;
@@ -300,9 +325,10 @@ public final class PathExecutor implements ControlTask {
       return;
     }
 
+    maybePrefetchPartialRoute();
+
     if (worldAction instanceof RecalculatePathAction) {
-      log.info("Recalculating path...");
-      recalculatePath();
+      continuePartialRoute();
       return;
     }
 
@@ -332,6 +358,12 @@ public final class PathExecutor implements ControlTask {
       .distance(worldAction.targetPosition(connection)) > MAX_ERROR_DISTANCE) {
       log.warn("More than {} blocks away from target, this must be a mistake!", MAX_ERROR_DISTANCE);
       log.warn("Recalculating path...");
+      recalculatePath();
+      return;
+    }
+
+    if (!hasValidLookahead()) {
+      log.info("A path precondition changed; recalculating before the affected action");
       recalculatePath();
       return;
     }
@@ -391,8 +423,7 @@ public final class PathExecutor implements ControlTask {
       }
 
       if (worldAction instanceof RecalculatePathAction) {
-        log.info("Recalculating path...");
-        recalculatePath();
+        continuePartialRoute();
         return;
       }
 
@@ -401,6 +432,27 @@ public final class PathExecutor implements ControlTask {
 
     ticks++;
     worldAction.tick(connection);
+  }
+
+  private boolean hasValidLookahead() {
+    var checked = 0;
+    for (var action : worldActionQueue) {
+      if (checked++ >= PRECONDITION_LOOKAHEAD_ACTIONS) {
+        break;
+      }
+      if (!action.isValid(connection)) {
+        return false;
+      }
+      if (
+        action instanceof BlockBreakAction
+          || action instanceof BlockPlaceAction
+          || action instanceof JumpAndPlaceBelowAction
+          || action instanceof InteractBlockAction
+      ) {
+        break;
+      }
+    }
+    return true;
   }
 
   @Override
@@ -424,6 +476,7 @@ public final class PathExecutor implements ControlTask {
     }
 
     awaitingPath = false;
+    cancelPrefetch();
     stopActiveBlockBreak();
     worldActionQueue.clear();
     connection.controlState().resetAll();
@@ -442,7 +495,90 @@ public final class PathExecutor implements ControlTask {
   }
 
   public void recalculatePath() {
+    cancelPrefetch();
+    partialRouteEndpoint = null;
     submitForPathCalculation(false);
+  }
+
+  private void maybePrefetchPartialRoute() {
+    var endpoint = partialRouteEndpoint;
+    if (
+      endpoint == null
+        || prefetchedRoute != null
+        || worldActionQueue.size() > PARTIAL_ROUTE_PREFETCH_ACTIONS + 1
+        || worldActionQueue.stream().anyMatch(action ->
+        action instanceof BlockBreakAction
+          || action instanceof BlockPlaceAction
+          || action instanceof JumpAndPlaceBelowAction)
+    ) {
+      return;
+    }
+
+    log.debug("Prefetching the next partial route from {}", endpoint);
+    prefetchedRouteStart = endpoint;
+    prefetchedRoute = findPath.findPathFutureFrom(endpoint);
+  }
+
+  private void continuePartialRoute() {
+    var future = prefetchedRoute;
+    if (future == null) {
+      log.info("Calculating the next partial route...");
+      recalculatePath();
+      return;
+    }
+    if (future.isDone()) {
+      finishPrefetchedRoute(future);
+      return;
+    }
+
+    log.debug("Waiting for the prefetched partial route");
+    awaitingPath = true;
+    connection.controlState().resetAll();
+    future.whenComplete((_, _) -> connection.scheduler().schedule(
+      () -> finishPrefetchedRoute(future)
+    ));
+  }
+
+  private void finishPrefetchedRoute(
+    CompletableFuture<PlannedRoute> future
+  ) {
+    if (isDone() || future != prefetchedRoute) {
+      return;
+    }
+    var expectedStart = prefetchedRouteStart;
+    prefetchedRoute = null;
+    prefetchedRouteStart = null;
+    partialRouteEndpoint = null;
+    awaitingPath = false;
+
+    var playerStart = SFVec3i.fromInt(
+      connection.minecraft().player.blockPosition()
+    );
+    if (!Objects.equals(expectedStart, playerStart)) {
+      log.debug(
+        "Discarding a prefetched route because the player moved from {} to {}",
+        expectedStart,
+        playerStart
+      );
+      submitForPathCalculation(false);
+      return;
+    }
+
+    try {
+      acceptPlannedRoute(future.join(), false);
+    } catch (Throwable t) {
+      log.warn("The prefetched route failed; calculating from live state", t);
+      submitForPathCalculation(false);
+    }
+  }
+
+  private void cancelPrefetch() {
+    var future = prefetchedRoute;
+    prefetchedRoute = null;
+    prefetchedRouteStart = null;
+    if (future != null) {
+      future.cancel(true);
+    }
   }
 
   static final class PartialRouteProgressGuard {
@@ -483,6 +619,12 @@ public final class PathExecutor implements ControlTask {
     PathConstraint pathConstraint
   ) {
     public PlannedRoute findPath() {
+      return findPathFutureFrom(null).join();
+    }
+
+    public CompletableFuture<PlannedRoute> findPathFutureFrom(
+      SFVec3i requestedStart
+    ) {
       var clientEntity = bot.minecraft().player;
       var level = Objects.requireNonNull(
         bot.minecraft().level,
@@ -490,10 +632,11 @@ public final class PathExecutor implements ControlTask {
       );
       var inventory =
         new ProjectedInventory(clientEntity.getInventory(), clientEntity, pathConstraint);
-      var start =
-        SFVec3i.fromInt(clientEntity.blockPosition());
+      var start = requestedStart == null
+        ? SFVec3i.fromInt(clientEntity.blockPosition())
+        : requestedStart;
       var startBlockState = level.getBlockState(start.toBlockPos());
-      if (SFBlockHelpers.isTopFullBlock(startBlockState)) {
+      if (requestedStart == null && SFBlockHelpers.isTopFullBlock(startBlockState)) {
         // If the player is inside a block, move them up
         start = start.add(0, 1, 0);
       }
@@ -502,12 +645,21 @@ public final class PathExecutor implements ControlTask {
         new RouteFinder(new MinecraftGraph(level, inventory, pathConstraint), goalScorer, bot.scheduler());
 
       log.info("Starting calculations at: {}", start.formatXYZ());
+      var routeStart = start;
       var routeSearchResultFuture = routeFinder.findRouteFuture(NodeState.forInfo(start, inventory));
       bot.shutdownHooks().add(() -> routeSearchResultFuture.cancel(true));
-      var routeSearchResult = routeSearchResultFuture.join();
-      log.info("Route search result: {}", routeSearchResult);
-
-      return new PlannedRoute(routeSearchResult, start);
+      var plannedRouteFuture = routeSearchResultFuture.thenApply(
+        routeSearchResult -> {
+          log.info("Route search result: {}", routeSearchResult);
+          return new PlannedRoute(routeSearchResult, routeStart);
+        }
+      );
+      plannedRouteFuture.whenComplete((_, _) -> {
+        if (plannedRouteFuture.isCancelled()) {
+          routeSearchResultFuture.cancel(true);
+        }
+      });
+      return plannedRouteFuture;
     }
   }
 

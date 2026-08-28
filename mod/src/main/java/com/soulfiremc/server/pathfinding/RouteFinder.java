@@ -18,501 +18,698 @@
 package com.soulfiremc.server.pathfinding;
 
 import com.google.common.base.Stopwatch;
+import com.soulfiremc.server.pathfinding.cost.Costs;
 import com.soulfiremc.server.pathfinding.execution.BlockPlaceAction;
+import com.soulfiremc.server.pathfinding.execution.JumpAndPlaceBelowAction;
 import com.soulfiremc.server.pathfinding.execution.WorldAction;
 import com.soulfiremc.server.pathfinding.goals.GoalScorer;
 import com.soulfiremc.server.pathfinding.graph.GraphInstructions;
 import com.soulfiremc.server.pathfinding.graph.MinecraftGraph;
-import com.soulfiremc.server.pathfinding.graph.constraint.NoBlockActionsConstraint;
-import com.soulfiremc.server.pathfinding.graph.constraint.NoBlockBreakingConstraint;
-import com.soulfiremc.server.pathfinding.graph.constraint.NoBlockPlacingConstraint;
-import com.soulfiremc.server.util.structs.*;
-import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
-import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
-import it.unimi.dsi.fastutil.objects.ObjectHeapPriorityQueue;
+import com.soulfiremc.server.util.structs.CancellationToken;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.atomic.AtomicReferenceArray;
+import java.util.Map;
+import java.util.PriorityQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.TimeUnit;
 
+/// Finds routes with immutable labels and explicit bounded-suboptimal search.
+/// The search never removes the frontier to force progress.
 @Slf4j
 public record RouteFinder(MinecraftGraph baseGraph, GoalScorer scorer, Executor executor) {
-  /// Maximum possible usable block items (4 rows * 9 columns * 64 stack size)
-  private static final int MAX_USABLE_BLOCK_ITEMS = 4 * 9 * 64;
   private static final int MAX_NODES_AFTER_LEVEL_BOUNDARY = 2_048;
+  private static final long IMPROVEMENT_BUDGET_MILLIS = 50;
+  private static final double WEIGHT_STEP = 0.2;
 
   public RouteFinder(MinecraftGraph baseGraph, GoalScorer scorer) {
     this(baseGraph, scorer, ForkJoinPool.commonPool());
   }
 
-  private static List<WorldAction> reconstructPath(MinecraftRouteNode current) {
-    var actions = new ArrayList<WorldAction>();
+  public CompletableFuture<RouteSearchResult> findRouteFuture(NodeState from) {
+    var cancellationToken = new CancellationToken();
+    var future = CompletableFuture.supplyAsync(
+      () -> findRouteSync(from, cancellationToken),
+      executor
+    );
+    future.whenComplete((_, _) -> {
+      if (future.isCancelled()) {
+        cancellationToken.cancel();
+      }
+    });
+    return future;
+  }
 
-    var currentElement = current;
-    do {
-      var previousActions = new ArrayList<>(currentElement.actions());
+  private RouteSearchResult findRouteSync(
+    NodeState suppliedStart,
+    CancellationToken cancellationToken
+  ) {
+    var stopwatch = Stopwatch.createStarted();
+    var constraint = baseGraph.pathConstraint();
+    var mode = constraint.searchMode();
+    var initialWeight = Math.min(
+      mode.heuristicWeight(),
+      constraint.maximumQualityBound()
+    );
+    var deadline = System.nanoTime()
+      + TimeUnit.SECONDS.toNanos(constraint.expireTimeout());
+    var start = baseGraph.snapshot().stateAt(
+      suppliedStart.blockPosition(),
+      suppliedStart.resources(),
+      SupportOrigin.WORLD
+    );
 
-      // Insert the actions in reversed order
-      for (var i = previousActions.size() - 1; i >= 0; i--) {
-        actions.addFirst(previousActions.get(i));
+    var aggregate = SearchCounters.ZERO;
+    var result = searchOnce(
+      start,
+      mode,
+      initialWeight,
+      deadline,
+      cancellationToken
+    );
+    aggregate = aggregate.add(result.counters());
+    var routeResult = result.result();
+
+    if (routeResult instanceof FoundRouteResult found && initialWeight > 1) {
+      var incumbent = found;
+      var incumbentBound = initialWeight;
+      var improvementDeadline = Math.min(
+        deadline,
+        System.nanoTime()
+          + TimeUnit.MILLISECONDS.toNanos(IMPROVEMENT_BUDGET_MILLIS)
+      );
+      for (
+        var weight = Math.max(1, initialWeight - WEIGHT_STEP);
+        weight < incumbentBound && System.nanoTime() < improvementDeadline;
+        weight = Math.max(1, weight - WEIGHT_STEP)
+      ) {
+        var improved = searchOnce(
+          start,
+          mode,
+          weight,
+          improvementDeadline,
+          cancellationToken
+        );
+        aggregate = aggregate.add(improved.counters());
+        if (
+          improved.result() instanceof FoundRouteResult candidate
+            && candidate.metadata().routeCost()
+              .compareTo(incumbent.metadata().routeCost()) <= 0
+        ) {
+          incumbent = candidate;
+          incumbentBound = weight;
+        }
+        if (weight == 1) {
+          break;
+        }
+      }
+      routeResult = withMetadata(
+        incumbent,
+        incumbent.metadata().withQualityBound(incumbentBound)
+      );
+    }
+
+    stopwatch.stop();
+    var finalMetadata = routeResult.metadata().withAggregate(
+      aggregate,
+      stopwatch.elapsed().toMillis()
+    );
+    routeResult = withMetadata(routeResult, finalMetadata);
+    log.info(
+      "Route search finished with {} after {}ms, {} expansions, quality bound {}, and {}/{} graph cache hits",
+      routeResult.getClass().getSimpleName(),
+      finalMetadata.elapsedMillis(),
+      finalMetadata.expandedStates(),
+      finalMetadata.qualityBound(),
+      baseGraph.transitionCache().hits(),
+      baseGraph.transitionCache().hits() + baseGraph.transitionCache().misses()
+    );
+    return routeResult;
+  }
+
+  private SearchAttempt searchOnce(
+    NodeState start,
+    RouteSearchMode searchMode,
+    double heuristicWeight,
+    long deadline,
+    CancellationToken cancellationToken
+  ) {
+    var openSet = new PriorityQueue<MinecraftRouteNode>();
+    var labels = new HashMap<StateIdentity, List<MinecraftRouteNode>>();
+    var startHeuristic = heuristic(start.blockPosition(), List.of());
+    var startNode = new MinecraftRouteNode(
+      start,
+      null,
+      null,
+      List.of(),
+      RouteCost.ZERO,
+      startHeuristic,
+      heuristicWeight
+    );
+    addLabel(labels, startNode);
+    openSet.add(startNode);
+
+    var expandedStates = 0L;
+    var generatedTransitions = 0L;
+    var nodesAtFirstBoundary = -1L;
+    MinecraftRouteNode bestProgress = startNode;
+    MinecraftRouteNode bestBoundary = null;
+    var boundaryReason = FrontierReason.NONE;
+
+    while (!openSet.isEmpty()) {
+      if (
+        Thread.currentThread().isInterrupted()
+          || cancellationToken.isCancelled()
+      ) {
+        return attempt(
+          new SearchInterruptedResult(metadata(
+            searchMode,
+            heuristicWeight,
+            RouteCost.ZERO,
+            expandedStates,
+            generatedTransitions,
+            FrontierReason.NONE
+          )),
+          expandedStates,
+          generatedTransitions
+        );
+      }
+      if (System.nanoTime() >= deadline) {
+        var deadlineFrontier = bestBoundary != null
+          ? bestBoundary
+          : progressing(startHeuristic, bestProgress)
+          ? bestProgress
+          : null;
+        if (deadlineFrontier != null) {
+          return attempt(
+            partialResult(
+              deadlineFrontier,
+              searchMode,
+              heuristicWeight,
+              expandedStates,
+              generatedTransitions,
+              bestBoundary != null
+                ? boundaryReason
+                : FrontierReason.SEARCH_DEADLINE
+            ),
+            expandedStates,
+            generatedTransitions
+          );
+        }
+        return attempt(
+          new NoRouteFoundResult(metadata(
+            searchMode,
+            heuristicWeight,
+            RouteCost.ZERO,
+            expandedStates,
+            generatedTransitions,
+            FrontierReason.SEARCH_DEADLINE
+          )),
+          expandedStates,
+          generatedTransitions
+        );
+      }
+      if (expandedStates >= baseGraph.pathConstraint().maximumExpandedStates()) {
+        return attempt(
+          new SearchLimitReachedResult(metadata(
+            searchMode,
+            heuristicWeight,
+            bestProgress.routeCost(),
+            expandedStates,
+            generatedTransitions,
+            FrontierReason.SEARCH_BUDGET
+          )),
+          expandedStates,
+          generatedTransitions
+        );
       }
 
-      currentElement = currentElement.parent();
-    } while (currentElement != null);
-
-    return actions;
-  }
-
-  private static Long2ObjectOpenHashMap<MinecraftRouteNode> getRouteMap(
-    Long2ObjectOpenHashMap<MinecraftRouteNode>[] routeIndex, int usableBlockItems) {
-    var map = routeIndex[usableBlockItems];
-    if (map == null) {
-      map = new Long2ObjectOpenHashMap<>();
-      routeIndex[usableBlockItems] = map;
-    }
-    return map;
-  }
-
-  public CompletableFuture<RouteSearchResult> findRouteFuture(NodeState from) {
-    var stopwatch = Stopwatch.createStarted();
-    var futures = new ArrayList<CompletableFuture<RouteSearchResult>>();
-    var cancellationToken = new CancellationToken();
-
-    futures.add(findRouteFutureSingle(baseGraph, from, cancellationToken));
-    var pathConstraint = baseGraph.pathConstraint();
-    if (pathConstraint.canBreakBlocks() && pathConstraint.canPlaceBlocks()) {
-      futures.add(findRouteFutureSingle(baseGraph.withPathConstraint(
-        new NoBlockActionsConstraint(pathConstraint)
-      ), from, cancellationToken));
-    }
-
-    if (pathConstraint.canBreakBlocks()) {
-      futures.add(findRouteFutureSingle(baseGraph.withPathConstraint(
-        new NoBlockBreakingConstraint(pathConstraint)
-      ), from, cancellationToken));
-    }
-
-    if (pathConstraint.canPlaceBlocks()) {
-      futures.add(findRouteFutureSingle(baseGraph.withPathConstraint(
-        new NoBlockPlacingConstraint(pathConstraint)
-      ), from, cancellationToken));
-    }
-
-    var resultFuture = new CompletableFuture<RouteSearchResult>();
-    var countdown = new CountDownLatch(futures.size());
-    var completedResults =
-      new AtomicReferenceArray<RouteSearchResult>(futures.size());
-    var firstFailure = new AtomicReference<Throwable>();
-    for (var i = 0; i < futures.size(); i++) {
-      var futureIndex = i;
-      var future = futures.get(i);
-      future.whenComplete((result, throwable) -> {
-        if (result != null) {
-          completedResults.set(futureIndex, result);
-        }
-        if (throwable != null) {
-          firstFailure.compareAndSet(null, throwable);
-        }
-
-        if (
-          result != null
-            && isActionableResult(result)
-            && resultFuture.complete(result)
-        ) {
-            cancellationToken.cancel();
-            for (var f : futures) {
-              f.cancel(true);
-            }
-            stopwatch.stop();
-            log.info("Best route found in {}ms", stopwatch.elapsed().toMillis());
-        }
-
-        countdown.countDown();
-        if (countdown.getCount() != 0 || resultFuture.isDone()) {
-          return;
-        }
-
-        var inconclusiveResult =
-          selectInconclusiveResult(completedResults);
-        if (inconclusiveResult != null) {
-          resultFuture.complete(inconclusiveResult);
-          stopwatch.stop();
-          log.info(
-            "No actionable route found after {}ms",
-            stopwatch.elapsed().toMillis()
-          );
-          return;
-        }
-
-        var failure = firstFailure.get();
-        resultFuture.completeExceptionally(
-          failure != null
-            ? failure
-            : new IllegalStateException("Route finding completed without a result")
-        );
-        stopwatch.stop();
-        log.info(
-          "Route finding failed after {}ms",
-          stopwatch.elapsed().toMillis()
-        );
-      });
-    }
-
-    return resultFuture;
-  }
-
-  static boolean isActionableResult(RouteSearchResult result) {
-    return result instanceof FoundRouteResult
-      || (
-      result instanceof PartialRouteResult partial
-        && !partial.actions().isEmpty()
-    )
-      || (
-      result instanceof SearchExpiredResult expired
-        && !expired.actions().isEmpty()
-    );
-  }
-
-  private static RouteSearchResult selectInconclusiveResult(
-    AtomicReferenceArray<RouteSearchResult> results
-  ) {
-    RouteSearchResult firstResult = null;
-    for (var i = 0; i < results.length(); i++) {
-      var result = results.get(i);
-      if (result == null) {
+      var current = openSet.remove();
+      if (!isActiveLabel(labels, current)) {
         continue;
       }
-      if (firstResult == null) {
-        firstResult = result;
-      }
-      if (result instanceof PartialRouteResult) {
-        return result;
-      }
-    }
-    return firstResult;
-  }
+      expandedStates++;
 
-  public CompletableFuture<RouteSearchResult> findRouteFutureSingle(MinecraftGraph graph, NodeState from, CancellationToken cancellationToken) {
-    return CompletableFuture.supplyAsync(() -> findRouteSyncSingle(graph, from, cancellationToken), executor);
-  }
-
-  private RouteSearchResult findRouteSyncSingle(MinecraftGraph graph, NodeState from, CancellationToken cancellationToken) {
-    var stopwatch = Stopwatch.createStarted();
-    var pathConstraint = graph.pathConstraint();
-    var expireTime = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(pathConstraint.expireTimeout());
-
-    // Store block positions and the best route to them
-    var blockItemsIndex = new Long2IntOpenHashMap();
-    blockItemsIndex.defaultReturnValue(-1); // -1 means not visited yet
-    var instructionCache = new Long2ObjectLRUCache<GraphInstructions[]>(50_000);
-    // Array of maps indexed by usable block items count for O(1) lookup without hash collisions
-    // Uses Long2ObjectOpenHashMap with SFVec3i.asMinecraftLong() as key for optimal performance
-    @SuppressWarnings("unchecked")
-    var routeIndex = (Long2ObjectOpenHashMap<MinecraftRouteNode>[])
-      new Long2ObjectOpenHashMap[MAX_USABLE_BLOCK_ITEMS + 1];
-
-    // Store block positions that we need to look at
-    var openSet = new ObjectHeapPriorityQueue<MinecraftRouteNode>();
-    var bestGlobalNode = new ObjectReference<MinecraftRouteNode>();
-    var bestBoundaryNode = new ObjectReference<MinecraftRouteNode>();
-    var visitedNodes = 0;
-    var nodesAtFirstBoundary = -1;
-
-    var startScore = scorer.computeScore(graph, from.blockPosition(), List.of());
-    {
-      log.debug("Start score (Usually distance): {}", startScore);
-
-      var start =
-        new MinecraftRouteNode(
-          from,
-          List.of(),
-          0,
-          startScore,
-          startScore);
-      getRouteMap(routeIndex, from.usableBlockItems()).put(from.blockPosition().asMinecraftLong(), start);
-      openSet.enqueue(start);
-      bestGlobalNode.value = start;
-    }
-
-    var progressInfo = new CallLimiter(() -> {
-      if (!log.isInfoEnabled()) {
-        return;
-      }
-
-      log.info("Still looking for route... {}ms time left, {} nodes left, closest position is {} with distance to target {}",
-        expireTime - System.currentTimeMillis(),
-        openSet.size(),
-        bestGlobalNode.value.node().blockPosition().formatXYZ(),
-        bestGlobalNode.value.targetCost()
-      );
-    }, 1, TimeUnit.SECONDS, true);
-    var cleaner = new CallLimiter(() -> {
-      if (pathConstraint.disablePruning()) {
-        return;
-      }
-
-      log.info("Pruning route index and open set to avoid branching");
-
-      openSet.clear();
-      openSet.enqueue(bestGlobalNode.value);
-      Arrays.fill(routeIndex, null);
-    }, 5, TimeUnit.SECONDS, true);
-    while (!openSet.isEmpty()) {
-      if (Thread.currentThread().isInterrupted() || cancellationToken.isCancelled()) {
-        stopwatch.stop();
-        log.info("Cancelled pathfinding after {}ms", stopwatch.elapsed().toMillis());
-        return SearchInterruptedResult.INSTANCE;
-      } else if (System.currentTimeMillis() > expireTime) {
-        stopwatch.stop();
-        log.info("Expired pathfinding after {}ms", stopwatch.elapsed().toMillis());
-        return new SearchExpiredResult(
-          reconstructPath(bestGlobalNode.value)
-        );
-      }
-
-      progressInfo.run();
-      cleaner.run();
-
-      var current = openSet.dequeue();
-      visitedNodes++;
-
-      log.debug("Looking at node: {}", current.node());
-
-      // If we found our destination, we can stop looking
       if (scorer.isFinished(current)) {
-        stopwatch.stop();
-        log.info("Success! Took {}ms to find route", stopwatch.elapsed().toMillis());
-
-        return new FoundRouteResult(reconstructPath(current));
+        return attempt(
+          new FoundRouteResult(
+            reconstructPath(current),
+            metadata(
+              searchMode,
+              heuristicWeight,
+              current.routeCost(),
+              expandedStates,
+              generatedTransitions,
+              FrontierReason.NONE
+            )
+          ),
+          expandedStates,
+          generatedTransitions
+        );
       }
 
-      var positionLong = current.node().blockPosition().asMinecraftLong();
-      var currentFloorProjected = hasProjectedFloor(current);
-      var cachedInstructions = currentFloorProjected
-        ? null
-        : instructionCache.get(positionLong);
+      var generation = new GenerationState(
+        current,
+        labels,
+        openSet,
+        bestProgress,
+        generatedTransitions
+      );
+      var reachedLevelBoundary = baseGraph.insertActions(
+        current.node(),
+        instructions -> generateTransition(
+          generation,
+          instructions,
+          heuristicWeight
+        )
+      );
+      bestProgress = generation.bestProgress;
+      generatedTransitions = generation.generatedTransitions;
 
-      if (cachedInstructions == null) {
-        // Cache miss - compute and store instructions
-        var counter = new IntReference();
-        var list = new GraphInstructions[MinecraftGraph.ACTIONS_SIZE];
-        var nodeReachedLevelBoundary = graph.insertActions(
-          current.node().blockPosition(),
-          current.parentToNodeDirection(),
-          currentFloorProjected,
-          instructions -> {
-            list[counter.value++] = instructions;
-            handleInstructions(graph, openSet, routeIndex, blockItemsIndex, current, instructions, bestGlobalNode);
-          }
-        );
-        if (nodeReachedLevelBoundary) {
-          if (
-            current.parent() != null
-              && isProgressingPartialRoute(startScore, current)
-              && (
-                bestBoundaryNode.value == null
-                  || comparePartialRouteCandidates(
-                    current,
-                    bestBoundaryNode.value
-                  ) < 0
-              )
-          ) {
-            bestBoundaryNode.value = current;
-          }
-          if (nodesAtFirstBoundary < 0) {
-            nodesAtFirstBoundary = visitedNodes;
-          }
-        } else if (!currentFloorProjected) {
-          instructionCache.put(positionLong, list);
+      if (reachedLevelBoundary && progressing(startHeuristic, current)) {
+        if (
+          bestBoundary == null
+            || comparePartialRouteCandidates(current, bestBoundary) < 0
+        ) {
+          bestBoundary = current;
+          boundaryReason = FrontierReason.LEVEL_BOUNDARY;
         }
-      } else {
-        // Cache hit - reuse cached instructions
-        for (var instructions : cachedInstructions) {
-          if (instructions == null) {
-            break;
-          }
-          handleInstructions(graph, openSet, routeIndex, blockItemsIndex, current, instructions, bestGlobalNode);
+        if (nodesAtFirstBoundary < 0) {
+          nodesAtFirstBoundary = expandedStates;
         }
       }
       if (
         nodesAtFirstBoundary >= 0
-          && visitedNodes - nodesAtFirstBoundary
+          && expandedStates - nodesAtFirstBoundary
             >= MAX_NODES_AFTER_LEVEL_BOUNDARY
       ) {
-        stopwatch.stop();
-        log.info(
-          "Took {}ms to find the best route to the edge of view distance",
-          stopwatch.elapsed().toMillis()
-        );
-        return new PartialRouteResult(
-          reconstructPath(
-            bestBoundaryNode.value == null
-              ? bestGlobalNode.value
-              : bestBoundaryNode.value
-          )
+        return attempt(
+          partialResult(
+            bestBoundary,
+            searchMode,
+            heuristicWeight,
+            expandedStates,
+            generatedTransitions,
+            boundaryReason
+          ),
+          expandedStates,
+          generatedTransitions
         );
       }
     }
 
-    stopwatch.stop();
-    if (nodesAtFirstBoundary >= 0) {
-      log.info(
-        "Took {}ms to find the best route to the edge of view distance",
-        stopwatch.elapsed().toMillis()
-      );
-      return new PartialRouteResult(
-        reconstructPath(
-          bestBoundaryNode.value == null
-            ? bestGlobalNode.value
-            : bestBoundaryNode.value
-        )
+    if (bestBoundary != null) {
+      return attempt(
+        partialResult(
+          bestBoundary,
+          searchMode,
+          heuristicWeight,
+          expandedStates,
+          generatedTransitions,
+          boundaryReason
+        ),
+        expandedStates,
+        generatedTransitions
       );
     }
-    log.info("Failed to find route after {}ms", stopwatch.elapsed().toMillis());
-    return NoRouteFoundResult.INSTANCE;
+    return attempt(
+      new NoRouteFoundResult(metadata(
+        searchMode,
+        heuristicWeight,
+        RouteCost.ZERO,
+        expandedStates,
+        generatedTransitions,
+        FrontierReason.NONE
+      )),
+      expandedStates,
+      generatedTransitions
+    );
+  }
+
+  private void generateTransition(
+    GenerationState generation,
+    GraphInstructions instructions,
+    double heuristicWeight
+  ) {
+    generation.generatedTransitions++;
+    var current = generation.current;
+    if (
+      instructions.requiresOneBlock()
+        && current.node().usableBlockItems() < 1
+    ) {
+      return;
+    }
+
+    var newBlockCount = current.node().usableBlockItems()
+      + instructions.deltaUsableBlockItems();
+    if (newBlockCount < 0) {
+      return;
+    }
+
+    var resources = current.node().resources()
+      .addUsableBlockItems(instructions.deltaUsableBlockItems());
+    var targetState = baseGraph.snapshot().stateAt(
+      instructions.blockPosition(),
+      resources,
+      supportOrigin(instructions)
+    );
+    var routeCost = current.routeCost().add(instructions.routeCost());
+    var targetCost = heuristic(
+      targetState.blockPosition(),
+      instructions.actions()
+    );
+    var candidate = new MinecraftRouteNode(
+      targetState,
+      current,
+      instructions.moveDirection(),
+      instructions.actions(),
+      routeCost,
+      targetCost,
+      heuristicWeight
+    );
+    if (!addLabel(generation.labels, candidate)) {
+      return;
+    }
+    generation.openSet.add(candidate);
+    if (compareProgress(candidate, generation.bestProgress) < 0) {
+      generation.bestProgress = candidate;
+    }
+  }
+
+  private double heuristic(
+    SFVec3i position,
+    List<WorldAction> actions
+  ) {
+    return scorer.computeScore(baseGraph, position, actions)
+      * Costs.HEURISTIC_COST_PER_BLOCK;
+  }
+
+  private static SupportOrigin supportOrigin(GraphInstructions instructions) {
+    var floor = instructions.blockPosition().sub(0, 1, 0);
+    return instructions.actions().stream().anyMatch(action -> switch (action) {
+      case BlockPlaceAction place -> place.blockPosition().equals(floor);
+      case JumpAndPlaceBelowAction place ->
+        place.blockPlacePosition().equals(floor);
+      default -> false;
+    }) ? SupportOrigin.PLACED : SupportOrigin.WORLD;
+  }
+
+  private static boolean addLabel(
+    Map<StateIdentity, List<MinecraftRouteNode>> labels,
+    MinecraftRouteNode candidate
+  ) {
+    var identity = StateIdentity.of(candidate.node());
+    var stateLabels = labels.computeIfAbsent(
+      identity,
+      _ -> new ArrayList<>()
+    );
+    for (var existing : stateLabels) {
+      if (
+        existing.routeCost().noWorseThan(candidate.routeCost())
+          && existing.node().resources()
+            .dominates(candidate.node().resources())
+      ) {
+        return false;
+      }
+    }
+    for (Iterator<MinecraftRouteNode> iterator = stateLabels.iterator(); iterator.hasNext(); ) {
+      var existing = iterator.next();
+      if (
+        candidate.routeCost().noWorseThan(existing.routeCost())
+          && candidate.node().resources()
+            .dominates(existing.node().resources())
+      ) {
+        iterator.remove();
+      }
+    }
+    stateLabels.add(candidate);
+    return true;
+  }
+
+  private static boolean isActiveLabel(
+    Map<StateIdentity, List<MinecraftRouteNode>> labels,
+    MinecraftRouteNode node
+  ) {
+    var stateLabels = labels.get(StateIdentity.of(node.node()));
+    return stateLabels != null && stateLabels.contains(node);
+  }
+
+  private static List<WorldAction> reconstructPath(
+    MinecraftRouteNode current
+  ) {
+    var actions = new ArrayList<WorldAction>();
+    for (
+      MinecraftRouteNode element = current;
+      element != null;
+      element = element.parent()
+    ) {
+      for (var i = element.actions().size() - 1; i >= 0; i--) {
+        actions.addFirst(element.actions().get(i));
+      }
+    }
+    return List.copyOf(actions);
   }
 
   static int comparePartialRouteCandidates(
     MinecraftRouteNode left,
     MinecraftRouteNode right
   ) {
-    var totalCostComparison = Double.compare(
-      left.totalRouteScore(),
-      right.totalRouteScore()
+    return left.routeCost().compareEstimated(
+      right.routeCost(),
+      left.targetCost(),
+      right.targetCost()
     );
-    return totalCostComparison != 0
-      ? totalCostComparison
-      : Double.compare(left.targetCost(), right.targetCost());
   }
 
   static boolean isProgressingPartialRoute(
     double startScore,
     MinecraftRouteNode candidate
   ) {
-    return candidate.targetCost() < startScore;
+    return progressing(startScore, candidate);
   }
 
-  private static boolean hasProjectedFloor(MinecraftRouteNode node) {
-    var floor = node.node().blockPosition().sub(0, 1, 0);
-    return node.actions().stream()
-      .filter(BlockPlaceAction.class::isInstance)
-      .map(BlockPlaceAction.class::cast)
-      .anyMatch(action -> action.blockPosition().equals(floor));
+  private static boolean progressing(
+    double startScore,
+    MinecraftRouteNode candidate
+  ) {
+    return candidate.parent() != null && candidate.targetCost() < startScore;
   }
 
-  private void handleInstructions(MinecraftGraph graph,
-                                  ObjectHeapPriorityQueue<MinecraftRouteNode> openSet,
-                                  Long2ObjectOpenHashMap<MinecraftRouteNode>[] routeIndex,
-                                  Long2IntOpenHashMap blockItemsIndex,
-                                  MinecraftRouteNode current,
-                                  GraphInstructions instructions,
-                                  ObjectReference<MinecraftRouteNode> bestGlobalNode) {
-    // Creative mode placing requires us to have at least one block
-    if (instructions.requiresOneBlock() && current.node().usableBlockItems() < 1) {
-      return;
-    }
+  private static int compareProgress(
+    MinecraftRouteNode left,
+    MinecraftRouteNode right
+  ) {
+    var heuristicComparison = Double.compare(
+      left.targetCost(),
+      right.targetCost()
+    );
+    return heuristicComparison != 0
+      ? heuristicComparison
+      : left.routeCost().compareTo(right.routeCost());
+  }
 
-    var newBlocks = current.node().usableBlockItems() + instructions.deltaUsableBlockItems();
+  private static PartialRouteResult partialResult(
+    MinecraftRouteNode node,
+    RouteSearchMode searchMode,
+    double qualityBound,
+    long expandedStates,
+    long generatedTransitions,
+    FrontierReason reason
+  ) {
+    return new PartialRouteResult(
+      reconstructPath(node),
+      node.node().blockPosition(),
+      metadata(
+        searchMode,
+        qualityBound,
+        node.routeCost(),
+        expandedStates,
+        generatedTransitions,
+        reason
+      )
+    );
+  }
 
-    // If we don't have enough items to reach this node, we can skip it
-    if (newBlocks < 0) {
-      return;
-    }
+  private static RouteSearchMetadata metadata(
+    RouteSearchMode searchMode,
+    double qualityBound,
+    RouteCost routeCost,
+    long expandedStates,
+    long generatedTransitions,
+    FrontierReason frontierReason
+  ) {
+    return new RouteSearchMetadata(
+      searchMode,
+      qualityBound,
+      routeCost,
+      expandedStates,
+      generatedTransitions,
+      0,
+      frontierReason
+    );
+  }
 
-    var blockPosition = instructions.blockPosition();
-    var blockPositionLong = blockPosition.asMinecraftLong();
+  private static SearchAttempt attempt(
+    RouteSearchResult result,
+    long expandedStates,
+    long generatedTransitions
+  ) {
+    return new SearchAttempt(
+      result,
+      new SearchCounters(expandedStates, generatedTransitions)
+    );
+  }
 
-    // Pre-check if we can reach this node with the current amount of items
-    // We don't want to consider nodes again where we have even less usable items
-    // Using get/put instead of compute() to avoid lambda allocation overhead
-    var currentBest = blockItemsIndex.get(blockPositionLong);
-    if (currentBest >= newBlocks) {
-      return; // Already found a path with same or more blocks
-    }
-    blockItemsIndex.put(blockPositionLong, newBlocks);
+  private static RouteSearchResult withMetadata(
+    RouteSearchResult result,
+    RouteSearchMetadata metadata
+  ) {
+    return switch (result) {
+      case FoundRouteResult found ->
+        new FoundRouteResult(found.actions(), metadata);
+      case PartialRouteResult partial ->
+        new PartialRouteResult(
+          partial.actions(),
+          partial.endpoint(),
+          metadata
+        );
+      case NoRouteFoundResult _ -> new NoRouteFoundResult(metadata);
+      case SearchLimitReachedResult _ ->
+        new SearchLimitReachedResult(metadata);
+      case SearchInterruptedResult _ -> new SearchInterruptedResult(metadata);
+    };
+  }
 
-    var actionCost = instructions.actionCost();
-    var worldActions = instructions.actions();
+  private static final class GenerationState {
+    private final MinecraftRouteNode current;
+    private final Map<StateIdentity, List<MinecraftRouteNode>> labels;
+    private final PriorityQueue<MinecraftRouteNode> openSet;
+    private MinecraftRouteNode bestProgress;
+    private long generatedTransitions;
 
-    // Calculate new distance from start to this connection,
-    // Get distance from the current element
-    // and add the distance from the current element to the next element
-    var newSourceCost = current.sourceCost() + actionCost;
-    var newTargetCost = scorer.computeScore(graph, blockPosition, worldActions);
-    var newTotalRouteScore = newSourceCost + newTargetCost;
-
-    // Using get/put instead of compute() to avoid lambda allocation overhead
-    var routeMap = getRouteMap(routeIndex, newBlocks);
-    var existingNode = routeMap.get(blockPositionLong);
-
-    if (existingNode == null) {
-      // The first time we see this node
-      var instructionNode = new NodeState(blockPosition, newBlocks);
-      var node =
-        new MinecraftRouteNode(
-          instructionNode,
-          current,
-          instructions.moveDirection(),
-          worldActions,
-          newSourceCost,
-          newTargetCost,
-          newTotalRouteScore);
-
-      if (newTargetCost < bestGlobalNode.value.targetCost()) {
-        bestGlobalNode.value = node;
-      }
-
-      log.debug("Found a new node: {}", instructionNode);
-
-      routeMap.put(blockPositionLong, node);
-      openSet.enqueue(node);
-    } else if (newSourceCost < existingNode.sourceCost()) {
-      // If we found a better route to this node, update it
-      existingNode.setBetterParent(
-        current,
-        instructions.moveDirection(),
-        worldActions,
-        newSourceCost,
-        newTargetCost,
-        newTotalRouteScore);
-
-      if (newTargetCost < bestGlobalNode.value.targetCost()) {
-        bestGlobalNode.value = existingNode;
-      }
-
-      log.debug("Found a better route to node: {}", existingNode.node());
-
-      openSet.enqueue(existingNode);
+    private GenerationState(
+      MinecraftRouteNode current,
+      Map<StateIdentity, List<MinecraftRouteNode>> labels,
+      PriorityQueue<MinecraftRouteNode> openSet,
+      MinecraftRouteNode bestProgress,
+      long generatedTransitions
+    ) {
+      this.current = current;
+      this.labels = labels;
+      this.openSet = openSet;
+      this.bestProgress = bestProgress;
+      this.generatedTransitions = generatedTransitions;
     }
   }
 
-  /// The result of a route search
+  private record StateIdentity(
+    SFVec3i blockPosition,
+    SupportSurface supportSurface,
+    SupportOrigin supportOrigin,
+    MovementMode movementMode
+  ) {
+    private static StateIdentity of(NodeState state) {
+      return new StateIdentity(
+        state.blockPosition(),
+        state.supportSurface(),
+        state.supportOrigin(),
+        state.movementMode()
+      );
+    }
+  }
+
+  private record SearchAttempt(
+    RouteSearchResult result,
+    SearchCounters counters
+  ) {}
+
+  private record SearchCounters(
+    long expandedStates,
+    long generatedTransitions
+  ) {
+    private static final SearchCounters ZERO = new SearchCounters(0, 0);
+
+    private SearchCounters add(SearchCounters other) {
+      return new SearchCounters(
+        expandedStates + other.expandedStates,
+        generatedTransitions + other.generatedTransitions
+      );
+    }
+  }
+
+  public enum FrontierReason {
+    NONE,
+    LEVEL_BOUNDARY,
+    SEARCH_DEADLINE,
+    SEARCH_BUDGET
+  }
+
+  public record RouteSearchMetadata(
+    RouteSearchMode searchMode,
+    double qualityBound,
+    RouteCost routeCost,
+    long expandedStates,
+    long generatedTransitions,
+    long elapsedMillis,
+    FrontierReason frontierReason
+  ) {
+    private RouteSearchMetadata withQualityBound(double value) {
+      return new RouteSearchMetadata(
+        searchMode,
+        value,
+        routeCost,
+        expandedStates,
+        generatedTransitions,
+        elapsedMillis,
+        frontierReason
+      );
+    }
+
+    private RouteSearchMetadata withAggregate(
+      SearchCounters counters,
+      long elapsed
+    ) {
+      return new RouteSearchMetadata(
+        searchMode,
+        qualityBound,
+        routeCost,
+        counters.expandedStates,
+        counters.generatedTransitions,
+        elapsed,
+        frontierReason
+      );
+    }
+  }
+
   public sealed interface RouteSearchResult {
+    RouteSearchMetadata metadata();
   }
 
-  /// No route found to the target
-  public record NoRouteFoundResult() implements RouteSearchResult {
-    public static final NoRouteFoundResult INSTANCE = new NoRouteFoundResult();
-  }
+  public record NoRouteFoundResult(
+    RouteSearchMetadata metadata
+  ) implements RouteSearchResult {}
 
-  /// The search was interrupted before finding a route
-  public record SearchInterruptedResult() implements RouteSearchResult {
-    public static final SearchInterruptedResult INSTANCE = new SearchInterruptedResult();
-  }
+  public record SearchInterruptedResult(
+    RouteSearchMetadata metadata
+  ) implements RouteSearchResult {}
 
-  /// The search expired before finding a full route
-  public record SearchExpiredResult(List<WorldAction> actions) implements RouteSearchResult {
-  }
+  public record SearchLimitReachedResult(
+    RouteSearchMetadata metadata
+  ) implements RouteSearchResult {}
 
-  /// A full route found to the target
-  public record FoundRouteResult(List<WorldAction> actions) implements RouteSearchResult {
-  }
+  public record FoundRouteResult(
+    List<WorldAction> actions,
+    RouteSearchMetadata metadata
+  ) implements RouteSearchResult {}
 
-  /// This is the best route we found before reaching the edge of view distance
-  public record PartialRouteResult(List<WorldAction> actions) implements RouteSearchResult {
-  }
+  public record PartialRouteResult(
+    List<WorldAction> actions,
+    SFVec3i endpoint,
+    RouteSearchMetadata metadata
+  ) implements RouteSearchResult {}
 }

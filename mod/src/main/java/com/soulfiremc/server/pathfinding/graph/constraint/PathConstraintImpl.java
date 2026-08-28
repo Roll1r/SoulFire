@@ -25,7 +25,6 @@ import com.soulfiremc.server.settings.instance.PathfindingSettings;
 import com.soulfiremc.server.settings.lib.BotSettingsSource;
 import com.soulfiremc.server.settings.lib.InstanceSettingsSource;
 import com.soulfiremc.server.settings.lib.SettingsSource;
-import com.soulfiremc.server.settings.property.MinMaxProperty;
 import com.soulfiremc.server.util.SFBlockHelpers;
 import com.soulfiremc.server.util.SFItemHelpers;
 import com.soulfiremc.server.util.structs.CachedLazyObject;
@@ -56,9 +55,6 @@ public final class PathConstraintImpl implements PathConstraint {
   private final int breakBlockPenalty;
   private final int placeBlockPenalty;
   private final int expireTimeout;
-  private final boolean disablePruning;
-  private final MinMaxProperty.DataLayout yRotJitter;
-  private final MinMaxProperty.DataLayout xRotJitter;
   private final CachedLazyObject<List<EntityRangeData>> unfriendlyEntities = new CachedLazyObject<>(this::getUnfriendlyEntitiesExpensive, 10, TimeUnit.SECONDS);
 
   public PathConstraintImpl(
@@ -70,10 +66,7 @@ public final class PathConstraintImpl implements PathConstraint {
     int maxEnemyPenalty,
     int breakBlockPenalty,
     int placeBlockPenalty,
-    int expireTimeout,
-    boolean disablePruning,
-    MinMaxProperty.DataLayout yRotJitter,
-    MinMaxProperty.DataLayout xRotJitter) {
+    int expireTimeout) {
     this.entity = entity;
     this.levelHeightAccessor = levelHeightAccessor;
     this.allowBreakingUndiggable = allowBreakingUndiggable;
@@ -83,9 +76,6 @@ public final class PathConstraintImpl implements PathConstraint {
     this.breakBlockPenalty = breakBlockPenalty;
     this.placeBlockPenalty = placeBlockPenalty;
     this.expireTimeout = expireTimeout;
-    this.disablePruning = disablePruning;
-    this.yRotJitter = yRotJitter;
-    this.xRotJitter = xRotJitter;
   }
 
   public PathConstraintImpl(BotConnection botConnection) {
@@ -109,10 +99,7 @@ public final class PathConstraintImpl implements PathConstraint {
       settingsSource.get(PathfindingSettings.MAX_ENEMY_PENALTY),
       settingsSource.get(PathfindingSettings.BREAK_BLOCK_PENALTY),
       settingsSource.get(PathfindingSettings.PLACE_BLOCK_PENALTY),
-      settingsSource.get(PathfindingSettings.EXPIRE_TIMEOUT),
-      settingsSource.get(PathfindingSettings.DISABLE_PRUNING),
-      settingsSource.get(PathfindingSettings.Y_ROT_JITTER),
-      settingsSource.get(PathfindingSettings.X_ROT_JITTER)
+      settingsSource.get(PathfindingSettings.EXPIRE_TIMEOUT)
     );
   }
 
@@ -200,7 +187,9 @@ public final class PathConstraintImpl implements PathConstraint {
       }
 
       if (addedPenalty > 0) {
-        instruction = instruction.withActionCost(instruction.actionCost() + addedPenalty);
+        instruction = instruction.withExpectedDamage(
+          instruction.expectedDamage() + addedPenalty
+        );
       }
     }
 
@@ -222,20 +211,6 @@ public final class PathConstraintImpl implements PathConstraint {
     return expireTimeout;
   }
 
-  @Override
-  public boolean disablePruning() {
-    return disablePruning;
-  }
-
-  @Override
-  public MinMaxProperty.DataLayout yRotJitter() {
-    return yRotJitter;
-  }
-
-  @Override
-  public MinMaxProperty.DataLayout xRotJitter() {
-    return xRotJitter;
-  }
 
   private List<EntityRangeData> getUnfriendlyEntitiesExpensive() {
     if (entity == null) {

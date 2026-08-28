@@ -15,31 +15,20 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-package com.soulfiremc.server.pathfinding.execution;
+package com.soulfiremc.server.pathfinding;
 
-import com.soulfiremc.server.bot.BotConnection;
-import com.soulfiremc.server.pathfinding.SFVec3i;
+import org.junit.jupiter.api.Test;
 
-public sealed interface WorldAction
-  permits BlockBreakAction,
-  BlockPlaceAction,
-  ClimbAction,
-  GapJumpAction,
-  InteractBlockAction,
-  JumpAndPlaceBelowAction,
-  MovementAction,
-  RecalculatePathAction {
-  boolean isCompleted(BotConnection connection);
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-  /// Returns whether live world state still satisfies the action's immediate
-  /// movement preconditions.
-  default boolean isValid(BotConnection connection) {
-    return true;
+final class ResourceStateTest {
+  @Test
+  void dominanceRequiresEveryNavigationResource() {
+    var richer = new ResourceState(8);
+    var poorer = new ResourceState(4);
+
+    assertTrue(richer.dominates(poorer));
+    assertFalse(poorer.dominates(richer));
   }
-
-  SFVec3i targetPosition(BotConnection connection);
-
-  void tick(BotConnection connection);
-
-  int getAllowedTicks();
 }

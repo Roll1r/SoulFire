@@ -27,6 +27,14 @@ public final class UnreachableGoalException extends IllegalStateException {
     return new UnreachableGoalException("No route found to the goal!");
   }
 
+  public static UnreachableGoalException searchLimit(int expandedStates) {
+    return new UnreachableGoalException(
+      "Pathfinding reached its search limit after "
+        + expandedStates
+        + " expanded states"
+    );
+  }
+
   public static UnreachableGoalException stalled(int partialRouteCount) {
     return new UnreachableGoalException(
       "Pathfinding made no progress across "

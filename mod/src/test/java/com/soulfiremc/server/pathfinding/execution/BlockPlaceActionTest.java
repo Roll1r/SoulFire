@@ -17,12 +17,20 @@
  */
 package com.soulfiremc.server.pathfinding.execution;
 
+import com.soulfiremc.test.utils.TestBootstrap;
+import net.minecraft.world.level.block.Blocks;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class BlockPlaceActionTest {
+  @BeforeAll
+  static void setup() {
+    TestBootstrap.bootstrapForTest();
+  }
+
   @Test
   void rejectsAnInteractionMinecraftRefused() {
     assertTrue(BlockPlaceAction.placementWasRejected(
@@ -53,6 +61,22 @@ final class BlockPlaceActionTest {
       true,
       false,
       40
+    ));
+  }
+
+  @Test
+  void requiresReplaceableTargetAndStablePlacementSupport() {
+    assertTrue(BlockPlaceAction.hasPlacementSupport(
+      Blocks.AIR.defaultBlockState(),
+      Blocks.STONE.defaultBlockState()
+    ));
+    assertFalse(BlockPlaceAction.hasPlacementSupport(
+      Blocks.AIR.defaultBlockState(),
+      Blocks.AIR.defaultBlockState()
+    ));
+    assertTrue(BlockPlaceAction.hasPlacementSupport(
+      Blocks.STONE.defaultBlockState(),
+      Blocks.AIR.defaultBlockState()
     ));
   }
 }

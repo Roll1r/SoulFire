@@ -61,6 +61,16 @@ export const PortalStrategy = {
 export type PortalStrategy =
   typeof PortalStrategy[keyof typeof PortalStrategy];
 
+export const BeatGamePathSearchMode = {
+  PRECISION: "PRECISION",
+  NORMAL: "NORMAL",
+  URGENT: "URGENT",
+  ESCAPE: "ESCAPE",
+} as const;
+
+export type BeatGamePathSearchMode =
+  typeof BeatGamePathSearchMode[keyof typeof BeatGamePathSearchMode];
+
 export interface BeatGamePosition {
   readonly x: number;
   readonly y: number;
@@ -90,6 +100,11 @@ export interface BeatGamePathPolicy {
   readonly sprint?: boolean;
   readonly minimumY?: number;
   readonly maximumY?: number;
+  readonly searchMode?: BeatGamePathSearchMode;
+  readonly maximumQualityBound?: number;
+  readonly maximumExpandedStates?: number;
+  readonly maxParkourGap?: number;
+  readonly smoothCamera?: boolean;
 }
 
 export interface BeatGameStrategy {
@@ -148,6 +163,9 @@ export const defaultBeatGameStrategy: BeatGameStrategy = {
     allowPlacing: true,
     maxFallDistance: 3,
     maxSearchTimeMs: 30_000,
+    searchMode: BeatGamePathSearchMode.NORMAL,
+    maximumExpandedStates: 50_000,
+    maxParkourGap: 3,
   },
 };
 

@@ -43,4 +43,13 @@ public enum MovementModifier {
   public SFVec3i offsetIfJump(SFVec3i vector) {
     return this == MovementModifier.JUMP_UP_BLOCK ? vector.add(0, 1, 0) : vector;
   }
+
+  public int fallDistance() {
+    return switch (this) {
+      case NORMAL, JUMP_UP_BLOCK -> 0;
+      case FALL_1 -> 1;
+      case FALL_2 -> 2;
+      case FALL_3 -> 3;
+    };
+  }
 }

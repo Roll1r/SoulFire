@@ -17,12 +17,22 @@
  */
 package com.soulfiremc.server.pathfinding.execution;
 
+import com.soulfiremc.server.pathfinding.SFVec3i;
+import com.soulfiremc.test.utils.TestBlockAccessorBuilder;
+import com.soulfiremc.test.utils.TestBootstrap;
+import net.minecraft.world.level.block.Blocks;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class GapJumpActionTest {
+  @BeforeAll
+  static void setup() {
+    TestBootstrap.bootstrapForTest();
+  }
+
   @Test
   void waitsForSprintMomentumBeforeJumping() {
     assertFalse(GapJumpAction.shouldStartJump(1, 0));
@@ -34,5 +44,21 @@ class GapJumpActionTest {
   void eventuallyJumpsWhenTerrainPreventsNormalAcceleration() {
     assertFalse(GapJumpAction.shouldStartJump(2, 0));
     assertTrue(GapJumpAction.shouldStartJump(3, 0));
+  }
+
+  @Test
+  void rejectsAChangedBlockInsideTheJumpTrajectory() {
+    var clear = new TestBlockAccessorBuilder().build();
+    var blockedBuilder = new TestBlockAccessorBuilder();
+    blockedBuilder.setBlockAt(1, 2, 0, Blocks.STONE);
+    var start = SFVec3i.from(0, 1, 0);
+    var target = SFVec3i.from(3, 1, 0);
+
+    assertTrue(GapJumpAction.hasClearTrajectory(clear, start, target));
+    assertFalse(GapJumpAction.hasClearTrajectory(
+      blockedBuilder.build(),
+      start,
+      target
+    ));
   }
 }

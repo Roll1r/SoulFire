@@ -19,28 +19,51 @@ package com.soulfiremc.server.pathfinding;
 
 import com.soulfiremc.server.pathfinding.graph.ProjectedInventory;
 
-/// Represents the minimal state we are in the Minecraft world.
-public record NodeState(SFVec3i blockPosition, int usableBlockItems) {
+/// The canonical state used by route search.
+public record NodeState(
+  SFVec3i blockPosition,
+  SupportSurface supportSurface,
+  SupportOrigin supportOrigin,
+  MovementMode movementMode,
+  ResourceState resources
+) {
+  public NodeState(SFVec3i blockPosition, int usableBlockItems) {
+    this(
+      blockPosition,
+      SupportSurface.FLOOR,
+      SupportOrigin.WORLD,
+      MovementMode.GROUND,
+      ResourceState.withUsableBlockItems(usableBlockItems)
+    );
+  }
+
   public static NodeState forInfo(SFVec3i blockPosition, ProjectedInventory inventory) {
-    return new NodeState(blockPosition, inventory.usableBlockItems());
+    return new NodeState(
+      blockPosition,
+      SupportSurface.FLOOR,
+      SupportOrigin.WORLD,
+      MovementMode.GROUND,
+      new ResourceState(inventory.usableBlockItems())
+    );
   }
 
-  @Override
-  public boolean equals(Object o) {
-    if (this == o) {
-      return true;
-    }
-
-    if (!(o instanceof NodeState(var otherBlockPosition, var otherUsableBlockItems))) {
-      return false;
-    }
-
-    return usableBlockItems == otherUsableBlockItems && blockPosition.equals(otherBlockPosition);
+  public int usableBlockItems() {
+    return resources.usableBlockItems();
   }
 
-  @Override
-  public int hashCode() {
-    var result = blockPosition.hashCode();
-    return 31 * result + usableBlockItems;
+  public NodeState withPosition(
+    SFVec3i position,
+    SupportSurface surface,
+    SupportOrigin origin,
+    MovementMode mode,
+    ResourceState newResources
+  ) {
+    return new NodeState(
+      position,
+      surface,
+      origin,
+      mode,
+      newResources
+    );
   }
 }

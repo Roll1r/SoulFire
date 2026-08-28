@@ -1658,6 +1658,10 @@ function portalConstructionPathPolicy(
     ...mergePathPolicy(override),
     allowMining: false,
     allowPlacing: false,
+    searchMode: "PRECISION",
+    maximumQualityBound: 1,
+    maxParkourGap: 0,
+    smoothCamera: false,
   };
 }
 
@@ -6010,6 +6014,10 @@ function staircaseStepPathPolicy(
     allowMining: false,
     allowPlacing: false,
     maxFallDistance: 1,
+    searchMode: "PRECISION",
+    maximumQualityBound: 1,
+    maxParkourGap: 0,
+    smoothCamera: false,
   };
 }
 

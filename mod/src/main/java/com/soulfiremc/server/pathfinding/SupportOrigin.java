@@ -15,31 +15,11 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-package com.soulfiremc.server.pathfinding.execution;
+package com.soulfiremc.server.pathfinding;
 
-import com.soulfiremc.server.bot.BotConnection;
-import com.soulfiremc.server.pathfinding.SFVec3i;
-
-public sealed interface WorldAction
-  permits BlockBreakAction,
-  BlockPlaceAction,
-  ClimbAction,
-  GapJumpAction,
-  InteractBlockAction,
-  JumpAndPlaceBelowAction,
-  MovementAction,
-  RecalculatePathAction {
-  boolean isCompleted(BotConnection connection);
-
-  /// Returns whether live world state still satisfies the action's immediate
-  /// movement preconditions.
-  default boolean isValid(BotConnection connection) {
-    return true;
-  }
-
-  SFVec3i targetPosition(BotConnection connection);
-
-  void tick(BotConnection connection);
-
-  int getAllowedTicks();
+/// Identifies whether the current support is present in the world snapshot or
+/// is guaranteed by the immediately preceding placement transition.
+public enum SupportOrigin {
+  WORLD,
+  PLACED
 }

@@ -19,67 +19,86 @@ package com.soulfiremc.server.pathfinding;
 
 import com.soulfiremc.server.pathfinding.execution.WorldAction;
 import com.soulfiremc.server.pathfinding.graph.actions.movement.ActionDirection;
-import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.ToString;
 import org.checkerframework.checker.nullness.qual.Nullable;
 
 import java.util.List;
 
+/// One immutable route label. A navigation state can have multiple labels when
+/// cost and navigation resources form a Pareto frontier.
 @Getter
 @ToString
-@AllArgsConstructor
 public final class MinecraftRouteNode implements Comparable<MinecraftRouteNode> {
-  /// The world state of this node.
   private final NodeState node;
+  private final @Nullable MinecraftRouteNode parent;
+  private final @Nullable ActionDirection parentToNodeDirection;
+  private final List<WorldAction> actions;
+  private final RouteCost routeCost;
+  private final double targetCost;
+  private final double heuristicWeight;
 
-  /// The currently best known node to this node.
-  private @Nullable MinecraftRouteNode parent;
+  public MinecraftRouteNode(
+    NodeState node,
+    @Nullable MinecraftRouteNode parent,
+    @Nullable ActionDirection parentToNodeDirection,
+    List<WorldAction> actions,
+    RouteCost routeCost,
+    double targetCost,
+    double heuristicWeight
+  ) {
+    this.node = node;
+    this.parent = parent;
+    this.parentToNodeDirection = parentToNodeDirection;
+    this.actions = List.copyOf(actions);
+    this.routeCost = routeCost;
+    this.targetCost = targetCost;
+    this.heuristicWeight = heuristicWeight;
+  }
 
-  /// The direction from the parent to this node.
-  private @Nullable ActionDirection parentToNodeDirection;
-
-  /// The actions from the previous node to this node that were used to get to this node.
-  private List<WorldAction> actions;
-
-  /// The cost of the route from the start node to this node.
-  private double sourceCost;
-
-  /// The cost of the route from this node to the target.
-  private double targetCost;
-
-  /// The estimated cost of the route from this node to the target + the source cost.
-  private double totalRouteScore;
-
-  public MinecraftRouteNode(NodeState node, List<WorldAction> actions,
-                            double sourceCost, double targetCost,
-                            double totalRouteScore) {
+  public MinecraftRouteNode(
+    NodeState node,
+    List<WorldAction> actions,
+    double sourceCost,
+    double targetCost,
+    double totalRouteScore
+  ) {
     this(
       node,
       null,
       null,
       actions,
-      sourceCost,
+      new RouteCost(0, 0, 0, 0, sourceCost),
       targetCost,
-      totalRouteScore
+      inferWeight(sourceCost, targetCost, totalRouteScore)
     );
+  }
+
+  public double sourceCost() {
+    return routeCost.durationCost();
+  }
+
+  public double totalRouteScore() {
+    return routeCost.durationCost() + targetCost;
   }
 
   @Override
   public int compareTo(MinecraftRouteNode other) {
-    return Double.compare(this.totalRouteScore, other.totalRouteScore);
+    return routeCost.compareEstimated(
+      other.routeCost,
+      targetCost * heuristicWeight,
+      other.targetCost * other.heuristicWeight
+    );
   }
 
-  public void setBetterParent(MinecraftRouteNode parent,
-                              ActionDirection moveDirection,
-                              List<WorldAction> actions,
-                              double sourceCost, double targetCost,
-                              double totalRouteScore) {
-    this.parent = parent;
-    this.parentToNodeDirection = moveDirection;
-    this.actions = actions;
-    this.sourceCost = sourceCost;
-    this.targetCost = targetCost;
-    this.totalRouteScore = totalRouteScore;
+  private static double inferWeight(
+    double sourceCost,
+    double targetCost,
+    double totalRouteScore
+  ) {
+    if (targetCost == 0) {
+      return 1;
+    }
+    return Math.max(0, (totalRouteScore - sourceCost) / targetCost);
   }
 }

@@ -96,6 +96,10 @@ public final class DownMovement extends GraphAction implements Cloneable {
     if (closestBlockToFallOn == Integer.MIN_VALUE || closestObstructingBlock > closestBlockToFallOn) {
       return Collections.emptyList();
     }
+    var fallDistance = -closestBlockToFallOn - 1;
+    if (fallDistance > graph.pathConstraint().maximumFallDistance()) {
+      return Collections.emptyList();
+    }
 
     var cost = 0D;
 

@@ -18,7 +18,10 @@
 package com.soulfiremc.server.pathfinding.execution;
 
 import com.soulfiremc.server.pathfinding.SFVec3i;
+import com.soulfiremc.test.utils.TestBootstrap;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.Vec3;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -26,6 +29,11 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class MovementActionTest {
+  @BeforeAll
+  static void setup() {
+    TestBootstrap.bootstrapForTest();
+  }
+
   @Test
   void movementInputTargetsWorldDirectionsIndependentlyOfViewYaw() {
     var origin = Vec3.ZERO;
@@ -115,6 +123,29 @@ final class MovementActionTest {
     assertFalse(action.shouldJump());
     assertTrue(action.shouldJump());
     assertTrue(action.shouldJump());
+  }
+
+  @Test
+  void acceptsPartialCollisionSupportInsideTheFeetBlock() {
+    assertTrue(MovementAction.hasValidTargetStates(
+      Blocks.STONE_SLAB.defaultBlockState(),
+      Blocks.AIR.defaultBlockState(),
+      Blocks.AIR.defaultBlockState()
+    ));
+    assertTrue(MovementAction.hasValidTargetStates(
+      Blocks.SNOW.defaultBlockState(),
+      Blocks.AIR.defaultBlockState(),
+      Blocks.STONE.defaultBlockState()
+    ));
+  }
+
+  @Test
+  void rejectsAStaleMovementTargetWithoutSupport() {
+    assertFalse(MovementAction.hasValidTargetStates(
+      Blocks.AIR.defaultBlockState(),
+      Blocks.AIR.defaultBlockState(),
+      Blocks.AIR.defaultBlockState()
+    ));
   }
 
   private static void assertInput(

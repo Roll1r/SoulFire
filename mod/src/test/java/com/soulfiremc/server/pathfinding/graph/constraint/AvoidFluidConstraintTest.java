@@ -97,7 +97,7 @@ final class AvoidFluidConstraintTest {
       false,
       ActionDirection.EAST,
       1,
-      List.of(new GapJumpAction(target))
+      List.of(new GapJumpAction(SFVec3i.ZERO, target))
     );
 
     assertFalse(constraint.allowsInstruction(parkour));

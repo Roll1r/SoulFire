@@ -17,6 +17,7 @@
  */
 package com.soulfiremc.server.pathfinding.graph.constraint;
 
+import com.soulfiremc.server.pathfinding.RouteSearchMode;
 import com.soulfiremc.test.utils.TestPathConstraint;
 import org.junit.jupiter.api.Test;
 
@@ -24,6 +25,7 @@ import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.OptionalInt;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -35,6 +37,25 @@ final class ConfiguredPathConstraintTest {
     assertTrue(configured(Optional.of(true)).sprint());
   }
 
+  @Test
+  void searchModeSuppliesItsBoundWhenNoExplicitBoundExists() {
+    var configured = new ConfiguredPathConstraint(
+      TestPathConstraint.INSTANCE,
+      OptionalDouble.empty(),
+      OptionalDouble.empty(),
+      OptionalInt.empty(),
+      Optional.empty(),
+      Optional.of(RouteSearchMode.URGENT),
+      OptionalDouble.empty(),
+      OptionalInt.empty(),
+      OptionalInt.empty(),
+      OptionalInt.empty(),
+      Optional.empty()
+    );
+
+    assertEquals(1.5, configured.maximumQualityBound());
+  }
+
   private static ConfiguredPathConstraint configured(
     Optional<Boolean> sprint
   ) {
@@ -43,7 +64,13 @@ final class ConfiguredPathConstraintTest {
       OptionalDouble.empty(),
       OptionalDouble.empty(),
       OptionalInt.empty(),
-      sprint
+      sprint,
+      Optional.empty(),
+      OptionalDouble.empty(),
+      OptionalInt.empty(),
+      OptionalInt.empty(),
+      OptionalInt.empty(),
+      Optional.empty()
     );
   }
 }

@@ -990,6 +990,18 @@ message PathfindGoal {
   }
 }
 
+enum PathfindSearchMode {
+  PATHFIND_SEARCH_MODE_UNSPECIFIED = 0;
+  // Exact A* with an admissible heuristic and no suboptimality.
+  PATHFIND_SEARCH_MODE_PRECISION = 1;
+  // Bounded A* with a default quality bound of 1.2.
+  PATHFIND_SEARCH_MODE_NORMAL = 2;
+  // Bounded A* with a default quality bound of 1.5.
+  PATHFIND_SEARCH_MODE_URGENT = 3;
+  // A safety-first policy for immediate escape movement.
+  PATHFIND_SEARCH_MODE_ESCAPE = 4;
+}
+
 message PathfindOptions {
   // If true, the bot may break blocks along the path when necessary.
   bool allow_mining = 1;
@@ -1019,6 +1031,24 @@ message PathfindOptions {
   // constraining blocks that actions may reach from the route.
   optional int32 minimum_y = 10;
   optional int32 maximum_y = 11;
+  // Search quality and latency policy. Unset uses NORMAL.
+  PathfindSearchMode search_mode = 12;
+  // Largest accepted multiplicative quality bound. Values must be from 1.0
+  // through the selected mode's default bound. Unset uses the mode default.
+  optional double maximum_quality_bound = 13;
+  // Smooth camera movement only inside movement-specific safe tolerances.
+  // Block interactions and precision movement remain deterministic.
+  optional bool smooth_camera = 14;
+  // Hard state-expansion budget for each search attempt. 0 uses the server
+  // default. Reaching this limit is reported separately from an unreachable
+  // goal.
+  uint32 maximum_expanded_states = 15;
+  // Largest ordinary fall onto solid ground. Values above 3 are rejected
+  // because longer falls require a dedicated safe-landing primitive.
+  optional uint32 maximum_fall_distance = 16;
+  // Largest unsupported horizontal gap that parkour may cross. Set to 0 to
+  // disable parkour. Values above 3 are rejected by the current controller.
+  optional uint32 maximum_parkour_gap = 17;
 }
 
 message GoToRequest {

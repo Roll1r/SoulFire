@@ -17,6 +17,8 @@
  */
 package com.soulfiremc.server.pathfinding.graph.constraint;
 
+import com.soulfiremc.server.pathfinding.RouteSearchMode;
+
 import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.OptionalInt;
@@ -28,7 +30,13 @@ public record ConfiguredPathConstraint(
   OptionalDouble configuredBreakBlockPenalty,
   OptionalDouble configuredPlaceBlockPenalty,
   OptionalInt configuredExpireTimeout,
-  Optional<Boolean> configuredSprint
+  Optional<Boolean> configuredSprint,
+  Optional<RouteSearchMode> configuredSearchMode,
+  OptionalDouble configuredMaximumQualityBound,
+  OptionalInt configuredMaximumExpandedStates,
+  OptionalInt configuredMaximumFallDistance,
+  OptionalInt configuredMaximumParkourGap,
+  Optional<Boolean> configuredSmoothCamera
 ) implements DelegatePathConstraint {
   @Override
   public double breakBlockPenalty() {
@@ -48,5 +56,46 @@ public record ConfiguredPathConstraint(
   @Override
   public boolean sprint() {
     return configuredSprint.orElseGet(delegate::sprint);
+  }
+
+  @Override
+  public RouteSearchMode searchMode() {
+    return configuredSearchMode.orElseGet(delegate::searchMode);
+  }
+
+  @Override
+  public double maximumQualityBound() {
+    if (configuredMaximumQualityBound.isPresent()) {
+      return configuredMaximumQualityBound.getAsDouble();
+    }
+    return configuredSearchMode
+      .map(RouteSearchMode::heuristicWeight)
+      .orElseGet(delegate::maximumQualityBound);
+  }
+
+  @Override
+  public int maximumExpandedStates() {
+    return configuredMaximumExpandedStates.orElseGet(
+      delegate::maximumExpandedStates
+    );
+  }
+
+  @Override
+  public int maximumFallDistance() {
+    return configuredMaximumFallDistance.orElseGet(
+      delegate::maximumFallDistance
+    );
+  }
+
+  @Override
+  public int maximumParkourGap() {
+    return configuredMaximumParkourGap.orElseGet(
+      delegate::maximumParkourGap
+    );
+  }
+
+  @Override
+  public boolean smoothCamera() {
+    return configuredSmoothCamera.orElseGet(delegate::smoothCamera);
   }
 }

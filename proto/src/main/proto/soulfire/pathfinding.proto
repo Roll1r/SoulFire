@@ -30,6 +30,22 @@ enum PathPlanStatus {
   PATH_PLAN_STATUS_CANCELLED = 5;
 }
 
+enum PathFrontierReason {
+  PATH_FRONTIER_REASON_UNSPECIFIED = 0;
+  PATH_FRONTIER_REASON_NONE = 1;
+  PATH_FRONTIER_REASON_LEVEL_BOUNDARY = 2;
+  PATH_FRONTIER_REASON_SEARCH_DEADLINE = 3;
+  PATH_FRONTIER_REASON_SEARCH_BUDGET = 4;
+}
+
+message PathRouteCost {
+  double expected_damage = 1;
+  uint32 irreversible_changes = 2;
+  uint32 placed_blocks = 3;
+  uint32 broken_blocks = 4;
+  double duration_cost = 5;
+}
+
 message PathStep {
   uint32 index = 1 [(google.api.field_behavior) = REQUIRED];
   PathStepKind kind = 2 [(google.api.field_behavior) = REQUIRED];
@@ -46,6 +62,13 @@ message PathPlan {
   repeated BlockPosition blocks_to_place = 5;
   uint64 maximum_ticks = 6;
   optional string partial_reason = 7;
+  PathfindSearchMode search_mode = 8;
+  double quality_bound = 9;
+  PathRouteCost route_cost = 10;
+  uint64 expanded_states = 11;
+  uint64 generated_transitions = 12;
+  uint64 search_elapsed_millis = 13;
+  PathFrontierReason frontier_reason = 14;
 }
 
 message PlanPathRequest {

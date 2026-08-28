@@ -29,6 +29,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 
@@ -60,6 +61,26 @@ public final class BlockPlaceAction implements WorldAction {
       || !BlockPredictionSupport.hasPendingPrediction(
       connection,
       position
+    );
+  }
+
+  @Override
+  public boolean isValid(BotConnection connection) {
+    var level = connection.minecraft().level;
+    return hasPlacementSupport(
+      level.getBlockState(blockPosition.toBlockPos()),
+      level.getBlockState(blockPlaceAgainstData.againstPos().toBlockPos())
+    );
+  }
+
+  static boolean hasPlacementSupport(
+    BlockState target,
+    BlockState against
+  ) {
+    return SFBlockHelpers.isCollisionShapeFullBlock(target)
+      || (
+      target.canBeReplaced()
+        && SFBlockHelpers.isCollisionShapeFullBlock(against)
     );
   }
 

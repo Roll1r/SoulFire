@@ -7,7 +7,7 @@ import { enumDesc, fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf
 import { file_google_api_annotations } from "../google/api/annotations_pb.js";
 import { file_google_api_field_behavior } from "../google/api/field_behavior_pb.js";
 import { file_soulfire_api_docs } from "./api_docs_pb.js";
-import type { PathfindGoal, PathfindOptions } from "./bot_live_pb.js";
+import type { PathfindGoal, PathfindOptions, PathfindSearchMode } from "./bot_live_pb.js";
 import { file_soulfire_bot_live } from "./bot_live_pb.js";
 import type { BlockPosition } from "./common_pb.js";
 import { file_soulfire_common } from "./common_pb.js";
@@ -17,7 +17,44 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file soulfire/pathfinding.proto.
  */
 export const file_soulfire_pathfinding: GenFile = /*@__PURE__*/
-  fileDesc("Chpzb3VsZmlyZS9wYXRoZmluZGluZy5wcm90bxILc291bGZpcmUudjEiqwEKCFBhdGhTdGVwEhIKBWluZGV4GAEgASgNQgPgQQISLAoEa2luZBgCIAEoDjIZLnNvdWxmaXJlLnYxLlBhdGhTdGVwS2luZEID4EECEjEKCHBvc2l0aW9uGAMgASgLMhouc291bGZpcmUudjEuQmxvY2tQb3NpdGlvbkID4EECEhMKC2Rlc2NyaXB0aW9uGAQgASgJEhUKDW1heGltdW1fdGlja3MYBSABKA0iwwIKCFBhdGhQbGFuEjAKBnN0YXR1cxgBIAEoDjIbLnNvdWxmaXJlLnYxLlBhdGhQbGFuU3RhdHVzQgPgQQISLgoFc3RhcnQYAiABKAsyGi5zb3VsZmlyZS52MS5CbG9ja1Bvc2l0aW9uQgPgQQISJAoFc3RlcHMYAyADKAsyFS5zb3VsZmlyZS52MS5QYXRoU3RlcBIzCg9ibG9ja3NfdG9fYnJlYWsYBCADKAsyGi5zb3VsZmlyZS52MS5CbG9ja1Bvc2l0aW9uEjMKD2Jsb2Nrc190b19wbGFjZRgFIAMoCzIaLnNvdWxmaXJlLnYxLkJsb2NrUG9zaXRpb24SFQoNbWF4aW11bV90aWNrcxgGIAEoBBIbCg5wYXJ0aWFsX3JlYXNvbhgHIAEoCUgAiAEBQhEKD19wYXJ0aWFsX3JlYXNvbiLPAQoPUGxhblBhdGhSZXF1ZXN0EiIKC2luc3RhbmNlX2lkGAEgASgJQg3gQQLS8xgGCgR1dWlkEh0KBmJvdF9pZBgCIAEoCUIN4EEC0vMYBgoEdXVpZBIsCgRnb2FsGAMgASgLMhkuc291bGZpcmUudjEuUGF0aGZpbmRHb2FsQgPgQQISLQoHb3B0aW9ucxgEIAEoCzIcLnNvdWxmaXJlLnYxLlBhdGhmaW5kT3B0aW9ucxIcChRpbmNsdWRlX2Rlc2NyaXB0aW9ucxgFIAEoCCI8ChBQbGFuUGF0aFJlc3BvbnNlEigKBHBsYW4YASABKAsyFS5zb3VsZmlyZS52MS5QYXRoUGxhbkID4EECKt0BCgxQYXRoU3RlcEtpbmQSHgoaUEFUSF9TVEVQX0tJTkRfVU5TUEVDSUZJRUQQABIXChNQQVRIX1NURVBfS0lORF9NT1ZFEAESHgoaUEFUSF9TVEVQX0tJTkRfQlJFQUtfQkxPQ0sQAhIeChpQQVRIX1NURVBfS0lORF9QTEFDRV9CTE9DSxADEhcKE1BBVEhfU1RFUF9LSU5EX0pVTVAQBBIbChdQQVRIX1NURVBfS0lORF9JTlRFUkFDVBAFEh4KGlBBVEhfU1RFUF9LSU5EX1JFQ0FMQ1VMQVRFEAYq1gEKDlBhdGhQbGFuU3RhdHVzEiAKHFBBVEhfUExBTl9TVEFUVVNfVU5TUEVDSUZJRUQQABIdChlQQVRIX1BMQU5fU1RBVFVTX0NPTVBMRVRFEAESHAoYUEFUSF9QTEFOX1NUQVRVU19QQVJUSUFMEAISIAocUEFUSF9QTEFOX1NUQVRVU19VTlJFQUNIQUJMRRADEiMKH1BBVEhfUExBTl9TVEFUVVNfU0VBUkNIX0VYUElSRUQQBBIeChpQQVRIX1BMQU5fU1RBVFVTX0NBTkNFTExFRBAFMogCChFQYXRoZmluZGVyU2VydmljZRLyAQoIUGxhblBhdGgSHC5zb3VsZmlyZS52MS5QbGFuUGF0aFJlcXVlc3QaHS5zb3VsZmlyZS52MS5QbGFuUGF0aFJlc3BvbnNlIqgByvMYYAoNUGxhbiBib3QgcGF0aBoNUkVBRF9CT1RfSU5GTyIMaW5zdGFuY2UuYm90MjJTZWFyY2hlcyBsb2FkZWQgd29ybGQgZGF0YSB3aXRob3V0IG1vdmluZyB0aGUgYm90LoLT5JMCPjoBKiI5L3YxL2luc3RhbmNlcy97aW5zdGFuY2VfaWR9L2JvdHMve2JvdF9pZH0vcGF0aGZpbmRlcjpwbGFuQiEKHWNvbS5zb3VsZmlyZW1jLmdycGMuZ2VuZXJhdGVkUAFiBnByb3RvMw", [file_google_api_annotations, file_google_api_field_behavior, file_soulfire_api_docs, file_soulfire_bot_live, file_soulfire_common]);
+  fileDesc("Chpzb3VsZmlyZS9wYXRoZmluZGluZy5wcm90bxILc291bGZpcmUudjEiiwEKDVBhdGhSb3V0ZUNvc3QSFwoPZXhwZWN0ZWRfZGFtYWdlGAEgASgBEhwKFGlycmV2ZXJzaWJsZV9jaGFuZ2VzGAIgASgNEhUKDXBsYWNlZF9ibG9ja3MYAyABKA0SFQoNYnJva2VuX2Jsb2NrcxgEIAEoDRIVCg1kdXJhdGlvbl9jb3N0GAUgASgBIqsBCghQYXRoU3RlcBISCgVpbmRleBgBIAEoDUID4EECEiwKBGtpbmQYAiABKA4yGS5zb3VsZmlyZS52MS5QYXRoU3RlcEtpbmRCA+BBAhIxCghwb3NpdGlvbhgDIAEoCzIaLnNvdWxmaXJlLnYxLkJsb2NrUG9zaXRpb25CA+BBAhITCgtkZXNjcmlwdGlvbhgEIAEoCRIVCg1tYXhpbXVtX3RpY2tzGAUgASgNItEECghQYXRoUGxhbhIwCgZzdGF0dXMYASABKA4yGy5zb3VsZmlyZS52MS5QYXRoUGxhblN0YXR1c0ID4EECEi4KBXN0YXJ0GAIgASgLMhouc291bGZpcmUudjEuQmxvY2tQb3NpdGlvbkID4EECEiQKBXN0ZXBzGAMgAygLMhUuc291bGZpcmUudjEuUGF0aFN0ZXASMwoPYmxvY2tzX3RvX2JyZWFrGAQgAygLMhouc291bGZpcmUudjEuQmxvY2tQb3NpdGlvbhIzCg9ibG9ja3NfdG9fcGxhY2UYBSADKAsyGi5zb3VsZmlyZS52MS5CbG9ja1Bvc2l0aW9uEhUKDW1heGltdW1fdGlja3MYBiABKAQSGwoOcGFydGlhbF9yZWFzb24YByABKAlIAIgBARI0CgtzZWFyY2hfbW9kZRgIIAEoDjIfLnNvdWxmaXJlLnYxLlBhdGhmaW5kU2VhcmNoTW9kZRIVCg1xdWFsaXR5X2JvdW5kGAkgASgBEi4KCnJvdXRlX2Nvc3QYCiABKAsyGi5zb3VsZmlyZS52MS5QYXRoUm91dGVDb3N0EhcKD2V4cGFuZGVkX3N0YXRlcxgLIAEoBBIdChVnZW5lcmF0ZWRfdHJhbnNpdGlvbnMYDCABKAQSHQoVc2VhcmNoX2VsYXBzZWRfbWlsbGlzGA0gASgEEjgKD2Zyb250aWVyX3JlYXNvbhgOIAEoDjIfLnNvdWxmaXJlLnYxLlBhdGhGcm9udGllclJlYXNvbkIRCg9fcGFydGlhbF9yZWFzb24izwEKD1BsYW5QYXRoUmVxdWVzdBIiCgtpbnN0YW5jZV9pZBgBIAEoCUIN4EEC0vMYBgoEdXVpZBIdCgZib3RfaWQYAiABKAlCDeBBAtLzGAYKBHV1aWQSLAoEZ29hbBgDIAEoCzIZLnNvdWxmaXJlLnYxLlBhdGhmaW5kR29hbEID4EECEi0KB29wdGlvbnMYBCABKAsyHC5zb3VsZmlyZS52MS5QYXRoZmluZE9wdGlvbnMSHAoUaW5jbHVkZV9kZXNjcmlwdGlvbnMYBSABKAgiPAoQUGxhblBhdGhSZXNwb25zZRIoCgRwbGFuGAEgASgLMhUuc291bGZpcmUudjEuUGF0aFBsYW5CA+BBAirdAQoMUGF0aFN0ZXBLaW5kEh4KGlBBVEhfU1RFUF9LSU5EX1VOU1BFQ0lGSUVEEAASFwoTUEFUSF9TVEVQX0tJTkRfTU9WRRABEh4KGlBBVEhfU1RFUF9LSU5EX0JSRUFLX0JMT0NLEAISHgoaUEFUSF9TVEVQX0tJTkRfUExBQ0VfQkxPQ0sQAxIXChNQQVRIX1NURVBfS0lORF9KVU1QEAQSGwoXUEFUSF9TVEVQX0tJTkRfSU5URVJBQ1QQBRIeChpQQVRIX1NURVBfS0lORF9SRUNBTENVTEFURRAGKtYBCg5QYXRoUGxhblN0YXR1cxIgChxQQVRIX1BMQU5fU1RBVFVTX1VOU1BFQ0lGSUVEEAASHQoZUEFUSF9QTEFOX1NUQVRVU19DT01QTEVURRABEhwKGFBBVEhfUExBTl9TVEFUVVNfUEFSVElBTBACEiAKHFBBVEhfUExBTl9TVEFUVVNfVU5SRUFDSEFCTEUQAxIjCh9QQVRIX1BMQU5fU1RBVFVTX1NFQVJDSF9FWFBJUkVEEAQSHgoaUEFUSF9QTEFOX1NUQVRVU19DQU5DRUxMRUQQBSrUAQoSUGF0aEZyb250aWVyUmVhc29uEiQKIFBBVEhfRlJPTlRJRVJfUkVBU09OX1VOU1BFQ0lGSUVEEAASHQoZUEFUSF9GUk9OVElFUl9SRUFTT05fTk9ORRABEicKI1BBVEhfRlJPTlRJRVJfUkVBU09OX0xFVkVMX0JPVU5EQVJZEAISKAokUEFUSF9GUk9OVElFUl9SRUFTT05fU0VBUkNIX0RFQURMSU5FEAMSJgoiUEFUSF9GUk9OVElFUl9SRUFTT05fU0VBUkNIX0JVREdFVBAEMogCChFQYXRoZmluZGVyU2VydmljZRLyAQoIUGxhblBhdGgSHC5zb3VsZmlyZS52MS5QbGFuUGF0aFJlcXVlc3QaHS5zb3VsZmlyZS52MS5QbGFuUGF0aFJlc3BvbnNlIqgByvMYYAoNUGxhbiBib3QgcGF0aBoNUkVBRF9CT1RfSU5GTyIMaW5zdGFuY2UuYm90MjJTZWFyY2hlcyBsb2FkZWQgd29ybGQgZGF0YSB3aXRob3V0IG1vdmluZyB0aGUgYm90LoLT5JMCPjoBKiI5L3YxL2luc3RhbmNlcy97aW5zdGFuY2VfaWR9L2JvdHMve2JvdF9pZH0vcGF0aGZpbmRlcjpwbGFuQiEKHWNvbS5zb3VsZmlyZW1jLmdycGMuZ2VuZXJhdGVkUAFiBnByb3RvMw", [file_google_api_annotations, file_google_api_field_behavior, file_soulfire_api_docs, file_soulfire_bot_live, file_soulfire_common]);
+
+/**
+ * @generated from message soulfire.v1.PathRouteCost
+ */
+export type PathRouteCost = Message<"soulfire.v1.PathRouteCost"> & {
+  /**
+   * @generated from field: double expected_damage = 1;
+   */
+  expectedDamage: number;
+
+  /**
+   * @generated from field: uint32 irreversible_changes = 2;
+   */
+  irreversibleChanges: number;
+
+  /**
+   * @generated from field: uint32 placed_blocks = 3;
+   */
+  placedBlocks: number;
+
+  /**
+   * @generated from field: uint32 broken_blocks = 4;
+   */
+  brokenBlocks: number;
+
+  /**
+   * @generated from field: double duration_cost = 5;
+   */
+  durationCost: number;
+};
+
+/**
+ * Describes the message soulfire.v1.PathRouteCost.
+ * Use `create(PathRouteCostSchema)` to create a new message.
+ */
+export const PathRouteCostSchema: GenMessage<PathRouteCost> = /*@__PURE__*/
+  messageDesc(file_soulfire_pathfinding, 0);
 
 /**
  * @generated from message soulfire.v1.PathStep
@@ -54,7 +91,7 @@ export type PathStep = Message<"soulfire.v1.PathStep"> & {
  * Use `create(PathStepSchema)` to create a new message.
  */
 export const PathStepSchema: GenMessage<PathStep> = /*@__PURE__*/
-  messageDesc(file_soulfire_pathfinding, 0);
+  messageDesc(file_soulfire_pathfinding, 1);
 
 /**
  * @generated from message soulfire.v1.PathPlan
@@ -94,6 +131,41 @@ export type PathPlan = Message<"soulfire.v1.PathPlan"> & {
    * @generated from field: optional string partial_reason = 7;
    */
   partialReason?: string | undefined;
+
+  /**
+   * @generated from field: soulfire.v1.PathfindSearchMode search_mode = 8;
+   */
+  searchMode: PathfindSearchMode;
+
+  /**
+   * @generated from field: double quality_bound = 9;
+   */
+  qualityBound: number;
+
+  /**
+   * @generated from field: soulfire.v1.PathRouteCost route_cost = 10;
+   */
+  routeCost?: PathRouteCost | undefined;
+
+  /**
+   * @generated from field: uint64 expanded_states = 11;
+   */
+  expandedStates: bigint;
+
+  /**
+   * @generated from field: uint64 generated_transitions = 12;
+   */
+  generatedTransitions: bigint;
+
+  /**
+   * @generated from field: uint64 search_elapsed_millis = 13;
+   */
+  searchElapsedMillis: bigint;
+
+  /**
+   * @generated from field: soulfire.v1.PathFrontierReason frontier_reason = 14;
+   */
+  frontierReason: PathFrontierReason;
 };
 
 /**
@@ -101,7 +173,7 @@ export type PathPlan = Message<"soulfire.v1.PathPlan"> & {
  * Use `create(PathPlanSchema)` to create a new message.
  */
 export const PathPlanSchema: GenMessage<PathPlan> = /*@__PURE__*/
-  messageDesc(file_soulfire_pathfinding, 1);
+  messageDesc(file_soulfire_pathfinding, 2);
 
 /**
  * @generated from message soulfire.v1.PlanPathRequest
@@ -138,7 +210,7 @@ export type PlanPathRequest = Message<"soulfire.v1.PlanPathRequest"> & {
  * Use `create(PlanPathRequestSchema)` to create a new message.
  */
 export const PlanPathRequestSchema: GenMessage<PlanPathRequest> = /*@__PURE__*/
-  messageDesc(file_soulfire_pathfinding, 2);
+  messageDesc(file_soulfire_pathfinding, 3);
 
 /**
  * @generated from message soulfire.v1.PlanPathResponse
@@ -155,7 +227,7 @@ export type PlanPathResponse = Message<"soulfire.v1.PlanPathResponse"> & {
  * Use `create(PlanPathResponseSchema)` to create a new message.
  */
 export const PlanPathResponseSchema: GenMessage<PlanPathResponse> = /*@__PURE__*/
-  messageDesc(file_soulfire_pathfinding, 3);
+  messageDesc(file_soulfire_pathfinding, 4);
 
 /**
  * @generated from enum soulfire.v1.PathStepKind
@@ -243,6 +315,42 @@ export enum PathPlanStatus {
  */
 export const PathPlanStatusSchema: GenEnum<PathPlanStatus> = /*@__PURE__*/
   enumDesc(file_soulfire_pathfinding, 1);
+
+/**
+ * @generated from enum soulfire.v1.PathFrontierReason
+ */
+export enum PathFrontierReason {
+  /**
+   * @generated from enum value: PATH_FRONTIER_REASON_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: PATH_FRONTIER_REASON_NONE = 1;
+   */
+  NONE = 1,
+
+  /**
+   * @generated from enum value: PATH_FRONTIER_REASON_LEVEL_BOUNDARY = 2;
+   */
+  LEVEL_BOUNDARY = 2,
+
+  /**
+   * @generated from enum value: PATH_FRONTIER_REASON_SEARCH_DEADLINE = 3;
+   */
+  SEARCH_DEADLINE = 3,
+
+  /**
+   * @generated from enum value: PATH_FRONTIER_REASON_SEARCH_BUDGET = 4;
+   */
+  SEARCH_BUDGET = 4,
+}
+
+/**
+ * Describes the enum soulfire.v1.PathFrontierReason.
+ */
+export const PathFrontierReasonSchema: GenEnum<PathFrontierReason> = /*@__PURE__*/
+  enumDesc(file_soulfire_pathfinding, 2);
 
 /**
  * @generated from service soulfire.v1.PathfinderService

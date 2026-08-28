@@ -130,6 +130,7 @@ export {
 export {
   BEAT_GAME_CHECKPOINT_SCHEMA_VERSION,
   BeatGameObjective,
+  BeatGamePathSearchMode,
   BeatGamePhase,
   BeatGameRunStatus,
   BeatGameTeamRole,

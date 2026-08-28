@@ -17,10 +17,10 @@
  */
 package com.soulfiremc.server.pathfinding.graph.constraint;
 
+import com.soulfiremc.server.pathfinding.RouteSearchMode;
 import com.soulfiremc.server.pathfinding.SFVec3i;
 import com.soulfiremc.server.pathfinding.graph.DiagonalCollisionCalculator;
 import com.soulfiremc.server.pathfinding.graph.GraphInstructions;
-import com.soulfiremc.server.settings.property.MinMaxProperty;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.state.BlockState;
 
@@ -106,8 +106,28 @@ public interface DelegatePathConstraint extends PathConstraint {
   }
 
   @Override
-  default boolean disablePruning() {
-    return delegate().disablePruning();
+  default RouteSearchMode searchMode() {
+    return delegate().searchMode();
+  }
+
+  @Override
+  default double maximumQualityBound() {
+    return delegate().maximumQualityBound();
+  }
+
+  @Override
+  default int maximumExpandedStates() {
+    return delegate().maximumExpandedStates();
+  }
+
+  @Override
+  default int maximumFallDistance() {
+    return delegate().maximumFallDistance();
+  }
+
+  @Override
+  default int maximumParkourGap() {
+    return delegate().maximumParkourGap();
   }
 
   @Override
@@ -116,13 +136,8 @@ public interface DelegatePathConstraint extends PathConstraint {
   }
 
   @Override
-  default MinMaxProperty.DataLayout yRotJitter() {
-    return delegate().yRotJitter();
-  }
-
-  @Override
-  default MinMaxProperty.DataLayout xRotJitter() {
-    return delegate().xRotJitter();
+  default boolean smoothCamera() {
+    return delegate().smoothCamera();
   }
 
   PathConstraint delegate();

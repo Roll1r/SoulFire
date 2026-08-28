@@ -18,15 +18,13 @@
 package com.soulfiremc.server.pathfinding.graph;
 
 import com.soulfiremc.server.pathfinding.SFVec3i;
+import com.soulfiremc.server.pathfinding.SupportOrigin;
 import com.soulfiremc.server.pathfinding.graph.actions.*;
-import com.soulfiremc.server.pathfinding.graph.actions.movement.ActionDirection;
 import com.soulfiremc.server.pathfinding.graph.constraint.PathConstraint;
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
-import lombok.With;
 import lombok.extern.slf4j.Slf4j;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.block.state.BlockState;
-import org.checkerframework.checker.nullness.qual.Nullable;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -48,12 +46,42 @@ import java.util.function.Consumer;
 @Slf4j
 public record MinecraftGraph(BlockGetter blockAccessor,
                              ProjectedInventory inventory,
-                             @With
-                             PathConstraint pathConstraint) {
+                             PathConstraint pathConstraint,
+                             NavigationSnapshot snapshot,
+                             GraphTransitionCache transitionCache) {
   public static final int ACTIONS_SIZE;
   private static final GraphAction[] ACTIONS_TEMPLATE;
   private static final SFVec3i[] SUBSCRIPTION_KEYS;
   private static final WrappedActionSubscription[][] SUBSCRIPTION_VALUES;
+
+  public MinecraftGraph(
+    BlockGetter blockAccessor,
+    ProjectedInventory inventory,
+    PathConstraint pathConstraint
+  ) {
+    this(
+      blockAccessor,
+      inventory,
+      pathConstraint,
+      new NavigationSnapshot(blockAccessor),
+      new GraphTransitionCache()
+    );
+  }
+
+  public MinecraftGraph(
+    BlockGetter blockAccessor,
+    ProjectedInventory inventory,
+    PathConstraint pathConstraint,
+    NavigationSnapshot snapshot
+  ) {
+    this(
+      blockAccessor,
+      inventory,
+      pathConstraint,
+      snapshot,
+      new GraphTransitionCache()
+    );
+  }
 
   static {
     var blockSubscribers = new Object2ObjectOpenHashMap<SFVec3i, List<WrappedActionSubscription>>();
@@ -69,6 +97,11 @@ public record MinecraftGraph(BlockGetter blockAccessor,
     };
 
     SimpleMovement.registerMovements(actionAdder, blockSubscribersConsumer);
+    ClimbMovement.registerClimbMovements(actionAdder, blockSubscribersConsumer);
+    WaterLandingMovement.registerWaterLandingMovements(
+      actionAdder,
+      blockSubscribersConsumer
+    );
     ParkourMovement.registerParkourMovements(actionAdder, blockSubscribersConsumer);
     DownMovement.registerDownMovements(actionAdder, blockSubscribersConsumer);
     UpMovement.registerUpMovements(actionAdder, blockSubscribersConsumer);
@@ -90,41 +123,40 @@ public record MinecraftGraph(BlockGetter blockAccessor,
   }
 
   public boolean insertActions(
-    SFVec3i node,
-    @Nullable ActionDirection fromDirection,
+    com.soulfiremc.server.pathfinding.NodeState node,
     Consumer<GraphInstructions> callback
   ) {
-    return insertActions(node, fromDirection, false, callback);
-  }
-
-  public boolean insertActions(
-    SFVec3i node,
-    @Nullable ActionDirection fromDirection,
-    boolean currentFloorProjected,
-    Consumer<GraphInstructions> callback
-  ) {
-    log.debug("Inserting actions for node: {}", node);
-    return calculateActions(
-      node,
-      generateTemplateActions(fromDirection, currentFloorProjected),
-      callback
+    log.debug("Inserting actions for node: {}", node.blockPosition());
+    var cached = transitionCache.get(
+      node.blockPosition(),
+      node.supportOrigin()
     );
+    if (cached != null) {
+      cached.instructions().forEach(callback);
+      return cached.reachedLevelBoundary();
+    }
+
+    var instructions = new ArrayList<GraphInstructions>();
+    var reachedLevelBoundary = calculateActions(
+      node,
+      generateTemplateActions(node.supportOrigin()),
+      instructions::add
+    );
+    var entry = new GraphTransitionCache.Entry(
+      instructions,
+      reachedLevelBoundary
+    );
+    transitionCache.put(node.blockPosition(), node.supportOrigin(), entry);
+    entry.instructions().forEach(callback);
+    return reachedLevelBoundary;
   }
 
-  private GraphAction[] generateTemplateActions(
-    @Nullable ActionDirection fromDirection,
-    boolean currentFloorProjected
-  ) {
+  private GraphAction[] generateTemplateActions(SupportOrigin supportOrigin) {
     var actions = new GraphAction[ACTIONS_TEMPLATE.length];
     for (var i = 0; i < ACTIONS_TEMPLATE.length; i++) {
-      var action = ACTIONS_TEMPLATE[i];
-      if (fromDirection != null && action.actionDirection.isOpposite(fromDirection)) {
-        continue;
-      }
-
       actions[i] = ACTIONS_TEMPLATE[i].copy();
       if (actions[i] instanceof SimpleMovement movement) {
-        movement.currentFloorProjected(currentFloorProjected);
+        movement.currentFloorProjected(supportOrigin == SupportOrigin.PLACED);
       }
     }
 
@@ -132,7 +164,7 @@ public record MinecraftGraph(BlockGetter blockAccessor,
   }
 
   private boolean calculateActions(
-    SFVec3i node,
+    com.soulfiremc.server.pathfinding.NodeState node,
     GraphAction[] actions,
     Consumer<GraphInstructions> callback) {
     var reachedLevelBoundary = false;
@@ -148,7 +180,7 @@ public record MinecraftGraph(BlockGetter blockAccessor,
   }
 
   private boolean processSubscription(
-    SFVec3i node,
+    com.soulfiremc.server.pathfinding.NodeState node,
     GraphAction[] actions,
     Consumer<GraphInstructions> callback,
     int i) {
@@ -167,8 +199,8 @@ public record MinecraftGraph(BlockGetter blockAccessor,
 
       if (blockState == null) {
         // Lazy calculation to avoid unnecessary calls
-        absolutePositionBlock = node.add(key);
-        blockState = blockAccessor.getBlockState(absolutePositionBlock.toBlockPos());
+        absolutePositionBlock = node.blockPosition().add(key);
+        blockState = snapshot.blockState(absolutePositionBlock);
 
         if (pathConstraint.isOutOfLevel(blockState, absolutePositionBlock)) {
           for (var unavailableSubscriber : value) {
@@ -184,7 +216,7 @@ public record MinecraftGraph(BlockGetter blockAccessor,
           continue;
         }
 
-        for (var instruction : action.getInstructions(this, node)) {
+        for (var instruction : action.getInstructions(this, node.blockPosition())) {
           var modified = pathConstraint.modifyAsNeeded(instruction);
           if (pathConstraint.allowsInstruction(modified)) {
             callback.accept(modified);

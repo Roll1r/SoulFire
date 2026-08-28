@@ -145,6 +145,14 @@ class ResourcePackResponse(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     RESOURCE_PACK_RESPONSE_FAILED_RELOAD: _ClassVar[ResourcePackResponse]
     RESOURCE_PACK_RESPONSE_DISCARDED: _ClassVar[ResourcePackResponse]
 
+class PathfindSearchMode(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    PATHFIND_SEARCH_MODE_UNSPECIFIED: _ClassVar[PathfindSearchMode]
+    PATHFIND_SEARCH_MODE_PRECISION: _ClassVar[PathfindSearchMode]
+    PATHFIND_SEARCH_MODE_NORMAL: _ClassVar[PathfindSearchMode]
+    PATHFIND_SEARCH_MODE_URGENT: _ClassVar[PathfindSearchMode]
+    PATHFIND_SEARCH_MODE_ESCAPE: _ClassVar[PathfindSearchMode]
+
 class PathfindStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     PATHFIND_STATUS_UNSPECIFIED: _ClassVar[PathfindStatus]
@@ -237,6 +245,11 @@ RESOURCE_PACK_RESPONSE_FAILED_DOWNLOAD: ResourcePackResponse
 RESOURCE_PACK_RESPONSE_INVALID_URL: ResourcePackResponse
 RESOURCE_PACK_RESPONSE_FAILED_RELOAD: ResourcePackResponse
 RESOURCE_PACK_RESPONSE_DISCARDED: ResourcePackResponse
+PATHFIND_SEARCH_MODE_UNSPECIFIED: PathfindSearchMode
+PATHFIND_SEARCH_MODE_PRECISION: PathfindSearchMode
+PATHFIND_SEARCH_MODE_NORMAL: PathfindSearchMode
+PATHFIND_SEARCH_MODE_URGENT: PathfindSearchMode
+PATHFIND_SEARCH_MODE_ESCAPE: PathfindSearchMode
 PATHFIND_STATUS_UNSPECIFIED: PathfindStatus
 PATHFIND_STATUS_PLANNING: PathfindStatus
 PATHFIND_STATUS_MOVING: PathfindStatus
@@ -1310,7 +1323,7 @@ class PathfindGoal(_message.Message):
     def __init__(self, block: _Optional[_Union[PathfindGoal.BlockGoal, _Mapping]] = ..., near: _Optional[_Union[PathfindGoal.NearGoal, _Mapping]] = ..., entity: _Optional[_Union[PathfindGoal.EntityGoal, _Mapping]] = ..., xz: _Optional[_Union[PathfindGoal.XZGoal, _Mapping]] = ..., y: _Optional[_Union[PathfindGoal.YGoal, _Mapping]] = ..., break_block: _Optional[_Union[PathfindGoal.BreakBlockGoal, _Mapping]] = ..., place_block: _Optional[_Union[PathfindGoal.PlaceBlockGoal, _Mapping]] = ..., away_from_position: _Optional[_Union[PathfindGoal.AwayFromPositionGoal, _Mapping]] = ..., away_from_entity: _Optional[_Union[PathfindGoal.AwayFromEntityGoal, _Mapping]] = ..., any: _Optional[_Union[PathfindGoal.AnyGoal, _Mapping]] = ...) -> None: ...
 
 class PathfindOptions(_message.Message):
-    __slots__ = ("allow_mining", "allow_placing", "timeout_seconds", "search_timeout_seconds", "break_block_penalty", "place_block_penalty", "avoid_fluids", "additional_place_item_ids", "sprint", "minimum_y", "maximum_y")
+    __slots__ = ("allow_mining", "allow_placing", "timeout_seconds", "search_timeout_seconds", "break_block_penalty", "place_block_penalty", "avoid_fluids", "additional_place_item_ids", "sprint", "minimum_y", "maximum_y", "search_mode", "maximum_quality_bound", "smooth_camera", "maximum_expanded_states", "maximum_fall_distance", "maximum_parkour_gap")
     ALLOW_MINING_FIELD_NUMBER: _ClassVar[int]
     ALLOW_PLACING_FIELD_NUMBER: _ClassVar[int]
     TIMEOUT_SECONDS_FIELD_NUMBER: _ClassVar[int]
@@ -1322,6 +1335,12 @@ class PathfindOptions(_message.Message):
     SPRINT_FIELD_NUMBER: _ClassVar[int]
     MINIMUM_Y_FIELD_NUMBER: _ClassVar[int]
     MAXIMUM_Y_FIELD_NUMBER: _ClassVar[int]
+    SEARCH_MODE_FIELD_NUMBER: _ClassVar[int]
+    MAXIMUM_QUALITY_BOUND_FIELD_NUMBER: _ClassVar[int]
+    SMOOTH_CAMERA_FIELD_NUMBER: _ClassVar[int]
+    MAXIMUM_EXPANDED_STATES_FIELD_NUMBER: _ClassVar[int]
+    MAXIMUM_FALL_DISTANCE_FIELD_NUMBER: _ClassVar[int]
+    MAXIMUM_PARKOUR_GAP_FIELD_NUMBER: _ClassVar[int]
     allow_mining: bool
     allow_placing: bool
     timeout_seconds: int
@@ -1333,7 +1352,13 @@ class PathfindOptions(_message.Message):
     sprint: bool
     minimum_y: int
     maximum_y: int
-    def __init__(self, allow_mining: bool = ..., allow_placing: bool = ..., timeout_seconds: _Optional[int] = ..., search_timeout_seconds: _Optional[int] = ..., break_block_penalty: _Optional[float] = ..., place_block_penalty: _Optional[float] = ..., avoid_fluids: bool = ..., additional_place_item_ids: _Optional[_Iterable[str]] = ..., sprint: bool = ..., minimum_y: _Optional[int] = ..., maximum_y: _Optional[int] = ...) -> None: ...
+    search_mode: PathfindSearchMode
+    maximum_quality_bound: float
+    smooth_camera: bool
+    maximum_expanded_states: int
+    maximum_fall_distance: int
+    maximum_parkour_gap: int
+    def __init__(self, allow_mining: bool = ..., allow_placing: bool = ..., timeout_seconds: _Optional[int] = ..., search_timeout_seconds: _Optional[int] = ..., break_block_penalty: _Optional[float] = ..., place_block_penalty: _Optional[float] = ..., avoid_fluids: bool = ..., additional_place_item_ids: _Optional[_Iterable[str]] = ..., sprint: bool = ..., minimum_y: _Optional[int] = ..., maximum_y: _Optional[int] = ..., search_mode: _Optional[_Union[PathfindSearchMode, str]] = ..., maximum_quality_bound: _Optional[float] = ..., smooth_camera: bool = ..., maximum_expanded_states: _Optional[int] = ..., maximum_fall_distance: _Optional[int] = ..., maximum_parkour_gap: _Optional[int] = ...) -> None: ...
 
 class GoToRequest(_message.Message):
     __slots__ = ("instance_id", "bot_id", "goal", "options")

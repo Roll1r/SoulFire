@@ -15,31 +15,22 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-package com.soulfiremc.server.pathfinding.execution;
+package com.soulfiremc.server.pathfinding;
 
-import com.soulfiremc.server.bot.BotConnection;
-import com.soulfiremc.server.pathfinding.SFVec3i;
+/// The explicit route-quality and latency policy for a search.
+public enum RouteSearchMode {
+  PRECISION(1.0),
+  NORMAL(1.2),
+  URGENT(1.5),
+  ESCAPE(1.5);
 
-public sealed interface WorldAction
-  permits BlockBreakAction,
-  BlockPlaceAction,
-  ClimbAction,
-  GapJumpAction,
-  InteractBlockAction,
-  JumpAndPlaceBelowAction,
-  MovementAction,
-  RecalculatePathAction {
-  boolean isCompleted(BotConnection connection);
+  private final double heuristicWeight;
 
-  /// Returns whether live world state still satisfies the action's immediate
-  /// movement preconditions.
-  default boolean isValid(BotConnection connection) {
-    return true;
+  RouteSearchMode(double heuristicWeight) {
+    this.heuristicWeight = heuristicWeight;
   }
 
-  SFVec3i targetPosition(BotConnection connection);
-
-  void tick(BotConnection connection);
-
-  int getAllowedTicks();
+  public double heuristicWeight() {
+    return heuristicWeight;
+  }
 }

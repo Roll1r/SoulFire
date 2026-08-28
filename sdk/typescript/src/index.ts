@@ -281,6 +281,7 @@ export {
   ChunkEventKind,
   EntityEventKind,
   Hand,
+  PathfindSearchMode,
   PathfindStatus,
   ResourcePackEventKind,
   ResourcePackResponse,

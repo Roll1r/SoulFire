@@ -66,6 +66,15 @@ public final class JumpAndPlaceBelowAction implements WorldAction {
     );
   }
 
+  @Override
+  public boolean isValid(BotConnection connection) {
+    var level = connection.minecraft().level;
+    return BlockPlaceAction.hasPlacementSupport(
+      level.getBlockState(blockPlacePosition.toBlockPos()),
+      level.getBlockState(blockPlaceAgainstData.againstPos().toBlockPos())
+    );
+  }
+
   public boolean isRejected(BotConnection connection) {
     var position = blockPlacePosition.toBlockPos();
     return placementWasRejected(

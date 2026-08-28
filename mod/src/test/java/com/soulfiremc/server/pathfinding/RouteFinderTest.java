@@ -22,35 +22,24 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class RouteFinderTest {
   @Test
-  void emptyPartialRoutesDoNotCancelSiblingSearches() {
-    assertFalse(RouteFinder.isActionableResult(
-      new RouteFinder.PartialRouteResult(List.of())
-    ));
-    assertFalse(RouteFinder.isActionableResult(
-      new RouteFinder.SearchExpiredResult(List.of())
-    ));
-  }
+  void partialRoutesCarryAnExplicitFrontierReason() {
+    var metadata = metadata(RouteFinder.FrontierReason.LEVEL_BOUNDARY);
+    var result = new RouteFinder.PartialRouteResult(
+      List.of(new RecalculatePathAction()),
+      new SFVec3i(1, 64, 0),
+      metadata
+    );
 
-  @Test
-  void routesWithProgressCanCancelSiblingSearches() {
-    var progress = new RecalculatePathAction();
-
-    assertTrue(RouteFinder.isActionableResult(
-      new RouteFinder.PartialRouteResult(
-        List.of(progress)
-      )
-    ));
-    assertTrue(RouteFinder.isActionableResult(
-      new RouteFinder.SearchExpiredResult(List.of(progress))
-    ));
-    assertTrue(RouteFinder.isActionableResult(
-      new RouteFinder.FoundRouteResult(List.of())
-    ));
+    assertEquals(
+      RouteFinder.FrontierReason.LEVEL_BOUNDARY,
+      result.metadata().frontierReason()
+    );
   }
 
   @Test
@@ -82,19 +71,18 @@ final class RouteFinderTest {
 
   @Test
   void partialRoutesRejectChunkBoundariesThatMoveAwayFromTheGoal() {
-    var progressingBoundary = new MinecraftRouteNode(
-      new NodeState(new SFVec3i(1, 64, 0), 0),
-      List.of(),
+    var start = routeNode(null, new SFVec3i(0, 64, 0), 0, 32);
+    var progressingBoundary = routeNode(
+      start,
+      new SFVec3i(1, 64, 0),
       8,
-      31,
-      39
+      31
     );
-    var regressingBoundary = new MinecraftRouteNode(
-      new NodeState(new SFVec3i(-64, 64, 0), 0),
-      List.of(),
+    var regressingBoundary = routeNode(
+      start,
+      new SFVec3i(-64, 64, 0),
       68,
-      94,
-      162
+      94
     );
 
     assertTrue(RouteFinder.isProgressingPartialRoute(
@@ -105,5 +93,36 @@ final class RouteFinderTest {
       32,
       regressingBoundary
     ));
+  }
+
+  private static MinecraftRouteNode routeNode(
+    MinecraftRouteNode parent,
+    SFVec3i position,
+    double sourceCost,
+    double targetCost
+  ) {
+    return new MinecraftRouteNode(
+      new NodeState(position, 0),
+      parent,
+      null,
+      List.of(),
+      new RouteCost(0, 0, 0, 0, sourceCost),
+      targetCost,
+      1
+    );
+  }
+
+  private static RouteFinder.RouteSearchMetadata metadata(
+    RouteFinder.FrontierReason frontierReason
+  ) {
+    return new RouteFinder.RouteSearchMetadata(
+      RouteSearchMode.NORMAL,
+      RouteSearchMode.NORMAL.heuristicWeight(),
+      RouteCost.ZERO,
+      0,
+      0,
+      0,
+      frontierReason
+    );
   }
 }

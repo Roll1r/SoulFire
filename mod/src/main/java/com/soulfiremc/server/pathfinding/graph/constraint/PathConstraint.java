@@ -17,10 +17,10 @@
  */
 package com.soulfiremc.server.pathfinding.graph.constraint;
 
+import com.soulfiremc.server.pathfinding.RouteSearchMode;
 import com.soulfiremc.server.pathfinding.SFVec3i;
 import com.soulfiremc.server.pathfinding.graph.DiagonalCollisionCalculator;
 import com.soulfiremc.server.pathfinding.graph.GraphInstructions;
-import com.soulfiremc.server.settings.property.MinMaxProperty;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.state.BlockState;
 
@@ -64,15 +64,39 @@ public interface PathConstraint {
   /// Returns the maximum time in seconds before pathfinding gives up.
   int expireTimeout();
 
-  /// Returns whether pruning of the pathfinding search space is disabled.
-  boolean disablePruning();
+  /// Returns the explicit quality and latency policy for route search.
+  default RouteSearchMode searchMode() {
+    return RouteSearchMode.NORMAL;
+  }
+
+  /// Returns the largest accepted multiplicative route-quality bound.
+  default double maximumQualityBound() {
+    return searchMode().heuristicWeight();
+  }
+
+  /// Returns the hard state-expansion budget for one search attempt.
+  default int maximumExpandedStates() {
+    return 50_000;
+  }
+
+  /// Returns the largest ordinary fall onto solid ground.
+  default int maximumFallDistance() {
+    return 3;
+  }
+
+  /// Returns the largest horizontal parkour gap. Zero disables parkour.
+  default int maximumParkourGap() {
+    return 3;
+  }
 
   /// Returns whether ordinary forward path traversal should sprint.
   default boolean sprint() {
     return true;
   }
 
-  MinMaxProperty.DataLayout yRotJitter();
-
-  MinMaxProperty.DataLayout xRotJitter();
+  /// Returns whether the executor can smooth camera movement when a movement
+  /// primitive declares a safe tolerance.
+  default boolean smoothCamera() {
+    return false;
+  }
 }
