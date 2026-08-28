@@ -241,7 +241,12 @@ public record MinecraftGraph(BlockGetter blockAccessor,
 
         for (var instruction : action.getInstructions(this, node.blockPosition())) {
           var modified = pathConstraint.modifyAsNeeded(instruction);
-          if (pathConstraint.allowsInstruction(modified)) {
+          if (
+            pathConstraint.allowsInstruction(
+              modified,
+              snapshot.blockAccessor()
+            )
+          ) {
             callback.accept(modified);
           }
         }

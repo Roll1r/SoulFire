@@ -22,6 +22,7 @@ import com.soulfiremc.server.pathfinding.SFVec3i;
 import com.soulfiremc.server.pathfinding.graph.DiagonalCollisionCalculator;
 import com.soulfiremc.server.pathfinding.graph.GraphInstructions;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.block.state.BlockState;
 
 @SuppressWarnings("BooleanMethodIsAlwaysInverted")
@@ -51,7 +52,11 @@ public interface PathConstraint {
   GraphInstructions modifyAsNeeded(GraphInstructions instruction);
 
   /// Returns whether a generated movement may be considered by pathfinding.
-  default boolean allowsInstruction(GraphInstructions instruction) {
+  /// The block accessor belongs to the current route-search snapshot.
+  default boolean allowsInstruction(
+    GraphInstructions instruction,
+    BlockGetter blockAccessor
+  ) {
     return true;
   }
 

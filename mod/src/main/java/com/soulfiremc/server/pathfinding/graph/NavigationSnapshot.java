@@ -57,6 +57,11 @@ public final class NavigationSnapshot {
     return worldRevision;
   }
 
+  /// Returns the stable block view shared by every consumer in this search.
+  public BlockGetter blockAccessor() {
+    return collisionAccessor;
+  }
+
   public void markUnavailable(SFVec3i position) {
     var chunk = NavigationChunk.containing(position);
     unavailableChunks.add(chunk);

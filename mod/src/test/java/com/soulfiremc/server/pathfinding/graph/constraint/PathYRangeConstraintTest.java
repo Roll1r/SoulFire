@@ -20,6 +20,7 @@ package com.soulfiremc.server.pathfinding.graph.constraint;
 import com.soulfiremc.server.pathfinding.SFVec3i;
 import com.soulfiremc.server.pathfinding.graph.GraphInstructions;
 import com.soulfiremc.server.pathfinding.graph.actions.movement.ActionDirection;
+import com.soulfiremc.test.utils.TestBlockAccessorBuilder;
 import com.soulfiremc.test.utils.TestPathConstraint;
 import org.junit.jupiter.api.Test;
 
@@ -38,11 +39,12 @@ final class PathYRangeConstraintTest {
       OptionalInt.of(63),
       OptionalInt.of(70)
     );
+    var level = new TestBlockAccessorBuilder().build();
 
-    assertFalse(constraint.allowsInstruction(instruction(62)));
-    assertTrue(constraint.allowsInstruction(instruction(63)));
-    assertTrue(constraint.allowsInstruction(instruction(70)));
-    assertFalse(constraint.allowsInstruction(instruction(71)));
+    assertFalse(constraint.allowsInstruction(instruction(62), level));
+    assertTrue(constraint.allowsInstruction(instruction(63), level));
+    assertTrue(constraint.allowsInstruction(instruction(70), level));
+    assertFalse(constraint.allowsInstruction(instruction(71), level));
   }
 
   @Test
@@ -57,9 +59,10 @@ final class PathYRangeConstraintTest {
       OptionalInt.empty(),
       OptionalInt.of(70)
     );
+    var level = new TestBlockAccessorBuilder().build();
 
-    assertTrue(minimumOnly.allowsInstruction(instruction(100)));
-    assertTrue(maximumOnly.allowsInstruction(instruction(-20)));
+    assertTrue(minimumOnly.allowsInstruction(instruction(100), level));
+    assertTrue(maximumOnly.allowsInstruction(instruction(-20), level));
   }
 
   @Test

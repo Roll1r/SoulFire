@@ -249,6 +249,40 @@ final class AnytimeRepairingAStarTest {
   }
 
   @Test
+  void frontierBudgetDoesNotInterruptIncumbentCertification() {
+    var graph = Map.of(
+      "S", List.of(new Edge("A", 1), new Edge("B", 2)),
+      "A", List.<Edge>of(),
+      "B", List.of(new Edge("G", 10), new Edge("C", 1)),
+      "C", List.of(new Edge("G", 1)),
+      "G", List.<Edge>of()
+    );
+    var domain = new StringDomain(
+      graph,
+      Map.of("S", 4D, "A", 1D, "B", 2D, "C", 1D, "G", 0D),
+      "G",
+      Set.of("A")
+    );
+    var outcome = search(
+      domain,
+      new AnytimeRepairingAStar.Configuration(
+        1,
+        1,
+        0.5,
+        System.nanoTime() + Duration.ofSeconds(5).toNanos(),
+        Duration.ofSeconds(1).toNanos(),
+        100,
+        1,
+        () -> false
+      )
+    );
+
+    assertEquals(AnytimeRepairingAStar.Status.FOUND, outcome.status());
+    assertEquals(4, outcome.cost());
+    assertEquals(1, outcome.certifiedQualityBound());
+  }
+
+  @Test
   void retainsARequiredResourceTradeoff() {
     var start = new ResourceNode("S", 0);
     var search = new AnytimeRepairingAStar<>(

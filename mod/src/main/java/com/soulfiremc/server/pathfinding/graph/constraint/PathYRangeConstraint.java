@@ -18,6 +18,7 @@
 package com.soulfiremc.server.pathfinding.graph.constraint;
 
 import com.soulfiremc.server.pathfinding.graph.GraphInstructions;
+import net.minecraft.world.level.BlockGetter;
 
 import java.util.OptionalInt;
 
@@ -40,8 +41,11 @@ public record PathYRangeConstraint(
   }
 
   @Override
-  public boolean allowsInstruction(GraphInstructions instruction) {
-    if (!delegate.allowsInstruction(instruction)) {
+  public boolean allowsInstruction(
+    GraphInstructions instruction,
+    BlockGetter blockAccessor
+  ) {
+    if (!delegate.allowsInstruction(instruction, blockAccessor)) {
       return false;
     }
     var y = instruction.blockPosition().y;

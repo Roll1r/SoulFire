@@ -331,7 +331,6 @@ public final class PathfindingSupport {
     if (options.getAvoidFluids()) {
       constraint = AvoidFluidConstraint.forPlayer(
         constraint,
-        bot.minecraft().level,
         bot.minecraft().player
       );
     }

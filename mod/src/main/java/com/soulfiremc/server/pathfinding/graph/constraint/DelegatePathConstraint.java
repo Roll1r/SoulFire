@@ -22,6 +22,7 @@ import com.soulfiremc.server.pathfinding.SFVec3i;
 import com.soulfiremc.server.pathfinding.graph.DiagonalCollisionCalculator;
 import com.soulfiremc.server.pathfinding.graph.GraphInstructions;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.block.state.BlockState;
 
 public interface DelegatePathConstraint extends PathConstraint {
@@ -86,8 +87,11 @@ public interface DelegatePathConstraint extends PathConstraint {
   }
 
   @Override
-  default boolean allowsInstruction(GraphInstructions instruction) {
-    return delegate().allowsInstruction(instruction);
+  default boolean allowsInstruction(
+    GraphInstructions instruction,
+    BlockGetter blockAccessor
+  ) {
+    return delegate().allowsInstruction(instruction, blockAccessor);
   }
 
   @Override

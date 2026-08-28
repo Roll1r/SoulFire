@@ -193,7 +193,6 @@ final class PathfindingTest {
         TestPathConstraint.INSTANCE,
         Set.of(Items.OAK_LOG)
       ),
-      level,
       OptionalInt.empty()
     );
     var inventory = new ProjectedInventory(
@@ -233,7 +232,6 @@ final class PathfindingTest {
     var level = accessor.build();
     var constraint = new AvoidFluidConstraint(
       TestPathConstraint.INSTANCE,
-      level,
       OptionalInt.of(1)
     );
     var inventory = new ProjectedInventory(
@@ -262,7 +260,6 @@ final class PathfindingTest {
     var level = accessor.build();
     var constraint = new AvoidFluidConstraint(
       TestPathConstraint.INSTANCE,
-      level,
       OptionalInt.of(1)
     );
     var inventory = new ProjectedInventory(

@@ -87,7 +87,6 @@ final class AvoidFluidConstraintTest {
     var delegate = TestPathConstraint.INSTANCE;
     var constraint = new AvoidFluidConstraint(
       delegate,
-      level,
       OptionalInt.empty()
     );
     var target = SFVec3i.from(2, 64, 0);
@@ -100,7 +99,7 @@ final class AvoidFluidConstraintTest {
       List.of(new GapJumpAction(SFVec3i.ZERO, target))
     );
 
-    assertFalse(constraint.allowsInstruction(parkour));
+    assertFalse(constraint.allowsInstruction(parkour, level));
   }
 
   @Test
@@ -112,20 +111,34 @@ final class AvoidFluidConstraintTest {
     var level = blocks.build();
     var submerged = new AvoidFluidConstraint(
       TestPathConstraint.INSTANCE,
-      level,
       OptionalInt.of(64)
     );
     var dry = new AvoidFluidConstraint(
       TestPathConstraint.INSTANCE,
-      level,
       OptionalInt.empty()
     );
 
-    assertFalse(submerged.allowsInstruction(instruction(0, 64, 0)));
-    assertTrue(submerged.allowsInstruction(instruction(1, 65, 0)));
-    assertFalse(submerged.allowsInstruction(instruction(2, 63, 0)));
-    assertFalse(dry.allowsInstruction(instruction(1, 65, 0)));
-    assertTrue(submerged.allowsInstruction(instruction(3, 64, 0)));
+    assertFalse(submerged.allowsInstruction(instruction(0, 64, 0), level));
+    assertTrue(submerged.allowsInstruction(instruction(1, 65, 0), level));
+    assertFalse(submerged.allowsInstruction(instruction(2, 63, 0), level));
+    assertFalse(dry.allowsInstruction(instruction(1, 65, 0), level));
+    assertTrue(submerged.allowsInstruction(instruction(3, 64, 0), level));
+  }
+
+  @Test
+  void evaluatesFluidAgainstTheCurrentSearchSnapshot() {
+    var dryLevel = new TestBlockAccessorBuilder().build();
+    var wetBlocks = new TestBlockAccessorBuilder();
+    wetBlocks.setBlockAt(1, 64, 0, Blocks.WATER);
+    var wetLevel = wetBlocks.build();
+    var constraint = new AvoidFluidConstraint(
+      TestPathConstraint.INSTANCE,
+      OptionalInt.empty()
+    );
+    var movement = instruction(1, 64, 0);
+
+    assertTrue(constraint.allowsInstruction(movement, dryLevel));
+    assertFalse(constraint.allowsInstruction(movement, wetLevel));
   }
 
   private static GraphInstructions instruction(int x, int y, int z) {

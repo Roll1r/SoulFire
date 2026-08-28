@@ -252,14 +252,12 @@ final class AnytimeRepairingAStar<S, E> {
         }
       }
       if (
-        firstProgressBoundaryExpansion >= 0
+        incumbent == null
+          && firstProgressBoundaryExpansion >= 0
           && expandedStates - firstProgressBoundaryExpansion
             >= configuration.maximumExpansionsAfterFrontier()
       ) {
-        return incumbent != null
-          && incumbent.cost() <= minimumOpenKey() + COST_TOLERANCE
-          ? Termination.STAGE_COMPLETE
-          : Termination.FRONTIER_LIMIT;
+        return Termination.FRONTIER_LIMIT;
       }
     }
   }

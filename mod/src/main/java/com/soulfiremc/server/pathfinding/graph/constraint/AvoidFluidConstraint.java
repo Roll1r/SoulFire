@@ -29,30 +29,31 @@ import java.util.OptionalInt;
 
 public record AvoidFluidConstraint(
   PathConstraint delegate,
-  BlockGetter level,
   OptionalInt submergedStartY
 ) implements DelegatePathConstraint {
   public static AvoidFluidConstraint forPlayer(
     PathConstraint delegate,
-    BlockGetter level,
     @Nullable LocalPlayer player
   ) {
     var submergedStartY = player != null
       && (player.isInWater() || player.isInLava())
       ? OptionalInt.of(player.blockPosition().getY())
       : OptionalInt.empty();
-    return new AvoidFluidConstraint(delegate, level, submergedStartY);
+    return new AvoidFluidConstraint(delegate, submergedStartY);
   }
 
   @Override
-  public boolean allowsInstruction(GraphInstructions instruction) {
-    if (!delegate.allowsInstruction(instruction)) {
+  public boolean allowsInstruction(
+    GraphInstructions instruction,
+    BlockGetter blockAccessor
+  ) {
+    if (!delegate.allowsInstruction(instruction, blockAccessor)) {
       return false;
     }
     if (instruction.actions().stream().anyMatch(GapJumpAction.class::isInstance)) {
       return false;
     }
-    return isDryDestination(level, instruction)
+    return isDryDestination(blockAccessor, instruction)
       || isAscendingFluidEscape(instruction, submergedStartY);
   }
 
