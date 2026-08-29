@@ -20,6 +20,8 @@ package com.soulfiremc.jmh;
 import com.google.gson.JsonObject;
 import com.soulfiremc.server.pathfinding.NodeState;
 import com.soulfiremc.server.pathfinding.RouteFinder;
+import com.soulfiremc.server.pathfinding.RouteFinder.RouteSearchResult;
+import com.soulfiremc.server.pathfinding.RouteSearchMode;
 import com.soulfiremc.server.pathfinding.SFVec3i;
 import com.soulfiremc.server.pathfinding.goals.PosGoal;
 import com.soulfiremc.server.pathfinding.graph.MinecraftGraph;
@@ -36,9 +38,13 @@ import lombok.extern.slf4j.Slf4j;
 import net.kyori.adventure.key.Key;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
+import net.minecraft.world.level.BlockGetter;
 import org.intellij.lang.annotations.Subst;
 import org.jspecify.annotations.NonNull;
 import org.openjdk.jmh.annotations.Benchmark;
+import org.openjdk.jmh.annotations.BenchmarkMode;
+import org.openjdk.jmh.annotations.Mode;
+import org.openjdk.jmh.annotations.OutputTimeUnit;
 import org.openjdk.jmh.annotations.Scope;
 import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
@@ -47,12 +53,16 @@ import java.io.ByteArrayInputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.zip.GZIPInputStream;
 
 @Slf4j
 @State(Scope.Benchmark)
+@BenchmarkMode(Mode.AverageTime)
+@OutputTimeUnit(TimeUnit.MILLISECONDS)
 public class PathfindingBenchmark {
-  private RouteFinder routeFinder;
+  private RouteFinder exactAStarRouteFinder;
+  private RouteFinder araStarRouteFinder;
   private NodeState initialState;
 
   @Setup
@@ -102,21 +112,22 @@ public class PathfindingBenchmark {
 
       var builtAccessor = accessor.build();
 
-      var pathConstraint = new DelegatePathConstraint() {
-        @Override
-        @NonNull
-        public PathConstraint delegate() {
-          return TestPathConstraint.INSTANCE;
-        }
-      };
-      var inventory = new ProjectedInventory(List.of(), TestMiningCostCalculator.INSTANCE, pathConstraint);
+      var inventory = new ProjectedInventory(
+        List.of(),
+        TestMiningCostCalculator.INSTANCE,
+        TestPathConstraint.INSTANCE
+      );
       initialState = NodeState.forInfo(new SFVec3i(0, safeY, 0), inventory);
       log.info("Initial state: {}", initialState.blockPosition().formatXYZ());
 
-      routeFinder = new RouteFinder(new MinecraftGraph(
+      exactAStarRouteFinder = routeFinder(
         builtAccessor,
-        inventory,
-        pathConstraint), new PosGoal(100, 80, 100));
+        RouteSearchMode.PRECISION
+      );
+      araStarRouteFinder = routeFinder(
+        builtAccessor,
+        RouteSearchMode.NORMAL
+      );
 
       log.info("Done loading! Testing...");
     } catch (Exception e) {
@@ -125,7 +136,44 @@ public class PathfindingBenchmark {
   }
 
   @Benchmark
-  public void calculatePath() {
-    routeFinder.findRouteFuture(initialState).join();
+  public RouteSearchResult exactAStar() {
+    return exactAStarRouteFinder.findRouteFuture(initialState).join();
+  }
+
+  @Benchmark
+  public RouteSearchResult araStar() {
+    return araStarRouteFinder.findRouteFuture(initialState).join();
+  }
+
+  private static RouteFinder routeFinder(
+    BlockGetter blockAccessor,
+    RouteSearchMode searchMode
+  ) {
+    var pathConstraint = new DelegatePathConstraint() {
+      @Override
+      @NonNull
+      public PathConstraint delegate() {
+        return TestPathConstraint.INSTANCE;
+      }
+
+      @Override
+      public RouteSearchMode searchMode() {
+        return searchMode;
+      }
+
+      @Override
+      public double maximumQualityBound() {
+        return searchMode.defaultQualityBound();
+      }
+    };
+    var inventory = new ProjectedInventory(
+      List.of(),
+      TestMiningCostCalculator.INSTANCE,
+      pathConstraint
+    );
+    return new RouteFinder(
+      new MinecraftGraph(blockAccessor, inventory, pathConstraint),
+      new PosGoal(100, 80, 100)
+    );
   }
 }
