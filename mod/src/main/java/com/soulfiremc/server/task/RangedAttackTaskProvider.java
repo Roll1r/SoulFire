@@ -20,22 +20,25 @@ package com.soulfiremc.server.task;
 import com.soulfiremc.grpc.generated.BotTaskProgress;
 import com.soulfiremc.grpc.generated.EntityReference;
 import com.soulfiremc.grpc.generated.ItemSelector;
-import com.soulfiremc.grpc.generated.PathfindGoal;
 import com.soulfiremc.grpc.generated.RangedAttackCompletionReason;
 import com.soulfiremc.grpc.generated.RangedAttackTask;
 import com.soulfiremc.grpc.generated.RangedAttackTaskResult;
 import com.soulfiremc.server.api.BotTaskExecution;
 import com.soulfiremc.server.api.BotTaskProvider;
+import com.soulfiremc.server.bot.BotConnection;
 import com.soulfiremc.server.bot.ControlPriority;
 import com.soulfiremc.server.bot.ControlResource;
 import com.soulfiremc.server.bot.ControlStopReason;
 import com.soulfiremc.server.bot.ControlTask;
 import com.soulfiremc.server.grpc.InventoryServiceImpl;
 import com.soulfiremc.server.pathfinding.PathfindingSupport;
+import com.soulfiremc.server.pathfinding.PathfindingSupport.ResolvedGoal;
 import com.soulfiremc.server.pathfinding.execution.PathExecutor;
 import com.soulfiremc.server.plugins.KillAura;
+import com.soulfiremc.server.util.SFEntityHelpers;
 import com.soulfiremc.server.util.SFInventoryHelpers;
 import io.grpc.Status;
+import net.minecraft.core.BlockPos;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.item.BowItem;
@@ -46,6 +49,7 @@ import net.minecraft.world.phys.Vec3;
 import org.checkerframework.checker.nullness.qual.Nullable;
 
 import java.util.Comparator;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -64,6 +68,7 @@ public final class RangedAttackTaskProvider
   private static final int MIN_BOW_DRAW_TICKS = 3;
   private static final int MAX_BOW_DRAW_TICKS = 20;
   private static final int MAX_CONSECUTIVE_PATH_FAILURES = 3;
+  static final int MAX_IN_RANGE_TICKS_WITHOUT_SHOT = 5 * 20;
   private static final double ARROW_GRAVITY = 0.05;
   private static final Set<ControlResource> RESOURCES = Set.of(
     ControlResource.MOVEMENT,
@@ -133,12 +138,6 @@ public final class RangedAttackTaskProvider
         input.getTargetUnavailableTimeoutSeconds(),
         MAX_UNAVAILABLE_TIMEOUT_SECONDS
       );
-    var goal = PathfindGoal.newBuilder()
-      .setEntity(PathfindGoal.EntityGoal.newBuilder()
-        .setEntityId(input.getTarget().getNetworkId())
-        .setConnectionEpoch(input.getTarget().getConnectionEpoch())
-        .setRadius(Math.max(3, minimumRange * 0.75F)))
-      .build();
     var result = new CompletableFuture<RangedAttackTaskResult>();
     return new BotTaskExecution(
       new RangedControl(
@@ -154,7 +153,12 @@ public final class RangedAttackTaskProvider
         input.getCompensateGravity(),
         input.getStrafe(),
         input.getRestoreSelectedSlot(),
-        PathfindingSupport.resolveGoal(context.bot(), goal),
+        CombatTaskSupport.reachGoal(
+          context.bot(),
+          input.getTarget(),
+          Math.max(3, minimumRange * 0.75F)
+        ),
+        CombatTaskSupport.waitingGoals(context.bot(), input.getTarget()),
         PathfindingSupport.buildConstraint(
           context.bot(),
           input.getOptions()
@@ -199,10 +203,13 @@ public final class RangedAttackTaskProvider
     private final boolean restoreSelectedSlot;
     private final int originalSelectedSlot;
     private final PathfindingSupport.ResolvedGoal goal;
+    private final List<ResolvedGoal> stagingGoals;
     private final com.soulfiremc.server.pathfinding.graph.constraint.PathConstraint
       constraint;
     private final CompletableFuture<RangedAttackTaskResult> result;
     private @Nullable PathExecutor path;
+    private @Nullable PathPurpose pathPurpose;
+    private int stagingGoalIndex;
     private int unavailableTicks;
     private int consecutivePathFailures;
     private int shots;
@@ -210,6 +217,8 @@ public final class RangedAttackTaskProvider
     private int cooldownTicks;
     private boolean strafeRight;
     private boolean lastObservedAlive;
+    private final ShotProgressWatchdog shotProgress =
+      new ShotProgressWatchdog(MAX_IN_RANGE_TICKS_WITHOUT_SHOT);
 
     private RangedControl(
       BotTaskContext context,
@@ -225,6 +234,7 @@ public final class RangedAttackTaskProvider
       boolean strafe,
       boolean restoreSelectedSlot,
       PathfindingSupport.ResolvedGoal goal,
+      List<ResolvedGoal> stagingGoals,
       com.soulfiremc.server.pathfinding.graph.constraint.PathConstraint
         constraint,
       CompletableFuture<RangedAttackTaskResult> result
@@ -245,6 +255,7 @@ public final class RangedAttackTaskProvider
         context.bot().minecraft().player
       ).getInventory().getSelectedSlot();
       this.goal = goal;
+      this.stagingGoals = stagingGoals;
       this.constraint = constraint;
       this.result = result;
     }
@@ -265,7 +276,7 @@ public final class RangedAttackTaskProvider
           return;
         }
         unavailableTicks = 0;
-        lastObservedAlive = entity.isAlive();
+        lastObservedAlive = SFEntityHelpers.isAliveAndTargetable(entity);
         if (!lastObservedAlive) {
           complete(
             RangedAttackCompletionReason
@@ -322,21 +333,37 @@ public final class RangedAttackTaskProvider
     private void engage(Entity entity) {
       var bot = context.bot();
       var player = Objects.requireNonNull(bot.minecraft().player);
-      var visiblePoint = KillAura.getEntityVisiblePoint(bot, entity);
-      var targetPoint = visiblePoint == null
-        ? entity.getEyePosition()
-        : visiblePoint;
+      var attackTarget = CombatTaskSupport.preferredTarget(entity);
+      var visiblePoint = KillAura.getEntityVisiblePoint(bot, attackTarget);
+      var targetPoint = stableAimPoint(bot, attackTarget, visiblePoint);
       var distance = targetPoint.distanceTo(player.getEyePosition());
       if (distance > maximumRange || visiblePoint == null) {
+        shotProgress.reset();
         stopUsingItem();
-        continuePath();
-        report("Closing to ranged attack distance", distance);
+        advanceSatisfiedStagingGoals(player.blockPosition());
+        var stagingGoal = currentStagingGoal();
+        if (stagingGoal != null) {
+          continuePath(stagingGoal, PathPurpose.DRAGON_STAGING);
+          report(
+            "Moving through ranged dragon staging route "
+              + (stagingGoalIndex + 1) + "/" + stagingGoals.size(),
+            distance
+          );
+        } else if (visiblePoint == null && !stagingGoals.isEmpty()) {
+          stopPath(ControlStopReason.CANCELLED, null);
+          bot.controlState().resetAll();
+          report("Waiting for a visible dragon shot", distance);
+        } else {
+          continuePath(goal, PathPurpose.APPROACH);
+          report("Closing to ranged attack distance", distance);
+        }
         return;
       }
 
       stopPath(ControlStopReason.CANCELLED, null);
       consecutivePathFailures = 0;
       if (distance < minimumRange) {
+        shotProgress.reset();
         stopUsingItem();
         bot.controlState().resetAll();
         bot.rotationControl().lookAt(targetPoint);
@@ -370,23 +397,34 @@ public final class RangedAttackTaskProvider
         );
         return;
       }
+      shotProgress.awaitShot();
       var velocity = projectileVelocity(weapon);
       var aimPoint = aimPoint(
         player.getEyePosition(),
         targetPoint,
-        entity,
+        attackTarget,
         velocity
       );
       bot.rotationControl().lookAt(aimPoint);
       report("Aiming ranged weapon", distance);
-      if (!bot.rotationControl().isFacing(aimPoint)) {
-        return;
-      }
+      var facing = bot.rotationControl().isFacing(aimPoint);
       if (weapon.getItem() instanceof CrossbowItem) {
-        tickCrossbow(weapon);
+        tickCrossbow(weapon, facing);
       } else {
-        tickBow();
+        tickBow(facing);
       }
+    }
+
+    private static Vec3 stableAimPoint(
+      BotConnection bot,
+      Entity attackTarget,
+      @Nullable Vec3 visiblePoint
+    ) {
+      if (visiblePoint == null) {
+        return attackTarget.getEyePosition();
+      }
+      var center = attackTarget.getBoundingBox().getCenter();
+      return KillAura.canSee(bot, center) ? center : visiblePoint;
     }
 
     private @Nullable ItemStack ensureWeapon() {
@@ -426,7 +464,7 @@ public final class RangedAttackTaskProvider
       ) / stack.getMaxDamage();
     }
 
-    private void tickBow() {
+    private void tickBow(boolean facing) {
       var player = Objects.requireNonNull(context.bot().minecraft().player);
       var gameMode = Objects.requireNonNull(
         context.bot().minecraft().gameMode
@@ -440,17 +478,20 @@ public final class RangedAttackTaskProvider
       if (player.getTicksUsingItem() < bowDrawTicks) {
         return;
       }
+      if (!facing) {
+        return;
+      }
       gameMode.releaseUsingItem(player);
       releasedShot();
     }
 
-    private void tickCrossbow(ItemStack weapon) {
+    private void tickCrossbow(ItemStack weapon, boolean facing) {
       var player = Objects.requireNonNull(context.bot().minecraft().player);
       var gameMode = Objects.requireNonNull(
         context.bot().minecraft().gameMode
       );
       if (CrossbowItem.isCharged(weapon)) {
-        if (cooldownTicks == 0) {
+        if (cooldownTicks == 0 && facing) {
           gameMode.useItem(player, InteractionHand.MAIN_HAND);
           releasedShot();
         }
@@ -470,6 +511,7 @@ public final class RangedAttackTaskProvider
 
     private void releasedShot() {
       shots++;
+      shotProgress.shotReleased();
       cooldownTicks = 5;
       context.reportProgress(BotTaskProgress.newBuilder()
         .setMessage("Released ranged shot")
@@ -549,9 +591,16 @@ public final class RangedAttackTaskProvider
       }
     }
 
-    private void continuePath() {
+    private void continuePath(
+      ResolvedGoal desiredGoal,
+      PathPurpose desiredPurpose
+    ) {
+      if (path != null && pathPurpose != desiredPurpose) {
+        stopPath(ControlStopReason.CANCELLED, null);
+      }
       if (path != null && path.completion().isDone()) {
         finishPath();
+        return;
       }
       if (result.isDone()) {
         return;
@@ -559,9 +608,10 @@ public final class RangedAttackTaskProvider
       if (path == null) {
         path = PathExecutor.createPathfinding(
           context.bot(),
-          goal.scorer(),
+          desiredGoal.scorer(),
           constraint
         );
+        pathPurpose = desiredPurpose;
         path.onStarted();
       }
       path.tick();
@@ -569,7 +619,9 @@ public final class RangedAttackTaskProvider
 
     private void finishPath() {
       var completed = path;
+      var completedPurpose = pathPurpose;
       path = null;
+      pathPurpose = null;
       if (completed == null) {
         return;
       }
@@ -577,12 +629,19 @@ public final class RangedAttackTaskProvider
         completed.completion().join();
         completed.onStopped(ControlStopReason.COMPLETED, null);
         consecutivePathFailures = 0;
+        if (completedPurpose == PathPurpose.DRAGON_STAGING) {
+          stagingGoalIndex++;
+        }
       } catch (CompletionException exception) {
         var cause = Objects.requireNonNullElse(
           exception.getCause(),
           exception
         );
         completed.onStopped(ControlStopReason.FAILED, cause);
+        if (completedPurpose == PathPurpose.DRAGON_STAGING) {
+          stagingGoalIndex = stagingGoals.size();
+          return;
+        }
         consecutivePathFailures++;
         if (consecutivePathFailures >= MAX_CONSECUTIVE_PATH_FAILURES) {
           throw new IllegalStateException(
@@ -632,9 +691,38 @@ public final class RangedAttackTaskProvider
     ) {
       var active = path;
       path = null;
+      pathPurpose = null;
       if (active != null) {
         active.onStopped(reason, cause);
       }
+    }
+
+    private @Nullable ResolvedGoal currentStagingGoal() {
+      return stagingGoalIndex < stagingGoals.size()
+        ? stagingGoals.get(stagingGoalIndex)
+        : null;
+    }
+
+    private void advanceSatisfiedStagingGoals(BlockPos playerPosition) {
+      if (path != null) {
+        return;
+      }
+      var stagingGoal = currentStagingGoal();
+      while (
+        stagingGoal != null
+          && AttackEntityTaskProvider.isPathGoalSatisfied(
+          stagingGoal.scorer(),
+          playerPosition
+        )
+      ) {
+        stagingGoalIndex++;
+        stagingGoal = currentStagingGoal();
+      }
+    }
+
+    private enum PathPurpose {
+      APPROACH,
+      DRAGON_STAGING
     }
 
     @Override
@@ -687,6 +775,38 @@ public final class RangedAttackTaskProvider
     @Override
     public String description() {
       return "Ranged attack entity " + target.getNetworkId();
+    }
+  }
+
+  static final class ShotProgressWatchdog {
+    private final int maximumTicksWithoutShot;
+    private int ticksWithoutShot;
+
+    ShotProgressWatchdog(int maximumTicksWithoutShot) {
+      if (maximumTicksWithoutShot <= 0) {
+        throw new IllegalArgumentException(
+          "maximumTicksWithoutShot must be positive"
+        );
+      }
+      this.maximumTicksWithoutShot = maximumTicksWithoutShot;
+    }
+
+    void awaitShot() {
+      ticksWithoutShot++;
+      if (ticksWithoutShot >= maximumTicksWithoutShot) {
+        throw new IllegalStateException(
+          "Ranged weapon did not release a shot within "
+            + maximumTicksWithoutShot + " in-range ticks"
+        );
+      }
+    }
+
+    void shotReleased() {
+      ticksWithoutShot = 0;
+    }
+
+    void reset() {
+      ticksWithoutShot = 0;
     }
   }
 }

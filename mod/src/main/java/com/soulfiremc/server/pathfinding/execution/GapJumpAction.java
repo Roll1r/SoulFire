@@ -27,14 +27,9 @@ import net.minecraft.world.level.BlockGetter;
 
 @Slf4j
 public final class GapJumpAction implements WorldAction {
-  private static final int MINIMUM_RUN_UP_TICKS = 2;
-  private static final int MAXIMUM_RUN_UP_TICKS = 3;
-  private static final double MINIMUM_FORWARD_SPEED = 0.08;
-
   private final SFVec3i startPosition;
   @Getter
   private final SFVec3i blockPosition;
-  private int runUpTicks;
   private boolean startedJumping;
 
   public GapJumpAction(SFVec3i startPosition, SFVec3i blockPosition) {
@@ -97,6 +92,14 @@ public final class GapJumpAction implements WorldAction {
         }
       }
     }
+    var overshoot = target.add(stepX, 0, stepZ);
+    for (var y = 0; y <= 1; y++) {
+      if (!SFBlockHelpers.isBlockFree(
+        level.getBlockState(overshoot.add(0, y, 0).toBlockPos())
+      )) {
+        return false;
+      }
+    }
     return true;
   }
 
@@ -120,24 +123,33 @@ public final class GapJumpAction implements WorldAction {
     connection.controlState().sprint(true);
     connection.controlState().up(true);
     if (!startedJumping && clientEntity.onGround()) {
-      runUpTicks++;
-      var velocity = VectorHelper.toVector2dXZ(clientEntity.getDeltaMovement());
-      var targetDirection = VectorHelper.toVector2dXZ(
-        targetMiddleBlock.subtract(clientEntity.position())
+      var startBlock = level.getBlockState(startPosition.toBlockPos());
+      var startMiddleBlock = VectorHelper.topMiddleOfBlock(
+        startPosition,
+        startBlock
       );
-      var forwardSpeed = velocity.equals(0, 0) || targetDirection.equals(0, 0)
-        ? 0
-        : velocity.dot(targetDirection.normalize());
-      startedJumping = shouldStartJump(runUpTicks, forwardSpeed);
+      var runUpDirection = targetMiddleBlock
+        .subtract(startMiddleBlock)
+        .multiply(1, 0, 1)
+        .normalize();
+      var runUpProgress = clientEntity.position()
+        .subtract(startMiddleBlock)
+        .dot(runUpDirection);
+      startedJumping = shouldStartJump(
+        runUpProgress,
+        clientEntity.getBbWidth()
+      );
     }
     if (startedJumping) {
       connection.controlState().jump(true);
     }
   }
 
-  static boolean shouldStartJump(int runUpTicks, double forwardSpeed) {
-    return runUpTicks >= MAXIMUM_RUN_UP_TICKS
-      || (runUpTicks >= MINIMUM_RUN_UP_TICKS && forwardSpeed >= MINIMUM_FORWARD_SPEED);
+  static boolean shouldStartJump(
+    double runUpProgress,
+    double playerWidth
+  ) {
+    return runUpProgress >= playerWidth / 2;
   }
 
   @Override

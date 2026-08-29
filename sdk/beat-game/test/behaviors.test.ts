@@ -5469,6 +5469,60 @@ describe("beat-game behavior programs", () => {
     }));
   });
 
+  it("waits for world confirmation while the defeated dragon still renders", async () => {
+    const driver = new FakeBeatGameDriver();
+    driver.currentObservation = observation({
+      dimension: "minecraft:the_end",
+    });
+    const dyingDragon = {
+      connectionEpoch: "epoch-1",
+      networkId: 42,
+      entityType: "minecraft:ender_dragon",
+      position: {
+        x: 8,
+        y: 67,
+        z: 0,
+        dimension: "minecraft:the_end",
+      },
+      velocity: { x: 0, y: 0, z: 0 },
+      alive: true,
+      health: 1,
+      observedAt: "2026-01-01T00:00:01.000Z",
+    } as const;
+    driver.entityQueryResolver = ({ selector }) =>
+      selector.entityTypes?.includes("minecraft:ender_dragon") === true
+        ? [dyingDragon]
+        : [];
+    let resultQueries = 0;
+    driver.blockQueryResolver = ({ selector }) => {
+      if (selector.blockIds?.includes("minecraft:end_portal") !== true) {
+        return [];
+      }
+      resultQueries += 1;
+      return resultQueries < 2
+        ? []
+        : [blockObservation({
+          x: 0,
+          y: 64,
+          z: 0,
+          dimension: "minecraft:the_end",
+        }, {
+          blockId: "minecraft:end_portal",
+        })];
+    };
+
+    await Effect.runPromise(fightEnderDragon(driver, {
+      defeatConfirmationAttempts: 2,
+      defeatConfirmationDelayMs: 0,
+    }));
+
+    expect(resultQueries).toBe(2);
+    expect(driver.tasks).toContainEqual(expect.objectContaining({
+      type: "attack-nearest",
+      maximumTargets: 1,
+    }));
+  });
+
   it("caps nearest-target attacks at the protocol radius limit", async () => {
     const driver = new FakeBeatGameDriver();
 
@@ -5490,7 +5544,10 @@ describe("beat-game behavior programs", () => {
     const driver = new FakeBeatGameDriver();
     driver.currentObservation = observation({
       dimension: "minecraft:the_end",
-      counts: { "minecraft:torch": 1 },
+      counts: {
+        "minecraft:cobblestone": 2,
+        "minecraft:torch": 1,
+      },
     });
     const initial = {
       x: 0,
@@ -5505,9 +5562,18 @@ describe("beat-game behavior programs", () => {
       dimension: "minecraft:the_end",
     };
     let teleported = false;
-    driver.blockQueryResolver = ({ selector }) =>
-      selector.blockIds?.includes("minecraft:dragon_egg") === true
-        ? [{
+    let selectedItem = "minecraft:cobblestone";
+    const key = (position: BeatGameBlockPosition) =>
+      `${position.dimension}:${position.x}:${position.y}:${position.z}`;
+    const blocks = new Map<string, ReturnType<typeof blockObservation>>([
+      [
+        key({ ...moved, y: moved.y - 1 }),
+        blockObservation({ ...moved, y: moved.y - 1 }),
+      ],
+    ]);
+    driver.blockQueryResolver = ({ center, selector }) => {
+      if (selector.blockIds?.includes("minecraft:dragon_egg") === true) {
+        return [{
           blockId: "minecraft:dragon_egg",
           position: teleported ? moved : initial,
           properties: {},
@@ -5515,12 +5581,50 @@ describe("beat-game behavior programs", () => {
           replaceable: false,
           interactive: false,
           observedAt: "2026-01-01T00:00:01.000Z",
-        }]
-        : [];
+        }];
+      }
+      const position = {
+        x: Math.floor(center.x),
+        y: Math.floor(center.y),
+        z: Math.floor(center.z),
+        dimension: center.dimension,
+      };
+      return [blocks.get(key(position)) ?? blockObservation(position, {
+        blockId: "minecraft:air",
+        replaceable: true,
+        solid: false,
+      })];
+    };
     driver.actionObserver = (action) => {
+      if (action.type === "select-item") {
+        selectedItem = action.selector.itemIds?.[0] ?? selectedItem;
+        return;
+      }
+      if (action.type === "place-block") {
+        const offset = {
+          down: { x: 0, y: -1, z: 0 },
+          up: { x: 0, y: 1, z: 0 },
+          north: { x: 0, y: 0, z: -1 },
+          south: { x: 0, y: 0, z: 1 },
+          west: { x: -1, y: 0, z: 0 },
+          east: { x: 1, y: 0, z: 0 },
+        }[action.face];
+        const target = {
+          x: action.against.x + offset.x,
+          y: action.against.y + offset.y,
+          z: action.against.z + offset.z,
+          dimension: action.against.dimension,
+        };
+        blocks.set(key(target), blockObservation(target, {
+          blockId: selectedItem,
+          solid: selectedItem !== "minecraft:torch",
+        }));
+        return;
+      }
       if (action.type !== "dig-block") {
         return;
       }
+      blocks.delete(key(action.position));
       if (action.position.y === initial.y) {
         teleported = true;
       }
@@ -5528,6 +5632,7 @@ describe("beat-game behavior programs", () => {
         driver.currentObservation = observation({
           dimension: "minecraft:the_end",
           counts: {
+            "minecraft:cobblestone": 2,
             "minecraft:torch": 1,
             "minecraft:dragon_egg": 1,
           },
@@ -5544,6 +5649,12 @@ describe("beat-game behavior programs", () => {
       type: "place-block",
       against: { ...moved, y: moved.y - 3 },
       face: "up",
+      hand: "main",
+    });
+    expect(driver.actions).toContainEqual({
+      type: "place-block",
+      against: { ...moved, y: moved.y - 1 },
+      face: "down",
       hand: "main",
     });
     expect(driver.actions).toContainEqual({

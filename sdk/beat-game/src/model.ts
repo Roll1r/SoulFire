@@ -191,7 +191,7 @@ export const defaultBeatGameStrategy: BeatGameStrategy = {
     maxSearchTimeMs: 30_000,
     searchMode: BeatGamePathSearchMode.NORMAL,
     maximumExpandedStates: 50_000,
-    maxParkourGap: 3,
+    maxParkourGap: 0,
   },
 };
 

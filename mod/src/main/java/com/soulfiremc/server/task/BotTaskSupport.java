@@ -22,6 +22,7 @@ import com.soulfiremc.grpc.generated.EntitySelector;
 import com.soulfiremc.grpc.generated.WorldPosition;
 import com.soulfiremc.server.bot.BotConnection;
 import com.soulfiremc.server.grpc.WorldServiceImpl;
+import com.soulfiremc.server.util.SFEntityHelpers;
 import io.grpc.Status;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
@@ -187,7 +188,8 @@ final class BotTaskSupport {
       )
       .filter(entity -> entity != player)
       .filter(entity -> !livingOnly || entity instanceof LivingEntity)
-      .filter(Entity::isAlive)
+      .filter(entity -> !livingOnly
+        || SFEntityHelpers.isAliveAndTargetable(entity))
       .filter(additionalFilter)
       .filter(entity -> entity.position().distanceToSqr(origin)
         <= radius * radius)

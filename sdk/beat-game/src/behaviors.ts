@@ -2729,19 +2729,9 @@ export function fightEnderDragon(
       ...(options.path === undefined ? {} : { path: options.path }),
     });
     const finalObservation = yield* driver.observe;
-    const remainingDragons = yield* queryEndEntities(
-      driver,
-      finalObservation.player.position,
-      "minecraft:ender_dragon",
-      searchRadius,
-      1,
-    );
-    if (remainingDragons.length > 0) {
-      return yield* Effect.fail(behaviorError(
-        driver,
-        "The Ender Dragon is still alive after the configured attack pass",
-      ));
-    }
+    // The dragon remains observable during its ten-second death animation.
+    // Confirm the exit portal or egg instead of starting another fight against
+    // an entity which the server has already marked as defeated.
     yield* waitForDragonDefeatResult(
       driver,
       finalObservation.player.position,
@@ -2934,10 +2924,12 @@ export function collectDragonEgg(
       ...movedEgg.position,
       y: movedEgg.position.y - 1,
     };
-    yield* driver.act({
-      type: "dig-block",
-      position: torchPosition,
-    });
+    yield* prepareDragonEggTorchSupport(
+      driver,
+      eggSupport,
+      torchPosition,
+      torchSupport,
+    );
     yield* driver.act({
       type: "select-item",
       selector: { itemIds: ["minecraft:torch"] },
@@ -2972,6 +2964,133 @@ export function collectDragonEgg(
       ));
     }
   }));
+}
+
+function prepareDragonEggTorchSupport(
+  driver: BeatGameDriver,
+  eggSupport: BeatGameBlockPosition,
+  torchPosition: BeatGameBlockPosition,
+  torchSupport: BeatGameBlockPosition,
+): Effect.Effect<void, BeatGameDriverError> {
+  return Effect.gen(function* () {
+    const observedEggSupport = yield* observeExactBlock(driver, eggSupport);
+    if (
+      observedEggSupport === undefined
+      || observedEggSupport.replaceable
+      || !observedEggSupport.diggable
+    ) {
+      return yield* Effect.fail(behaviorError(
+        driver,
+        "The dragon egg did not land on a removable support block",
+      ));
+    }
+
+    const torchCell = yield* observeExactBlock(driver, torchPosition);
+    if (torchCell !== undefined && !torchCell.replaceable) {
+      if (!torchCell.diggable) {
+        return yield* Effect.fail(behaviorError(
+          driver,
+          "The block two spaces below the dragon egg cannot be removed",
+        ));
+      }
+      yield* driver.act({
+        type: "dig-block",
+        position: torchPosition,
+      });
+      const cleared = yield* waitForExactBlockState(
+        driver,
+        torchPosition,
+        (block) => block?.replaceable === true,
+        10,
+        50,
+      );
+      if (cleared?.replaceable !== true) {
+        return yield* Effect.fail(behaviorError(
+          driver,
+          "Could not clear space for the dragon egg collection torch",
+        ));
+      }
+    }
+
+    let observedTorchSupport = yield* observeExactBlock(
+      driver,
+      torchSupport,
+    );
+    if (!isReliableDragonEggTorchSupport(observedTorchSupport)) {
+      if (
+        observedTorchSupport !== undefined
+        && !observedTorchSupport.replaceable
+      ) {
+        if (!observedTorchSupport.diggable) {
+          return yield* Effect.fail(behaviorError(
+            driver,
+            "The dragon egg torch support cannot hold a torch or be replaced",
+          ));
+        }
+        yield* driver.act({
+          type: "dig-block",
+          position: torchSupport,
+        });
+      }
+
+      const observation = yield* driver.observe;
+      const material = staircaseSupportMaterial(observation);
+      if (material === undefined) {
+        return yield* Effect.fail(behaviorError(
+          driver,
+          "No stable block item is available to support the dragon egg torch",
+        ));
+      }
+      yield* placeStaircaseBlock(
+        driver,
+        material,
+        eggSupport,
+        "down",
+        torchPosition,
+      );
+      yield* placeStaircaseBlock(
+        driver,
+        material,
+        torchPosition,
+        "down",
+        torchSupport,
+      );
+      yield* driver.act({
+        type: "dig-block",
+        position: torchPosition,
+      });
+      const cleared = yield* waitForExactBlockState(
+        driver,
+        torchPosition,
+        (block) => block?.replaceable === true,
+        10,
+        50,
+      );
+      if (cleared?.replaceable !== true) {
+        return yield* Effect.fail(behaviorError(
+          driver,
+          "Could not reopen space above the dragon egg torch support",
+        ));
+      }
+      observedTorchSupport = yield* observeExactBlock(driver, torchSupport);
+    }
+
+    if (!isReliableDragonEggTorchSupport(observedTorchSupport)) {
+      return yield* Effect.fail(behaviorError(
+        driver,
+        "Could not construct a stable dragon egg torch support",
+      ));
+    }
+  });
+}
+
+function isReliableDragonEggTorchSupport(
+  block: BeatGameBlockObservation | undefined,
+): boolean {
+  return block !== undefined
+    && !block.replaceable
+    && block.solid !== false
+    && !isGravityAffectedBlock(block.blockId);
 }
 
 export interface ExitEndOptions extends BeatGameBehaviorOptions {

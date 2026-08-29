@@ -22,6 +22,7 @@ import com.google.protobuf.Value;
 import com.mojang.serialization.JsonOps;
 import com.soulfiremc.grpc.generated.*;
 import com.soulfiremc.server.bot.BotConnection;
+import com.soulfiremc.server.util.SFEntityHelpers;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
@@ -207,7 +208,7 @@ public final class MinecraftDomainMapper {
       .setPose(entity.getPose().getSerializedName())
       .setOnGround(entity.onGround())
       .setDisplayName(text(entity.getName().getString()))
-      .setAlive(entity.isAlive());
+      .setAlive(SFEntityHelpers.isAliveAndTargetable(entity));
     if (entity instanceof Player player) {
       builder.setPlayerName(player.getGameProfile().name());
     }

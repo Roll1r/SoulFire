@@ -23916,7 +23916,7 @@ describe("beat-game run lifecycle", () => {
     expect(driver.tasks.some((task) => task.type === "explore")).toBe(false);
   });
 
-  it("honors a compact triangulation baseline", async () => {
+  it("bounds the triangulation baseline independently of exploration", async () => {
     const driver = new FakeBeatGameDriver();
     driver.currentObservation = observation({
       counts: { "minecraft:ender_eye": 12 },
@@ -23951,7 +23951,7 @@ describe("beat-game run lifecycle", () => {
         team: { teamId: "compact-baseline-team" },
         checkpointStore: store,
         strategy: {
-          explorationRadius: 16,
+          explorationRadius: 192,
           observationPollMs: 1,
         },
         hooks: {
@@ -29801,6 +29801,75 @@ describe("beat-game run lifecycle", () => {
     ));
 
     expect(activationAttempts).toBe(1);
+    expect(result.finalCheckpoint.planner.status)
+      .toBe(BeatGameRunStatus.COMPLETED);
+  });
+
+  it("resynchronizes safety queries across an End portal transition", async () => {
+    const driver = new FakeBeatGameDriver();
+    const overworldObservation = observation({
+      counts: { "minecraft:ender_eye": 12 },
+    });
+    driver.currentObservation = overworldObservation;
+    const store = new InMemoryBeatGameCheckpointStore();
+    await Effect.runPromise(store.save(checkpoint(
+      BeatGamePhase.ACTIVATE_END_PORTAL,
+      {
+        runId: "portal-transition-run",
+        teamId: "portal-transition-team",
+      },
+    ), undefined));
+    let returnStaleObservation = false;
+    let rejectedStaleQueries = 0;
+    driver.observationResolver = () =>
+      Effect.sync(() => {
+        if (returnStaleObservation) {
+          returnStaleObservation = false;
+          return overworldObservation;
+        }
+        return driver.currentObservation;
+      });
+    driver.entityQueryFailureResolver = ({ origin }) => {
+      if (
+        origin?.dimension
+          === driver.currentObservation.player.position.dimension
+      ) {
+        return undefined;
+      }
+      rejectedStaleQueries += 1;
+      return new BeatGameDriverError({
+        operation: "query-entities",
+        code: "invalid_argument",
+        retryable: false,
+        message: "Position dimension does not match the bot's dimension",
+      });
+    };
+
+    const result = await Effect.runPromise(Effect.scoped(
+      beatGameWithDriver(driver, {
+        runId: "portal-transition-run",
+        team: { teamId: "portal-transition-team" },
+        checkpointStore: store,
+        strategy: { observationPollMs: 1 },
+        hooks: {
+          ...postDragonHooks(driver),
+          activateEndPortal: () =>
+            Effect.sync(() => {
+              driver.currentObservation = observation({
+                dimension: "minecraft:the_end",
+                counts: {
+                  "minecraft:cooked_beef": 16,
+                  "minecraft:bow": 1,
+                  "minecraft:arrow": 32,
+                },
+              });
+              returnStaleObservation = true;
+            }).pipe(Effect.zipRight(Effect.sleep(250))),
+        },
+      }).pipe(Effect.flatMap(({ awaitCompletion }) => awaitCompletion)),
+    ));
+
+    expect(rejectedStaleQueries).toBe(1);
     expect(result.finalCheckpoint.planner.status)
       .toBe(BeatGameRunStatus.COMPLETED);
   });

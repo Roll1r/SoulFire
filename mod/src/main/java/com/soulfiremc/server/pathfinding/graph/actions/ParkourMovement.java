@@ -74,6 +74,16 @@ public final class ParkourMovement extends GraphAction implements Cloneable {
       blockSubscribers.subscribe(current.add(0, 1, 0), MovementFreeSubscription.INSTANCE);
       blockSubscribers.subscribe(current.add(0, 2, 0), MovementFreeSubscription.INSTANCE);
     }
+
+    // Long jumps retain forward momentum after landing. Keep the two body
+    // cells beyond the landing clear so execution cannot hit a wall and fall
+    // back into the gap.
+    var overshoot = direction.offset(targetFeetBlock);
+    blockSubscribers.subscribe(overshoot, MovementFreeSubscription.INSTANCE);
+    blockSubscribers.subscribe(
+      overshoot.add(0, 1, 0),
+      MovementFreeSubscription.INSTANCE
+    );
   }
 
   private void registerRequiredUnsafeBlock(SubscriptionConsumer blockSubscribers) {
@@ -91,7 +101,10 @@ public final class ParkourMovement extends GraphAction implements Cloneable {
 
   @Override
   public List<GraphInstructions> getInstructions(MinecraftGraph graph, SFVec3i node) {
-    if (gapLength > graph.pathConstraint().maximumParkourGap()) {
+    if (
+      gapLength > graph.pathConstraint().maximumParkourGap()
+        || !hasRecoverableFailureSurface(graph, node)
+    ) {
       return Collections.emptyList();
     }
     var absoluteTargetFeetBlock = node.add(targetFeetBlock);
@@ -104,6 +117,42 @@ public final class ParkourMovement extends GraphAction implements Cloneable {
       Costs.gapJumpCost(gapLength),
       List.of(new GapJumpAction(node, absoluteTargetFeetBlock))
     ));
+  }
+
+  private boolean hasRecoverableFailureSurface(
+    MinecraftGraph graph,
+    SFVec3i node
+  ) {
+    var gapFeet = node;
+    for (var gapStep = 1; gapStep <= gapLength; gapStep++) {
+      gapFeet = direction.offset(gapFeet);
+      var recoverable = false;
+      for (
+        var fallDistance = 1;
+        fallDistance <= graph.pathConstraint().maximumFallDistance();
+        fallDistance++
+      ) {
+        var floor = gapFeet.sub(0, fallDistance + 1, 0);
+        if (
+          SFBlockHelpers.isWalkableFloorBlock(
+            graph.snapshot().blockState(floor)
+          )
+            && SFBlockHelpers.isBlockFree(
+            graph.snapshot().blockState(floor.add(0, 1, 0))
+          )
+            && SFBlockHelpers.isBlockFree(
+            graph.snapshot().blockState(floor.add(0, 2, 0))
+          )
+        ) {
+          recoverable = true;
+          break;
+        }
+      }
+      if (!recoverable) {
+        return false;
+      }
+    }
+    return true;
   }
 
   @Override

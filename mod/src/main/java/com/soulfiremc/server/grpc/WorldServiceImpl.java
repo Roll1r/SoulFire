@@ -22,6 +22,7 @@ import com.soulfiremc.server.SoulFireServer;
 import com.soulfiremc.server.bot.BotConnection;
 import com.soulfiremc.server.bot.BotThreadExecution;
 import com.soulfiremc.server.user.PermissionContext;
+import com.soulfiremc.server.util.SFEntityHelpers;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import lombok.RequiredArgsConstructor;
@@ -624,7 +625,8 @@ public final class WorldServiceImpl extends WorldServiceGrpc.WorldServiceImplBas
       || selector.hasNetworkId()
       && selector.getNetworkId() != entity.getId()
       || selector.hasAlive()
-      && selector.getAlive() != entity.isAlive()) {
+      && selector.getAlive()
+      != SFEntityHelpers.isAliveAndTargetable(entity)) {
       return false;
     }
     if (!selector.getTagsList().isEmpty()

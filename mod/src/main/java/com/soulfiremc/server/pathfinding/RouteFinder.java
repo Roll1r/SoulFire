@@ -33,7 +33,6 @@ import com.soulfiremc.server.util.structs.CancellationToken;
 import lombok.extern.slf4j.Slf4j;
 import org.jspecify.annotations.Nullable;
 
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -107,11 +106,6 @@ public record RouteFinder(
     );
     var outcome = search.search();
     var boundaryDiagnostics = search.boundaryDiagnostics();
-    var closestTransitions = new ArrayList<SFVec3i>();
-    var closestExpansion = baseGraph.insertActions(
-      boundaryDiagnostics.closestExpandedState(),
-      instructions -> closestTransitions.add(instructions.blockPosition())
-    );
     stopwatch.stop();
 
     var routeCost = routeCost(outcome.path());
@@ -155,6 +149,18 @@ public record RouteFinder(
         new QualityBoundNotMetResult(metadata);
     };
 
+    var closestExpandedPosition = boundaryDiagnostics
+      .closestExpandedState()
+      .map(NodeState::blockPosition)
+      .map(SFVec3i::formatXYZ)
+      .orElse("none");
+    var closestExpandedHeuristic = boundaryDiagnostics
+      .closestExpandedHeuristic()
+      .isPresent()
+      ? Double.toString(
+        boundaryDiagnostics.closestExpandedHeuristic().getAsDouble()
+      )
+      : "none";
     log.info(
       "ARA* finished with {} after {}ms, {} expansions, {} repairs, certified bound {}, final epsilon {}, closest generated/expanded states {}/{} at heuristics {}/{}, {}/{}/{} reached/progressive/valid boundaries, and {}/{} graph cache hits",
       result.getClass().getSimpleName(),
@@ -164,21 +170,15 @@ public record RouteFinder(
       metadata.qualityBound(),
       metadata.finalEpsilon(),
       boundaryDiagnostics.closestState().blockPosition(),
-      boundaryDiagnostics.closestExpandedState().blockPosition(),
+      closestExpandedPosition,
       boundaryDiagnostics.closestHeuristic(),
-      boundaryDiagnostics.closestExpandedHeuristic(),
+      closestExpandedHeuristic,
       boundaryDiagnostics.reachedBoundaries(),
       boundaryDiagnostics.progressiveBoundaries(),
       boundaryDiagnostics.validBoundaries(),
       baseGraph.transitionCache().hits(),
       baseGraph.transitionCache().hits()
         + baseGraph.transitionCache().misses()
-    );
-    log.info(
-      "Closest expanded state {} generated {} and touched {}",
-      boundaryDiagnostics.closestExpandedState(),
-      closestTransitions,
-      closestExpansion.unavailableChunks()
     );
     return result;
   }
@@ -224,7 +224,6 @@ public record RouteFinder(
     private final GoalScorer goal;
     private final Map<NodeState, Set<NavigationChunk>> boundaryChunks =
       new HashMap<>();
-    private boolean firstExpansion = true;
 
     private MinecraftSearchDomain(GoalScorer goal) {
       this.goal = goal;
@@ -259,34 +258,16 @@ public record RouteFinder(
         AnytimeRepairingAStar.Transition<NodeState, GraphInstructions>
       > output
     ) {
-      var initialExpansion = firstExpansion;
-      firstExpansion = false;
-      var generatedPositions = initialExpansion
-        ? new ArrayList<SFVec3i>()
-        : null;
       var expansion = baseGraph.insertActions(
         state,
         instructions -> createTransition(
           state,
           instructions,
-          transition -> {
-            if (generatedPositions != null) {
-              generatedPositions.add(transition.state().blockPosition());
-            }
-            output.accept(transition);
-          }
+          output
         )
       );
       if (expansion.reachedLevelBoundary()) {
         boundaryChunks.put(state, expansion.unavailableChunks());
-      }
-      if (generatedPositions != null) {
-        log.info(
-          "Initial route expansion from {} generated {} and touched {}",
-          state.blockPosition(),
-          generatedPositions,
-          expansion.unavailableChunks()
-        );
       }
       return expansion.reachedLevelBoundary();
     }

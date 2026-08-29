@@ -23,16 +23,20 @@ import com.soulfiremc.grpc.generated.AttackEntityTaskResult;
 import com.soulfiremc.grpc.generated.BotTaskProgress;
 import com.soulfiremc.grpc.generated.EntityReference;
 import com.soulfiremc.grpc.generated.ItemSelector;
-import com.soulfiremc.grpc.generated.PathfindGoal;
 import com.soulfiremc.server.api.BotTaskExecution;
 import com.soulfiremc.server.api.BotTaskProvider;
 import com.soulfiremc.server.bot.ControlResource;
 import com.soulfiremc.server.bot.ControlStopReason;
 import com.soulfiremc.server.bot.ControlTask;
 import com.soulfiremc.server.grpc.InventoryServiceImpl;
+import com.soulfiremc.server.pathfinding.NodeState;
 import com.soulfiremc.server.pathfinding.PathfindingSupport;
+import com.soulfiremc.server.pathfinding.PathfindingSupport.ResolvedGoal;
+import com.soulfiremc.server.pathfinding.SFVec3i;
 import com.soulfiremc.server.pathfinding.execution.PathExecutor;
+import com.soulfiremc.server.pathfinding.goals.GoalScorer;
 import com.soulfiremc.server.util.SFBlockHelpers;
+import com.soulfiremc.server.util.SFEntityHelpers;
 import com.soulfiremc.server.util.SFInventoryHelpers;
 import com.soulfiremc.server.util.SFItemHelpers;
 import io.grpc.Status;
@@ -47,6 +51,7 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.checkerframework.checker.nullness.qual.Nullable;
 
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -106,13 +111,12 @@ public final class AttackEntityTaskProvider
     var target = input.getTarget();
     BotTaskSupport.requireEntity(context.bot(), target);
     var attackRange = normalizeAttackRange(input.getAttackRange());
-    var goal = PathfindGoal.newBuilder()
-      .setEntity(PathfindGoal.EntityGoal.newBuilder()
-        .setEntityId(target.getNetworkId())
-        .setConnectionEpoch(target.getConnectionEpoch())
-        .setRadius(pathfindingApproachRange(attackRange)))
-      .build();
-    var resolved = PathfindingSupport.resolveGoal(context.bot(), goal);
+    var resolved = CombatTaskSupport.reachGoal(
+      context.bot(),
+      target,
+      pathfindingApproachRange(attackRange)
+    );
+    var waitingGoals = CombatTaskSupport.waitingGoals(context.bot(), target);
     var constraint = PathfindingSupport.buildConstraint(
       context.bot(),
       input.getOptions()
@@ -136,6 +140,7 @@ public final class AttackEntityTaskProvider
       input.getRestoreSelectedSlot(),
       input.getUseOffhandShield(),
       resolved,
+      waitingGoals,
       constraint,
       result
     );
@@ -160,7 +165,7 @@ public final class AttackEntityTaskProvider
   }
 
   static float pathfindingApproachRange(float attackRange) {
-    return Math.max(1.0F, attackRange - 2.0F);
+    return Math.max(1.0F, attackRange - 0.5F);
   }
 
   static double distanceToBoundingBox(Vec3 position, AABB box) {
@@ -192,6 +197,16 @@ public final class AttackEntityTaskProvider
     return SFBlockHelpers.isBodyPassableBlock(feet)
       && SFBlockHelpers.isBodyPassableBlock(head)
       && SFBlockHelpers.isWalkableFloorBlock(floor);
+  }
+
+  static boolean isPathGoalSatisfied(
+    GoalScorer scorer,
+    BlockPos playerPosition
+  ) {
+    return scorer.isFinished(
+      new NodeState(SFVec3i.fromInt(playerPosition), 0),
+      List.of()
+    );
   }
 
   private static boolean hasSafeTerrainAhead(
@@ -234,10 +249,13 @@ public final class AttackEntityTaskProvider
     private final boolean useOffhandShield;
     private final int originalSelectedSlot;
     private final PathfindingSupport.ResolvedGoal goal;
+    private final List<ResolvedGoal> waitingGoals;
     private final com.soulfiremc.server.pathfinding.graph.constraint.PathConstraint
       constraint;
     private final CompletableFuture<AttackEntityTaskResult> result;
     private @Nullable PathExecutor path;
+    private @Nullable PathPurpose pathPurpose;
+    private int waitingGoalIndex;
     private int unavailableTicks;
     private int consecutivePathFailures;
     private int attacks;
@@ -255,7 +273,8 @@ public final class AttackEntityTaskProvider
       @Nullable ItemSelector weaponSelector,
       boolean restoreSelectedSlot,
       boolean useOffhandShield,
-      PathfindingSupport.ResolvedGoal goal,
+      ResolvedGoal goal,
+      List<ResolvedGoal> waitingGoals,
       com.soulfiremc.server.pathfinding.graph.constraint.PathConstraint
         constraint,
       CompletableFuture<AttackEntityTaskResult> result
@@ -274,6 +293,7 @@ public final class AttackEntityTaskProvider
         context.bot().minecraft().player
       ).getInventory().getSelectedSlot();
       this.goal = goal;
+      this.waitingGoals = waitingGoals;
       this.constraint = constraint;
       this.result = result;
     }
@@ -311,7 +331,7 @@ public final class AttackEntityTaskProvider
       }
 
       unavailableTicks = 0;
-      lastObservedAlive = entity.isAlive();
+      lastObservedAlive = SFEntityHelpers.isAliveAndTargetable(entity);
       if (!lastObservedAlive) {
         stopPath(ControlStopReason.COMPLETED, null);
         complete(
@@ -322,10 +342,38 @@ public final class AttackEntityTaskProvider
         return;
       }
 
-      var visiblePoint = entity.getEyePosition();
+      advanceSatisfiedWaitingGoals(player.blockPosition());
+      var waitingGoal = currentWaitingGoal();
+      if (waitingGoal != null) {
+        continuePath(waitingGoal, PathPurpose.DRAGON_STAGING);
+        if (ticks % 20 == 0) {
+          context.reportProgress(BotTaskProgress.newBuilder()
+            .setMessage(
+              "Moving through dragon staging route "
+              + (waitingGoalIndex + 1) + "/" + waitingGoals.size()
+            )
+            .setCurrent(attacks)
+            .build());
+        }
+        return;
+      }
+      if (!CombatTaskSupport.isMeleeApproachable(entity)) {
+        stopPath(ControlStopReason.CANCELLED, null);
+        bot.controlState().resetAll();
+        if (ticks % 20 == 0) {
+          context.reportProgress(BotTaskProgress.newBuilder()
+            .setMessage("Waiting for dragon to perch")
+            .setCurrent(attacks)
+            .build());
+        }
+        return;
+      }
+
+      var attackTarget = CombatTaskSupport.preferredTarget(entity);
+      var visiblePoint = attackTarget.getEyePosition();
       var distance = distanceToBoundingBox(
         player.getEyePosition(),
-        entity.getBoundingBox()
+        attackTarget.getBoundingBox()
       );
       if (ticks % 20 == 0) {
         context.reportProgress(BotTaskProgress.newBuilder()
@@ -339,8 +387,8 @@ public final class AttackEntityTaskProvider
         var movingInFluid = player.isInWater() || player.isInLava();
         if (shouldPursueDirectly(
           distance,
-          Math.abs(player.getY() - entity.getY()),
-          player.hasLineOfSight(entity),
+          Math.abs(player.getY() - attackTarget.getY()),
+          player.hasLineOfSight(attackTarget),
           movingInFluid,
           movingInFluid || hasSafeTerrainAhead(player, visiblePoint)
         )) {
@@ -352,7 +400,7 @@ public final class AttackEntityTaskProvider
           bot.controlState().sprint(sprinting);
           if (movingInFluid) {
             var verticalOffset =
-              entity.getBoundingBox().getCenter().y
+              attackTarget.getBoundingBox().getCenter().y
                 - player.getBoundingBox().getCenter().y;
             // Looking at the live target already steers sprint-swimming up or
             // down. Sneaking toward a lower target pins the player against the
@@ -363,7 +411,16 @@ public final class AttackEntityTaskProvider
           }
         } else {
           raiseShield(player, gameMode);
-          continuePath();
+          if (isPathGoalSatisfied(goal.scorer(), player.blockPosition())) {
+            // The stable dragon podium goal can be reached before the head
+            // enters melee range. Wait for the head here instead of submitting
+            // the same zero-length route every tick.
+            stopPath(ControlStopReason.CANCELLED, null);
+            bot.controlState().resetAll();
+            bot.rotationControl().lookAt(visiblePoint);
+          } else {
+            continuePath(goal, PathPurpose.APPROACH);
+          }
         }
         return;
       }
@@ -384,7 +441,7 @@ public final class AttackEntityTaskProvider
       var wasSprinting = player.isSprinting();
       player.setSprinting(sprinting);
       try {
-        gameMode.attack(player, entity);
+        gameMode.attack(player, attackTarget);
         player.swing(InteractionHand.MAIN_HAND);
       } finally {
         player.setSprinting(wasSprinting);
@@ -399,19 +456,29 @@ public final class AttackEntityTaskProvider
       }
     }
 
-    private void continuePath() {
+    private void continuePath(
+      ResolvedGoal desiredGoal,
+      PathPurpose desiredPurpose
+    ) {
+      if (path != null && pathPurpose != desiredPurpose) {
+        stopPath(ControlStopReason.CANCELLED, null);
+      }
       if (path != null && path.completion().isDone()) {
         finishPath();
+        return;
       }
-      if (result.isDone()) {
+      if (result.isDone()
+        || desiredPurpose == PathPurpose.DRAGON_STAGING
+        && currentWaitingGoal() == null) {
         return;
       }
       if (path == null) {
         path = PathExecutor.createPathfinding(
           context.bot(),
-          goal.scorer(),
+          desiredGoal.scorer(),
           constraint
         );
+        pathPurpose = desiredPurpose;
         path.onStarted();
       }
       path.tick();
@@ -419,7 +486,9 @@ public final class AttackEntityTaskProvider
 
     private void finishPath() {
       var completed = path;
+      var completedPurpose = pathPurpose;
       path = null;
+      pathPurpose = null;
       if (completed == null) {
         return;
       }
@@ -427,12 +496,22 @@ public final class AttackEntityTaskProvider
         completed.completion().join();
         completed.onStopped(ControlStopReason.COMPLETED, null);
         consecutivePathFailures = 0;
+        if (completedPurpose == PathPurpose.DRAGON_STAGING) {
+          waitingGoalIndex++;
+        }
       } catch (CompletionException exception) {
         var cause = Objects.requireNonNullElse(
           exception.getCause(),
           exception
         );
         completed.onStopped(ControlStopReason.FAILED, cause);
+        if (completedPurpose == PathPurpose.DRAGON_STAGING) {
+          // Staging is an optimization while the dragon circles. If the
+          // terrain cannot support it, keep waiting and let the required
+          // approach run when a melee phase begins.
+          waitingGoalIndex = waitingGoals.size();
+          return;
+        }
         consecutivePathFailures++;
         if (consecutivePathFailures >= MAX_CONSECUTIVE_PATH_FAILURES) {
           result.completeExceptionally(new IllegalStateException(
@@ -457,6 +536,26 @@ public final class AttackEntityTaskProvider
           (double) unavailableTicks / unavailableTimeoutTicks
         ))
         .build());
+    }
+
+    private @Nullable ResolvedGoal currentWaitingGoal() {
+      return waitingGoalIndex < waitingGoals.size()
+        ? waitingGoals.get(waitingGoalIndex)
+        : null;
+    }
+
+    private void advanceSatisfiedWaitingGoals(BlockPos playerPosition) {
+      if (path != null) {
+        return;
+      }
+      var waitingGoal = currentWaitingGoal();
+      while (
+        waitingGoal != null
+          && isPathGoalSatisfied(waitingGoal.scorer(), playerPosition)
+      ) {
+        waitingGoalIndex++;
+        waitingGoal = currentWaitingGoal();
+      }
     }
 
     private void complete(
@@ -551,6 +650,7 @@ public final class AttackEntityTaskProvider
     ) {
       var active = path;
       path = null;
+      pathPurpose = null;
       if (active != null) {
         active.onStopped(reason, cause);
       }
@@ -603,6 +703,11 @@ public final class AttackEntityTaskProvider
     @Override
     public String description() {
       return "Attack entity " + target.getNetworkId();
+    }
+
+    private enum PathPurpose {
+      APPROACH,
+      DRAGON_STAGING
     }
   }
 }

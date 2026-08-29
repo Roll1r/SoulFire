@@ -437,6 +437,7 @@ const PORTAL_CASTING_ADDITIONAL_LAVA_SOURCE_COUNT =
 const EXPLORATION_REANCHOR_DISTANCE = 16;
 const EXPLORATION_FRONTIER_LIMIT = 64;
 const EXPLORATION_DEATH_DISPLACEMENT_WINDOW_MS = 10 * 60 * 1_000;
+const EYE_TRIANGULATION_BASELINE = 32;
 const AIR_ESCAPE_SURFACE_SEARCH_RADIUS = 16;
 const AIR_ESCAPE_EXTENDED_SURFACE_SEARCH_RADIUS = 96;
 const AIR_ESCAPE_EXTENDED_SURFACE_SAMPLE_STEP = 4;
@@ -3218,6 +3219,12 @@ function monitorActionSafety(
                 } satisfies ActionResult);
               }
               if (
+                observation.player.position.dimension
+                  !== previousObservation.player.position.dimension
+              ) {
+                return Effect.suspend(() => monitor(observation));
+              }
+              if (
                 decision.type !== "retreat"
                 && decision.type !== "fight-ender-dragon"
                 && !observation.player.dead
@@ -3257,6 +3264,11 @@ function monitorActionSafety(
                         replanDelayMs: MINIMUM_RECOVERY_POLL_MS,
                       } satisfies ActionResult);
                   }),
+                  Effect.catchTag("BeatGameDriverError", (error) =>
+                    isPositionDimensionTransitionRace(error)
+                      ? Effect.suspend(() => monitor(observation))
+                      : Effect.fail(error)
+                  ),
                 );
               }
               return monitorObservedSafety(
@@ -3274,6 +3286,15 @@ function monitorActionSafety(
       ),
     );
   return Effect.suspend(() => monitor(initialSafetyObservation));
+}
+
+function isPositionDimensionTransitionRace(
+  error: BeatGameDriverError,
+): boolean {
+  return error.code === "invalid_argument"
+    && /Position dimension does not match the bot's dimension/iu.test(
+      error.message,
+    );
 }
 
 function monitorObservedSafety(
@@ -13108,10 +13129,7 @@ function moveToEyeBaseline(
     if (latest === undefined) {
       return;
     }
-    const baseline = Math.max(32, Math.min(
-      192,
-      state.strategy.explorationRadius,
-    ));
+    const baseline = EYE_TRIANGULATION_BASELINE;
     const candidates = [1, -1].flatMap((side) =>
       [1, 0.75, 0.5].map((scale) => ({
         x: latest.origin.x

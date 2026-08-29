@@ -144,6 +144,34 @@ final class PathfindingTest {
   }
 
   @Test
+  void pathfindingAcceptsAnAlreadySatisfiedGoalWithoutMoving() {
+    var accessor = new TestBlockAccessorBuilder();
+    accessor.setBlockAt(0, 0, 0, Blocks.STONE);
+    var constraint = new NoBlockActionsConstraint(
+      TestPathConstraint.INSTANCE
+    );
+    var inventory = new ProjectedInventory(
+      List.of(),
+      TestMiningCostCalculator.INSTANCE,
+      constraint
+    );
+    var routeFinder = new RouteFinder(
+      new MinecraftGraph(accessor.build(), inventory, constraint),
+      new PosGoal(0, 1, 0)
+    );
+
+    var route = routeFinder.findRouteFuture(
+      NodeState.forInfo(new SFVec3i(0, 1, 0), inventory)
+    ).join();
+
+    var found = assertInstanceOf(RouteFinder.FoundRouteResult.class, route);
+    assertEquals(List.of(), found.actions());
+    assertEquals(0, found.metadata().expandedStates());
+    assertEquals(0, found.metadata().routeCost().optimizationCost());
+    assertEquals(1, found.metadata().qualityBound());
+  }
+
+  @Test
   void pathfindingApproachesABlockedDiagonalAscentCardinally() {
     var accessor = new TestBlockAccessorBuilder();
     accessor.setBlockAt(0, 0, 0, Blocks.STONE);
@@ -520,6 +548,51 @@ final class PathfindingTest {
     );
     assertEquals(new SFVec3i(3, 1, 0), lastMovement.blockPosition());
     assertEquals(lastMovement.blockPosition(), partialRoute.endpoint());
+    assertFalse(partialRoute.metadata().unavailableChunks().isEmpty());
+  }
+
+  @Test
+  void fluidAvoidancePreservesADryPartialRouteAtTheLoadedBoundary() {
+    var accessor = new TestBlockAccessorBuilder();
+    for (var x = 0; x <= 64; x++) {
+      for (var z = -2; z <= 2; z++) {
+        accessor.setBlockAt(x, 0, z, Blocks.STONE);
+      }
+    }
+    var loadedAreaConstraint = new DelegatePathConstraint() {
+      @Override
+      public boolean isOutOfLevel(BlockState blockState, SFVec3i position) {
+        return position.x > 64;
+      }
+
+      @Override
+      public PathConstraint delegate() {
+        return TestPathConstraint.INSTANCE;
+      }
+    };
+    var constraint = new AvoidFluidConstraint(
+      new NoBlockActionsConstraint(loadedAreaConstraint),
+      OptionalInt.empty()
+    );
+    var inventory = new ProjectedInventory(
+      List.of(),
+      TestMiningCostCalculator.INSTANCE,
+      constraint
+    );
+    var routeFinder = new RouteFinder(
+      new MinecraftGraph(accessor.build(), inventory, constraint),
+      new PosGoal(200, 1, 0)
+    );
+
+    var route = routeFinder.findRouteFuture(
+      NodeState.forInfo(new SFVec3i(0, 1, 0), inventory)
+    ).join();
+
+    var partialRoute = assertInstanceOf(
+      RouteFinder.PartialRouteResult.class,
+      route
+    );
+    assertTrue(partialRoute.endpoint().x > 0);
     assertFalse(partialRoute.metadata().unavailableChunks().isEmpty());
   }
 
@@ -925,12 +998,24 @@ final class PathfindingTest {
     var accessor = new TestBlockAccessorBuilder();
     accessor.setBlockAt(0, 0, 0, Blocks.STONE);
     accessor.setBlockAt(gapLength + 1, 0, 0, Blocks.STONE);
+    for (var x = 1; x <= gapLength; x++) {
+      accessor.setBlockAt(x, -3, 0, Blocks.STONE);
+    }
 
-    var inventory = new ProjectedInventory(List.of(), TestMiningCostCalculator.INSTANCE, TestPathConstraint.INSTANCE);
+    var constraint = new MovementLimitConstraint(
+      TestPathConstraint.INSTANCE,
+      3,
+      3
+    );
+    var inventory = new ProjectedInventory(
+      List.of(),
+      TestMiningCostCalculator.INSTANCE,
+      constraint
+    );
     var routeFinder = new RouteFinder(new MinecraftGraph(
       accessor.build(),
       inventory,
-      TestPathConstraint.INSTANCE), new PosGoal(gapLength + 1, 1, 0));
+      constraint), new PosGoal(gapLength + 1, 1, 0));
 
     var initialState = NodeState.forInfo(new SFVec3i(0, 1, 0), inventory);
 
@@ -943,6 +1028,34 @@ final class PathfindingTest {
         RouteFinder.FoundRouteResult.class, route);
       assertEquals(1, foundRouteResult.actions().size());
     }
+  }
+
+  @Test
+  void pathfindingRejectsParkourOverALethalDrop() {
+    var accessor = new TestBlockAccessorBuilder();
+    accessor.setBlockAt(0, 0, 0, Blocks.STONE);
+    accessor.setBlockAt(2, 0, 0, Blocks.STONE);
+    var constraint = new MovementLimitConstraint(
+      TestPathConstraint.INSTANCE,
+      3,
+      3
+    );
+    var inventory = new ProjectedInventory(
+      List.of(),
+      TestMiningCostCalculator.INSTANCE,
+      constraint
+    );
+    var routeFinder = new RouteFinder(
+      new MinecraftGraph(accessor.build(), inventory, constraint),
+      new PosGoal(2, 1, 0)
+    );
+
+    assertInstanceOf(
+      RouteFinder.NoRouteFoundResult.class,
+      routeFinder.findRouteFuture(
+        NodeState.forInfo(new SFVec3i(0, 1, 0), inventory)
+      ).join()
+    );
   }
 
   @Test

@@ -217,6 +217,9 @@ export class FakeBeatGameDriver implements BeatGameDriver {
   public entityQueryResolver: (
     query: BeatGameQueryEntities,
   ) => readonly BeatGameEntityObservation[] = () => this.entityResults;
+  public entityQueryFailureResolver: (
+    query: BeatGameQueryEntities,
+  ) => BeatGameDriverError | undefined = () => undefined;
   public raycastResolver: (
     query: BeatGameRaycastQuery,
   ) => BeatGameRaycastObservation = () => ({ distance: 0 });
@@ -269,9 +272,12 @@ export class FakeBeatGameDriver implements BeatGameDriver {
     });
 
   public readonly queryEntities: BeatGameDriver["queryEntities"] = (query) =>
-    Effect.sync(() => {
+    Effect.suspend(() => {
       this.entityQueries.push(query);
-      return this.entityQueryResolver(query);
+      const failure = this.entityQueryFailureResolver(query);
+      return failure === undefined
+        ? Effect.succeed(this.entityQueryResolver(query))
+        : Effect.fail(failure);
     });
 
   public readonly raycast: BeatGameDriver["raycast"] = (query) =>

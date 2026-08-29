@@ -44,6 +44,32 @@ final class AnytimeRepairingAStarTest {
   );
 
   @Test
+  void acceptsAnAlreadySatisfiedStartWithoutExpansion() {
+    var search = new AnytimeRepairingAStar<>(
+      "G",
+      new StringDomain(
+        Map.of("G", List.of()),
+        Map.of("G", 0D),
+        "G",
+        Set.of()
+      ),
+      configuration(2.5, 1, 100)
+    );
+
+    var outcome = search.search();
+    var diagnostics = search.boundaryDiagnostics();
+
+    assertEquals(AnytimeRepairingAStar.Status.FOUND, outcome.status());
+    assertEquals(List.of(), outcome.path());
+    assertEquals(0, outcome.cost());
+    assertEquals(1, outcome.certifiedQualityBound());
+    assertEquals(0, outcome.expandedStates());
+    assertEquals("G", diagnostics.closestState());
+    assertTrue(diagnostics.closestExpandedState().isEmpty());
+    assertTrue(diagnostics.closestExpandedHeuristic().isEmpty());
+  }
+
+  @Test
   void exactSearchMatchesTheDijkstraCost() {
     var outcome = search(
       new StringDomain(REPAIR_GRAPH, REPAIR_HEURISTIC, "G", Set.of()),

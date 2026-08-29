@@ -716,6 +716,37 @@ const program = Effect.scoped(Effect.gen(function* () {
         `Controlled corridor floor is not observable at ${json(missingFloor)}`,
       ));
     }
+    const corridorAirSample = yield* Effect.forEach(
+      [-1, 0, 1, 8, 15, 16, 31, 32, 41, 47, 48, 63, 64].flatMap(
+        (offset) => [-1, 0, 1].map((zOffset) => ({
+          x: fixture.spawn.x + offset,
+          y: fixture.spawn.y,
+          z: fixture.spawn.z + zOffset,
+        })),
+      ),
+      (position) =>
+        bot.world.block({
+          position: {
+            ...position,
+            dimension: "minecraft:overworld",
+          },
+        }).pipe(Effect.map(({ block }) => ({
+          position,
+          blockId: block?.blockId,
+        }))),
+      { concurrency: "unbounded" },
+    );
+    yield* record("controlled-corridor-air-sampled", {
+      blocks: corridorAirSample,
+    });
+    const obstructedAir = corridorAirSample.find(
+      ({ blockId }) => blockId !== "minecraft:air",
+    );
+    if (obstructedAir !== undefined) {
+      return yield* Effect.fail(new Error(
+        `Controlled corridor is not dry at ${json(obstructedAir)}`,
+      ));
+    }
   }
   let lastObservedInventoryRevision: bigint | undefined;
   const observedEntityFingerprints = new Map<string, string>();
@@ -1904,21 +1935,29 @@ const startMinecraftFixture = Effect.suspend(() => {
         const maximumZ = Math.min(minimumZ + 15, testCorridor.maximumZ);
         yield* rcon(
           containerName,
-          `fill ${minimumX} ${spawn.y + 9} ${minimumZ} ${
+          `fill ${minimumX} ${spawn.y - 16} ${minimumZ} ${
             maximumX
           } ${spawn.y + 9} ${maximumZ} stone`,
         );
+      }
+    }
+    for (
+      let minimumX = testCorridor.minimumX;
+      minimumX <= testCorridor.maximumX;
+      minimumX += 16
+    ) {
+      const maximumX = Math.min(minimumX + 15, testCorridor.maximumX);
+      for (
+        let minimumZ = testCorridor.minimumZ;
+        minimumZ <= testCorridor.maximumZ;
+        minimumZ += 16
+      ) {
+        const maximumZ = Math.min(minimumZ + 15, testCorridor.maximumZ);
         yield* rcon(
           containerName,
-          `fill ${minimumX} ${spawn.y - 1} ${minimumZ} ${
+          `fill ${minimumX} ${spawn.y} ${minimumZ} ${
             maximumX
           } ${spawn.y + 8} ${maximumZ} air`,
-        );
-        yield* rcon(
-          containerName,
-          `fill ${minimumX} ${spawn.y - 16} ${minimumZ} ${
-            maximumX
-          } ${spawn.y - 1} ${maximumZ} stone`,
         );
       }
     }
@@ -2354,47 +2393,66 @@ function controlEndEncounter(
 ): Effect.Effect<never> {
   return Effect.gen(function* () {
     const prepared = yield* Ref.make(false);
+    const dying = yield* Ref.make(false);
     const tick = bot.world.player().pipe(
       Effect.flatMap((player) => {
         if (!isEnd(player.position?.dimension ?? "")) {
           return Effect.void;
         }
-        return Ref.get(prepared).pipe(
-          Effect.flatMap((isPrepared) => {
-            if (isPrepared) {
-              return Effect.void;
+        return Effect.gen(function* () {
+          const isPrepared = yield* Ref.get(prepared);
+          if (!isPrepared) {
+            yield* rcon(
+              fixture.containerName,
+              "execute in minecraft:the_end run kill @e[type=minecraft:end_crystal]",
+            );
+            yield* rcon(
+              fixture.containerName,
+              "execute in minecraft:the_end run fill 0 48 -8 105 48 8 minecraft:end_stone",
+            );
+            const dragon = yield* rcon(
+              fixture.containerName,
+              "execute in minecraft:the_end run attribute @e[type=minecraft:ender_dragon,limit=1] minecraft:max_health base set 1",
+            );
+            if (/No entity was found|Incorrect argument/iu.test(dragon.stdout)) {
+              return;
             }
-            return Effect.gen(function* () {
-              yield* rcon(
-                fixture.containerName,
-                "execute in minecraft:the_end run kill @e[type=minecraft:end_crystal]",
-              );
-              yield* rcon(
-                fixture.containerName,
-                "execute in minecraft:the_end run fill 0 48 -8 105 48 8 minecraft:end_stone",
-              );
-              const dragon = yield* rcon(
-                fixture.containerName,
-                "execute in minecraft:the_end run data merge entity @e[type=minecraft:ender_dragon,limit=1] {Health:1.0f,NoAI:1b}",
-              );
-              if (!dragon.stdout.includes("Modified entity data")) {
-                return;
-              }
-              const teleported = yield* rcon(
-                fixture.containerName,
-                `execute in minecraft:the_end at @a[name=${username},limit=1] run tp @e[type=minecraft:ender_dragon,limit=1] ~-20 ~3 ~`,
-              );
-              if (!teleported.stdout.includes("Teleported")) {
-                return;
-              }
-              yield* Ref.set(prepared, true);
-              yield* record("end-encounter-prepared", {
-                dragon: dragon.stdout.trim(),
-                teleported: teleported.stdout.trim(),
-              });
+            const staged = yield* rcon(
+              fixture.containerName,
+              "execute in minecraft:the_end run data merge entity @e[type=minecraft:ender_dragon,limit=1] {DragonPhase:6}",
+            );
+            if (!staged.stdout.includes("Modified entity data")) {
+              return;
+            }
+            const teleported = yield* rcon(
+              fixture.containerName,
+              `execute in minecraft:the_end at @a[name=${username},limit=1] run tp @e[type=minecraft:ender_dragon,limit=1] ~-20 ~3 ~`,
+            );
+            if (!teleported.stdout.includes("Teleported")) {
+              return;
+            }
+            yield* Ref.set(prepared, true);
+            yield* record("end-encounter-prepared", {
+              dragon: dragon.stdout.trim(),
+              staged: staged.stdout.trim(),
+              teleported: teleported.stdout.trim(),
             });
-          }),
-        );
+          }
+          if (yield* Ref.get(dying)) {
+            return;
+          }
+          const phase = yield* rcon(
+            fixture.containerName,
+            "execute in minecraft:the_end run data get entity @e[type=minecraft:ender_dragon,limit=1] DragonPhase",
+          );
+          if (/following entity data:\s*9\s*$/iu.test(phase.stdout.trim())) {
+            yield* Ref.set(dying, true);
+            yield* record("end-encounter-dying", {
+              phase: phase.stdout.trim(),
+            });
+            return;
+          }
+        });
       }),
       Effect.catchAll(() => Effect.void),
       Effect.zipRight(Effect.sleep(1_000)),

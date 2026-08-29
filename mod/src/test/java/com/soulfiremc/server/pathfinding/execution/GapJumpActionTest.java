@@ -34,16 +34,10 @@ class GapJumpActionTest {
   }
 
   @Test
-  void waitsForSprintMomentumBeforeJumping() {
-    assertFalse(GapJumpAction.shouldStartJump(1, 0));
-    assertFalse(GapJumpAction.shouldStartJump(2, 0.07));
-    assertTrue(GapJumpAction.shouldStartJump(2, 0.08));
-  }
-
-  @Test
-  void eventuallyJumpsWhenTerrainPreventsNormalAcceleration() {
-    assertFalse(GapJumpAction.shouldStartJump(2, 0));
-    assertTrue(GapJumpAction.shouldStartJump(3, 0));
+  void jumpsAfterRunningPastThePlayersHalfWidth() {
+    assertFalse(GapJumpAction.shouldStartJump(0.29, 0.6));
+    assertTrue(GapJumpAction.shouldStartJump(0.3, 0.6));
+    assertTrue(GapJumpAction.shouldStartJump(0.31, 0.6));
   }
 
   @Test
@@ -55,6 +49,20 @@ class GapJumpActionTest {
     var target = SFVec3i.from(3, 1, 0);
 
     assertTrue(GapJumpAction.hasClearTrajectory(clear, start, target));
+    assertFalse(GapJumpAction.hasClearTrajectory(
+      blockedBuilder.build(),
+      start,
+      target
+    ));
+  }
+
+  @Test
+  void rejectsAnObstructionBeyondTheLanding() {
+    var blockedBuilder = new TestBlockAccessorBuilder();
+    blockedBuilder.setBlockAt(4, 1, 0, Blocks.STONE);
+    var start = SFVec3i.from(0, 1, 0);
+    var target = SFVec3i.from(3, 1, 0);
+
     assertFalse(GapJumpAction.hasClearTrajectory(
       blockedBuilder.build(),
       start,

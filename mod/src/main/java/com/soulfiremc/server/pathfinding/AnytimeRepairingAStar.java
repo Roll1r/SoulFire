@@ -25,6 +25,8 @@ import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.OptionalDouble;
 import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
@@ -466,14 +468,15 @@ final class AnytimeRepairingAStar<S, E> {
       throw new IllegalStateException("The search has no start record");
     }
     var closestExpanded = closestExpandedRecord;
-    if (closestExpanded == null) {
-      throw new IllegalStateException("The search expanded no records");
-    }
     return new BoundaryDiagnostics<>(
       closest.state,
       closest.heuristic,
-      closestExpanded.state,
-      closestExpanded.heuristic,
+      closestExpanded == null
+        ? Optional.empty()
+        : Optional.of(closestExpanded.state),
+      closestExpanded == null
+        ? OptionalDouble.empty()
+        : OptionalDouble.of(closestExpanded.heuristic),
       reachedBoundaries,
       progressiveBoundaries,
       validBoundaries
@@ -752,8 +755,8 @@ final class AnytimeRepairingAStar<S, E> {
   record BoundaryDiagnostics<S>(
     S closestState,
     double closestHeuristic,
-    S closestExpandedState,
-    double closestExpandedHeuristic,
+    Optional<S> closestExpandedState,
+    OptionalDouble closestExpandedHeuristic,
     long reachedBoundaries,
     long progressiveBoundaries,
     long validBoundaries

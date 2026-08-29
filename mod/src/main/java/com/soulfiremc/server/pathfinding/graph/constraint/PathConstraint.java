@@ -91,7 +91,7 @@ public interface PathConstraint {
 
   /// Returns the largest horizontal parkour gap. Zero disables parkour.
   default int maximumParkourGap() {
-    return 3;
+    return 0;
   }
 
   /// Returns whether ordinary forward path traversal should sprint.

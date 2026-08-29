@@ -19,6 +19,8 @@ package com.soulfiremc.server.task;
 
 import com.soulfiremc.grpc.generated.AttackEntityTask;
 import com.soulfiremc.server.bot.ControlResource;
+import com.soulfiremc.server.pathfinding.goals.CloseToWorldBoxGoal;
+import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
@@ -31,8 +33,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 final class AttackEntityTaskProviderTest {
   @Test
   void approachesCloserThanTheRequestedAttackRange() {
-    assertEquals(1.0F, AttackEntityTaskProvider.pathfindingApproachRange(3.0F));
-    assertEquals(4.0F, AttackEntityTaskProvider.pathfindingApproachRange(6.0F));
+    assertEquals(2.5F, AttackEntityTaskProvider.pathfindingApproachRange(3.0F));
+    assertEquals(5.5F, AttackEntityTaskProvider.pathfindingApproachRange(6.0F));
     assertEquals(1.0F, AttackEntityTaskProvider.pathfindingApproachRange(1.5F));
   }
 
@@ -134,6 +136,24 @@ final class AttackEntityTaskProviderTest {
       Blocks.STONE.defaultBlockState(),
       Blocks.AIR.defaultBlockState(),
       Blocks.STONE.defaultBlockState()
+    ));
+  }
+
+  @Test
+  void recognizesAnAlreadySatisfiedStableApproachGoal() {
+    var goal = new CloseToWorldBoxGoal(
+      new AABB(-2, 61, -2, 2, 62, 2),
+      2.5,
+      1.62
+    );
+
+    assertTrue(AttackEntityTaskProvider.isPathGoalSatisfied(
+      goal,
+      new BlockPos(3, 62, -2)
+    ));
+    assertFalse(AttackEntityTaskProvider.isPathGoalSatisfied(
+      goal,
+      new BlockPos(12, 62, -2)
     ));
   }
 

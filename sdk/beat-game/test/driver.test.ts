@@ -260,7 +260,7 @@ describe("production SoulFire beat-game driver", () => {
           searchMode: PathfindSearchMode.NORMAL,
           maximumExpandedStates: 50_000,
           maximumFallDistance: 3,
-          maximumParkourGap: 3,
+          maximumParkourGap: 0,
           smoothCamera: false,
           timeoutSeconds: 30,
           searchTimeoutSeconds: 30,
