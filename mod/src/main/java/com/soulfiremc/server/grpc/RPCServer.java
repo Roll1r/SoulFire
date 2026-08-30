@@ -102,6 +102,7 @@ public final class RPCServer {
       GrpcService.builder()
         .autoCompression(true)
         .intercept(List.of(
+          new RequestContextResponseInterceptor(),
           new LoginRateLimitingInterceptor(),
           new JwtServerInterceptor(soulFireServer)
         ))
