@@ -379,6 +379,25 @@ function worldMemory(value: unknown): void {
         frontier.nextIndex,
         `checkpoint.memory.explorationFrontiers.${key}.nextIndex`,
       );
+      if (frontier.progressVersion !== undefined) {
+        if (frontier.progressVersion !== 2) {
+          throw new TypeError(
+            `checkpoint.memory.explorationFrontiers.${key}.progressVersion must be 2`,
+          );
+        }
+      }
+      if (frontier.target !== undefined) {
+        position(
+          frontier.target,
+          `checkpoint.memory.explorationFrontiers.${key}.target`,
+        );
+      }
+      if (frontier.targetAttempts !== undefined) {
+        nonNegativeInteger(
+          frontier.targetAttempts,
+          `checkpoint.memory.explorationFrontiers.${key}.targetAttempts`,
+        );
+      }
       if (frontier.lastPosition !== undefined) {
         position(
           frontier.lastPosition,

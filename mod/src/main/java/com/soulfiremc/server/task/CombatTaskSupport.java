@@ -18,33 +18,39 @@
 package com.soulfiremc.server.task;
 
 import com.soulfiremc.grpc.generated.EntityReference;
+import com.soulfiremc.grpc.generated.ItemSelector;
 import com.soulfiremc.server.bot.BotConnection;
+import com.soulfiremc.server.grpc.InventoryServiceImpl;
 import com.soulfiremc.server.pathfinding.PathfindingSupport;
 import com.soulfiremc.server.pathfinding.PathfindingSupport.ResolvedGoal;
 import com.soulfiremc.server.pathfinding.goals.CloseToWorldBoxGoal;
 import com.soulfiremc.server.pathfinding.goals.CloseToWorldXZGoal;
 import com.soulfiremc.server.pathfinding.goals.DynamicGoalScorer;
+import com.soulfiremc.server.util.SFInventoryHelpers;
+import com.soulfiremc.server.util.SFItemHelpers;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.boss.enderdragon.EnderDragon;
 import net.minecraft.world.entity.boss.enderdragon.phases.EnderDragonPhase;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.levelgen.feature.EndPodiumFeature;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 final class CombatTaskSupport {
   private static final double MAXIMUM_DRAGON_PART_DISTANCE = 32;
   private static final int DRAGON_APPROACH_BELOW_PODIUM_TOP = 4;
   private static final double DRAGON_APPROACH_HALF_WIDTH = 2;
-  private static final List<Double> DRAGON_WAITING_RADII = List.of(
-    72.0,
-    48.0,
-    32.0
-  );
+  private static final double DRAGON_WAITING_RADIUS = 32;
+  private static final double MAXIMUM_DRAGON_STAGING_STEP = 12;
+  private static final double MINIMUM_REFINABLE_DRAGON_STAGING_SPAN = 2;
 
   private CombatTaskSupport() {
   }
@@ -106,16 +112,27 @@ final class CombatTaskSupport {
   }
 
   static List<DragonWaitingApproach> dragonWaitingApproaches(
-    BlockPos fightOrigin
+    BlockPos fightOrigin,
+    Vec3 startingPosition
   ) {
     var podium = EndPodiumFeature.getLocation(fightOrigin);
     var position = Vec3.atBottomCenterOf(podium);
-    return DRAGON_WAITING_RADII.stream()
-      .map(radius -> new DragonWaitingApproach(
+    var radius = Math.hypot(
+      startingPosition.x - position.x,
+      startingPosition.z - position.z
+    );
+    var approaches = new ArrayList<DragonWaitingApproach>();
+    while (radius > DRAGON_WAITING_RADIUS) {
+      radius = Math.max(
+        DRAGON_WAITING_RADIUS,
+        radius - MAXIMUM_DRAGON_STAGING_STEP
+      );
+      approaches.add(new DragonWaitingApproach(
         new CloseToWorldXZGoal(position.x, position.z, radius),
         position
-      ))
-      .toList();
+      ));
+    }
+    return List.copyOf(approaches);
   }
 
   static List<ResolvedGoal> waitingGoals(
@@ -126,12 +143,79 @@ final class CombatTaskSupport {
     if (!(root instanceof EnderDragon dragon)) {
       return List.of();
     }
-    return dragonWaitingApproaches(dragon.getFightOrigin()).stream()
+    var player = Objects.requireNonNull(
+      bot.minecraft().player,
+      "Bot player is not available"
+    );
+    return dragonWaitingApproaches(
+      dragon.getFightOrigin(),
+      player.position()
+    ).stream()
       .map(approach -> new ResolvedGoal(
         approach.goal(),
         _ -> approach.position()
       ))
       .toList();
+  }
+
+  static Optional<ResolvedGoal> refineDragonWaitingGoal(
+    ResolvedGoal failedGoal,
+    Vec3 currentPosition
+  ) {
+    if (!(failedGoal.scorer() instanceof CloseToWorldXZGoal goal)) {
+      return Optional.empty();
+    }
+    var currentRadius = Math.hypot(
+      currentPosition.x - goal.x(),
+      currentPosition.z - goal.z()
+    );
+    var remainingSpan = currentRadius - goal.maxRadius();
+    if (remainingSpan <= MINIMUM_REFINABLE_DRAGON_STAGING_SPAN) {
+      return Optional.empty();
+    }
+    return Optional.of(new ResolvedGoal(
+      new CloseToWorldXZGoal(
+        goal.x(),
+        goal.z(),
+        goal.maxRadius() + remainingSpan / 2
+      ),
+      failedGoal.position()
+    ));
+  }
+
+  static boolean ensureBestMeleeWeapon(
+    BotConnection bot,
+    @Nullable ItemSelector selector
+  ) {
+    var player = Objects.requireNonNull(bot.minecraft().player);
+    var best = SFInventoryHelpers.playerInventorySlots(player.inventoryMenu)
+      .mapToObj(slot -> player.inventoryMenu.getSlot(slot).getItem())
+      .filter(stack -> selector == null
+        || InventoryServiceImpl.matches(stack, selector))
+      .filter(stack -> SFItemHelpers.meleeWeaponStats(stack).isPresent())
+      .max((left, right) -> Double.compare(
+        meleeWeaponScore(left),
+        meleeWeaponScore(right)
+      ));
+    if (best.isEmpty()) {
+      return selector == null;
+    }
+    var selected = best.orElseThrow().copy();
+    return TaskInventorySupport.ensureHolding(
+      bot,
+      stack -> ItemStack.isSameItemSameComponents(stack, selected)
+    );
+  }
+
+  private static double meleeWeaponScore(ItemStack stack) {
+    var base = SFItemHelpers.meleeWeaponStats(stack)
+      .orElseThrow()
+      .score();
+    if (!stack.isDamageableItem()) {
+      return base;
+    }
+    var remaining = stack.getMaxDamage() - stack.getDamageValue();
+    return base + (double) remaining / stack.getMaxDamage();
   }
 
   static PathfindingSupport.ResolvedGoal reachGoal(

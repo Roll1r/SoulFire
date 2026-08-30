@@ -82,7 +82,7 @@ public final class PathfindingSettings implements SettingsObject {
       .key("place-block-penalty")
       .uiName("Place Block Penalty")
       .description("Cost penalty for placing a block during pathfinding (higher values discourage placing)")
-      .defaultValue(5)
+      .defaultValue(20)
       .minValue(0)
       .maxValue(Integer.MAX_VALUE)
       .build();

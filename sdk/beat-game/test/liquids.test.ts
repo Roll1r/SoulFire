@@ -51,6 +51,59 @@ describe("lava interaction positioning", () => {
     expect(driver.raycasts).toHaveLength(1);
   });
 
+  it("ignores flowing fluid when vanilla can still target its source", async () => {
+    const driver = new FakeBeatGameDriver();
+    const source = blockObservation({
+      x: 3,
+      y: 62,
+      z: 0,
+      dimension: "minecraft:overworld",
+    }, {
+      blockId: "minecraft:water",
+      properties: { level: "0" },
+      replaceable: true,
+    });
+    const flowingWater = blockObservation({
+      x: 1,
+      y: 63,
+      z: 0,
+      dimension: "minecraft:overworld",
+    }, {
+      blockId: "minecraft:water",
+      properties: { level: "1" },
+      replaceable: true,
+    });
+    driver.currentObservation = observation({
+      position: {
+        x: 0.5,
+        y: 64,
+        z: 0.5,
+        dimension: "minecraft:overworld",
+      },
+    });
+    driver.raycastResolver = ({ includeFluids }) =>
+      includeFluids
+        ? { block: flowingWater, distance: 1 }
+        : { distance: 3.6 };
+
+    const selected = await Effect.runPromise(approachLiquidSourceFromSide(
+      driver,
+      driver.currentObservation,
+      [source],
+      {
+        path: defaultBeatGameStrategy.path,
+        requireTargetableSource: true,
+      },
+    ));
+
+    expect(selected.position).toEqual(source.position);
+    expect(driver.paths).toHaveLength(0);
+    expect(driver.raycasts.map(({ includeFluids }) => includeFluids)).toEqual([
+      true,
+      false,
+    ]);
+  });
+
   it("skips stands whose sampled sightline is already obstructed", async () => {
     const driver = new FakeBeatGameDriver();
     const blockedSource = blockObservation({
@@ -739,5 +792,114 @@ describe("lava interaction positioning", () => {
 
     expect(selected.position).toEqual(source.position);
     expect(driver.paths.map(({ radius }) => radius)).toEqual([0.75, 1.1]);
+  });
+
+  it("approaches a distant source through bounded local path goals", async () => {
+    const driver = new FakeBeatGameDriver();
+    const source = blockObservation({
+      x: 40,
+      y: 62,
+      z: 0,
+      dimension: "minecraft:overworld",
+    }, {
+      blockId: "minecraft:lava",
+      properties: { level: "0" },
+      replaceable: true,
+    });
+    const stand = {
+      x: 38,
+      y: 64,
+      z: 0,
+      dimension: "minecraft:overworld",
+    } as const;
+    const standBlocks = [
+      blockObservation(stand, {
+        blockId: "minecraft:air",
+        replaceable: true,
+      }),
+      blockObservation({ ...stand, y: stand.y + 1 }, {
+        blockId: "minecraft:air",
+        replaceable: true,
+      }),
+      blockObservation({ ...stand, y: stand.y - 1 }),
+    ];
+    driver.currentObservation = observation({
+      position: {
+        x: 0.5,
+        y: 64,
+        z: 0.5,
+        dimension: "minecraft:overworld",
+      },
+    });
+    driver.blockQueryResolver = ({ center, radius, selector }) => {
+      if (Object.keys(selector).length !== 0) {
+        return [];
+      }
+      if (radius === 4.9) {
+        return standBlocks;
+      }
+      return radius === 0.25
+        ? standBlocks.filter((block) =>
+          block.position.x === Math.floor(center.x)
+          && block.position.y === Math.floor(center.y)
+          && block.position.z === Math.floor(center.z)
+        )
+        : [];
+    };
+    driver.pathResolver = (position, radius, policy) =>
+      Effect.sync(() => {
+        driver.paths.push({ position, radius, policy });
+        driver.currentObservation = observation({ position });
+      });
+    driver.raycastResolver = () =>
+      driver.currentObservation.player.position.x >= stand.x
+        ? { block: source, distance: 3 }
+        : { distance: 6 };
+
+    const selected = await Effect.runPromise(approachLiquidSourceFromSide(
+      driver,
+      driver.currentObservation,
+      [source],
+      {
+        path: defaultBeatGameStrategy.path,
+        requireTargetableSource: true,
+      },
+    ));
+
+    expect(selected.position).toEqual(source.position);
+    expect(driver.paths).toHaveLength(4);
+    expect(driver.paths.slice(0, 3)).toEqual([
+      expect.objectContaining({
+        position: expect.objectContaining({ x: 12.5 }),
+        radius: 2,
+        policy: expect.objectContaining({
+          allowMining: defaultBeatGameStrategy.path.allowMining,
+          avoidFluids: true,
+          maxFallDistance: 1,
+        }),
+      }),
+      expect.objectContaining({
+        position: expect.objectContaining({ x: 24.5 }),
+        radius: 2,
+      }),
+      expect.objectContaining({
+        position: expect.objectContaining({ x: 36.5 }),
+        radius: 2,
+      }),
+    ]);
+    expect(driver.paths.at(-1)).toEqual({
+      position: {
+        x: stand.x + 0.5,
+        y: stand.y,
+        z: stand.z + 0.5,
+        dimension: stand.dimension,
+      },
+      radius: 0.75,
+      policy: expect.objectContaining({
+        allowMining: false,
+        avoidFluids: true,
+        maxFallDistance: 1,
+      }),
+    });
   });
 });

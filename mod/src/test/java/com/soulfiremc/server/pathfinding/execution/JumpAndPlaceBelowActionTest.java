@@ -66,10 +66,8 @@ final class JumpAndPlaceBelowActionTest {
   @Test
   void rejectsAPlacementWhosePredictionNeverSettles() {
     assertTrue(JumpAndPlaceBelowAction.placementWasRejected(
-      false,
+      0,
       true,
-      true,
-      false,
       40
     ));
   }

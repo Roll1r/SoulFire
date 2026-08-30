@@ -83,7 +83,7 @@ class InventorySlotSnapshot(_message.Message):
     def __init__(self, slot: _Optional[int] = ..., area: _Optional[_Union[InventoryArea, str]] = ..., item: _Optional[_Union[_domain_pb2.ItemStackSnapshot, _Mapping]] = ..., may_place: bool = ..., may_pickup: bool = ...) -> None: ...
 
 class ContainerSnapshot(_message.Message):
-    __slots__ = ("container_id", "state_id", "revision", "container_type", "title", "layout", "slots", "carried", "selected_hotbar_slot")
+    __slots__ = ("container_id", "state_id", "revision", "container_type", "title", "layout", "slots", "carried", "selected_hotbar_slot", "path_building_block_count")
     CONTAINER_ID_FIELD_NUMBER: _ClassVar[int]
     STATE_ID_FIELD_NUMBER: _ClassVar[int]
     REVISION_FIELD_NUMBER: _ClassVar[int]
@@ -93,6 +93,7 @@ class ContainerSnapshot(_message.Message):
     SLOTS_FIELD_NUMBER: _ClassVar[int]
     CARRIED_FIELD_NUMBER: _ClassVar[int]
     SELECTED_HOTBAR_SLOT_FIELD_NUMBER: _ClassVar[int]
+    PATH_BUILDING_BLOCK_COUNT_FIELD_NUMBER: _ClassVar[int]
     container_id: int
     state_id: int
     revision: int
@@ -102,7 +103,8 @@ class ContainerSnapshot(_message.Message):
     slots: _containers.RepeatedCompositeFieldContainer[InventorySlotSnapshot]
     carried: _domain_pb2.ItemStackSnapshot
     selected_hotbar_slot: int
-    def __init__(self, container_id: _Optional[int] = ..., state_id: _Optional[int] = ..., revision: _Optional[int] = ..., container_type: _Optional[str] = ..., title: _Optional[_Union[_domain_pb2.TextComponent, _Mapping]] = ..., layout: _Optional[_Union[_bot_pb2.ContainerLayout, _Mapping]] = ..., slots: _Optional[_Iterable[_Union[InventorySlotSnapshot, _Mapping]]] = ..., carried: _Optional[_Union[_domain_pb2.ItemStackSnapshot, _Mapping]] = ..., selected_hotbar_slot: _Optional[int] = ...) -> None: ...
+    path_building_block_count: int
+    def __init__(self, container_id: _Optional[int] = ..., state_id: _Optional[int] = ..., revision: _Optional[int] = ..., container_type: _Optional[str] = ..., title: _Optional[_Union[_domain_pb2.TextComponent, _Mapping]] = ..., layout: _Optional[_Union[_bot_pb2.ContainerLayout, _Mapping]] = ..., slots: _Optional[_Iterable[_Union[InventorySlotSnapshot, _Mapping]]] = ..., carried: _Optional[_Union[_domain_pb2.ItemStackSnapshot, _Mapping]] = ..., selected_hotbar_slot: _Optional[int] = ..., path_building_block_count: _Optional[int] = ...) -> None: ...
 
 class InventoryScope(_message.Message):
     __slots__ = ("instance_id", "bot_id")

@@ -41,7 +41,7 @@ public final class ItemPlaceHelper {
   private ItemPlaceHelper() {
   }
 
-  public static Optional<InteractionHand> placeBestBlockInHand(
+  public static Optional<SelectedPlacementItem> placeBestBlockInHand(
     BotConnection connection,
     PathConstraint pathConstraint
   ) {
@@ -61,10 +61,26 @@ public final class ItemPlaceHelper {
         candidate -> candidate.getItem() == selectedItem)
       .orElseThrow(() -> new IllegalStateException("Failed to find item stack to use"));
     if (slot == InventoryMenu.SHIELD_SLOT) {
-      return Optional.of(InteractionHand.OFF_HAND);
+      return Optional.of(new SelectedPlacementItem(
+        InteractionHand.OFF_HAND,
+        selectedItem
+      ));
     }
     placeInHand(connection.minecraft().gameMode, player, slot);
-    return Optional.of(InteractionHand.MAIN_HAND);
+    return Optional.of(new SelectedPlacementItem(
+      InteractionHand.MAIN_HAND,
+      selectedItem
+    ));
+  }
+
+  public record SelectedPlacementItem(
+    InteractionHand hand,
+    Item item
+  ) {
+    public boolean isReady(LocalPlayer player, PathConstraint constraint) {
+      var held = player.getItemInHand(hand);
+      return held.getItem() == item && constraint.isPlaceable(held);
+    }
   }
 
   static Optional<Item> selectBestPathBuildingItem(

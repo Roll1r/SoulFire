@@ -54,6 +54,9 @@ message ContainerSnapshot {
   repeated InventorySlotSnapshot slots = 7;
   optional ItemStackSnapshot carried = 8;
   int32 selected_hotbar_slot = 9;
+  // Number of disposable full-block items available to the pathfinder for
+  // bridging, pillaring, and other route construction.
+  int32 path_building_block_count = 10;
 }
 
 message InventoryScope {

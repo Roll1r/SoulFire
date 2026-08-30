@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -209,6 +209,11 @@ describe("beat-game behavior programs", () => {
       health: 0,
       position: deathPosition,
     });
+    driver.taskObserver = (task) => {
+      if (task.type === "auto-respawn") {
+        driver.currentObservation = observation({ position: deathPosition });
+      }
+    };
     const drop = {
       connectionEpoch: "epoch-1",
       networkId: 24,
@@ -246,6 +251,106 @@ describe("beat-game behavior programs", () => {
     });
   });
 
+  it("waits for the living player state before resuming after respawn", async () => {
+    const driver = new FakeBeatGameDriver();
+    let respawnRequested = false;
+    let observationsAfterRequest = 0;
+    driver.currentObservation = observation({ dead: true, health: 0 });
+    driver.taskObserver = (task) => {
+      if (task.type === "auto-respawn") {
+        respawnRequested = true;
+      }
+    };
+    driver.observationResolver = () => {
+      if (!respawnRequested) {
+        return Effect.succeed(driver.currentObservation);
+      }
+      observationsAfterRequest += 1;
+      return Effect.succeed(observation({
+        dead: observationsAfterRequest < 3,
+        health: observationsAfterRequest < 3 ? 0 : 20,
+      }));
+    };
+
+    await Effect.runPromise(respawnAndRecover(driver));
+
+    expect(driver.tasks).toContainEqual({
+      type: "auto-respawn",
+      maximumRespawns: 1,
+    });
+    expect(observationsAfterRequest).toBe(3);
+  });
+
+  it("stages long corpse travel before approaching its exact height", async () => {
+    const driver = new FakeBeatGameDriver();
+    const start = {
+      x: 0,
+      y: 70,
+      z: 0,
+      dimension: "minecraft:overworld",
+    };
+    const deathPosition = {
+      x: 100,
+      y: 20,
+      z: 0,
+      dimension: "minecraft:overworld",
+    };
+    driver.currentObservation = observation({ position: start });
+    driver.xzPathResolver = (x, z, dimension, radius, policy) =>
+      Effect.sync(() => {
+        driver.xzPaths.push({ x, z, dimension, radius, policy });
+        driver.currentObservation = observation({
+          position: {
+            x,
+            y: driver.currentObservation.player.position.y,
+            z,
+            dimension,
+          },
+        });
+      });
+
+    await Effect.runPromise(respawnAndRecover(driver, {
+      deathPosition,
+      path: {
+        allowMining: true,
+        allowPlacing: true,
+        maxFallDistance: 1,
+        searchMode: "URGENT",
+        maximumQualityBound: 1.5,
+      },
+    }));
+
+    expect(driver.xzPaths).toHaveLength(3);
+    expect(driver.xzPaths.map(({ x, z }) => ({ x, z }))).toEqual([
+      { x: 32, z: 0 },
+      { x: 64, z: 0 },
+      { x: 88, z: 0 },
+    ]);
+    expect(driver.xzPaths).toEqual(driver.xzPaths.map((path) =>
+      expect.objectContaining({
+        radius: 3,
+        policy: expect.objectContaining({
+          allowMining: false,
+          allowPlacing: false,
+          maxFallDistance: 1,
+          searchMode: "URGENT",
+          maximumQualityBound: 1.5,
+        }),
+      })
+    ));
+    expect(driver.paths).toContainEqual(expect.objectContaining({
+      position: deathPosition,
+      radius: 2,
+      policy: expect.objectContaining({
+        allowMining: true,
+        allowPlacing: true,
+        maxFallDistance: 1,
+        searchMode: "URGENT",
+        maximumQualityBound: 1.5,
+      }),
+    }));
+  });
+
   it("continues when a death position is no longer reachable", async () => {
     const driver = new FakeBeatGameDriver();
     const deathPosition = {
@@ -277,6 +382,9 @@ describe("beat-game behavior programs", () => {
       z: -48,
       dimension: "minecraft:overworld",
     };
+    driver.currentObservation = observation({
+      position: { ...deathPosition, x: deathPosition.x - 6 },
+    });
     const submergedDrop = {
       connectionEpoch: "epoch-1",
       networkId: 24,
@@ -316,7 +424,7 @@ describe("beat-game behavior programs", () => {
       retryThroughFluids: true,
     }));
 
-    expect(driver.paths).toEqual([
+    expect(driver.paths.slice(0, 2)).toEqual([
       expect.objectContaining({
         position: deathPosition,
         policy: expect.objectContaining({ avoidFluids: true }),
@@ -326,10 +434,8 @@ describe("beat-game behavior programs", () => {
         policy: expect.objectContaining({ avoidFluids: false }),
       }),
     ]);
-    expect(driver.xzPaths).toContainEqual(expect.objectContaining({
-      x: submergedDrop.position.x,
-      z: submergedDrop.position.z,
-      dimension: submergedDrop.position.dimension,
+    expect(driver.paths).toContainEqual(expect.objectContaining({
+      position: submergedDrop.position,
       policy: expect.objectContaining({ avoidFluids: false }),
     }));
     expect(driver.entityQueries).toContainEqual(expect.objectContaining({
@@ -1617,7 +1723,7 @@ describe("beat-game behavior programs", () => {
     )).toBe(true);
   });
 
-  it("bridges a missing staircase floor before opening the tunnel", async () => {
+  it("rejects a missing staircase floor without a reachable lower anchor", async () => {
     const driver = new FakeBeatGameDriver();
     const from = {
       x: 0,
@@ -1632,102 +1738,44 @@ describe("beat-game behavior programs", () => {
       dimension: "minecraft:overworld",
     };
     const support = { ...to, y: 1 };
-    const previousSupport = { ...from, y: 2 };
-    let supportPlaced = false;
-    let treadPlaced = false;
+    const lowerAnchor = { ...support, y: 0 };
     driver.currentObservation = observation({
       counts: { "minecraft:cobblestone": 2 },
     });
-    driver.actionObserver = (action) => {
-      if (
-        action.type === "place-block"
-        && action.against.x === previousSupport.x
-        && action.against.y === previousSupport.y
-        && action.against.z === previousSupport.z
-      ) {
-        if (driver.actions.some(({ type }) => type === "dig-block")) {
-          throw new Error("Staircase opened before its tread was built");
-        }
-        treadPlaced = true;
-      }
-      if (
-        action.type === "place-block"
-        && action.against.x === to.x
-        && action.against.y === to.y
-        && action.against.z === to.z
-        && action.face === "down"
-      ) {
-        if (!treadPlaced) {
-          throw new Error("Support was placed before its tread");
-        }
-        supportPlaced = true;
-      }
-    };
-    driver.blockQueryResolver = ({ center, selector }) => {
+    driver.blockQueryResolver = ({ center }) => {
       const position = queriedBlockPosition(center);
       if (
-        position.x === support.x
-        && position.y === support.y
-        && position.z === support.z
+        (position.x === support.x
+          && position.y === support.y
+          && position.z === support.z)
+        || (position.x === lowerAnchor.x
+          && position.y === lowerAnchor.y
+          && position.z === lowerAnchor.z)
       ) {
-        if (selector.replaceable === false && !supportPlaced) {
-          return [];
-        }
-        return [blockObservation(support, supportPlaced
-          ? { blockId: "minecraft:cobblestone" }
-          : {
-            blockId: "minecraft:air",
-            diggable: true,
-            replaceable: true,
-          })];
-      }
-      if (
-        position.x === to.x
-        && position.y === to.y
-        && position.z === to.z
-      ) {
-        return [blockObservation(to, treadPlaced
-          ? { blockId: "minecraft:cobblestone" }
-          : {
-            blockId: "minecraft:air",
-            diggable: true,
-            replaceable: true,
-          })];
-      }
-      if (
-        position.x === previousSupport.x
-        && position.y === previousSupport.y
-        && position.z === previousSupport.z
-      ) {
-        return [blockObservation(previousSupport)];
+        return [blockObservation(position, {
+          blockId: "minecraft:air",
+          diggable: true,
+          replaceable: true,
+          solid: false,
+        })];
       }
       return [blockObservation(position)];
     };
 
     installStaircaseMovementSimulation(driver, from);
-    await Effect.runPromise(excavateStaircase(driver, { from, to }));
+    const result = await Effect.runPromise(
+      excavateStaircase(driver, { from, to }).pipe(Effect.either),
+    );
 
-    expect(driver.actions).toContainEqual({
-      type: "place-block",
-      against: previousSupport,
-      face: "east",
-      hand: "main",
+    expect(result).toMatchObject({
+      _tag: "Left",
+      left: { code: "unsupported_opening", retryable: true },
     });
-    expect(driver.actions).toContainEqual({
+    expect(driver.actions).not.toContainEqual(expect.objectContaining({
       type: "place-block",
-      against: to,
-      face: "down",
-      hand: "main",
-    });
-    expect(driver.blockQueries.some(({ center, selector }) =>
-      center.x === support.x + 0.5
-      && center.y === support.y + 0.5
-      && center.z === support.z + 0.5
-      && selector.replaceable === false
-    )).toBe(true);
-    expect(driver.paths).toContainEqual(expect.objectContaining({
+    }));
+    expect(driver.paths).not.toContainEqual(expect.objectContaining({
       position: feetCenter(to),
-      radius: 0.5,
     }));
   });
 
@@ -1925,7 +1973,7 @@ describe("beat-game behavior programs", () => {
     });
   });
 
-  it("bridges an open staircase tread from the current safe step", async () => {
+  it("stops at the current safe step before an unsupported opening", async () => {
     const driver = new FakeBeatGameDriver();
     const from = {
       x: 0,
@@ -1936,76 +1984,47 @@ describe("beat-game behavior programs", () => {
     const firstStep = { ...from, x: 1, y: 3 };
     const to = { ...from, x: 2, y: 2 };
     const support = { ...to, y: 1 };
-    let treadPlaced = false;
-    let supportPlaced = false;
-    let bridgedFromCurrentStep = false;
+    const lowerAnchor = { ...support, y: 0 };
     driver.currentObservation = observation({
       counts: { "minecraft:cobblestone": 2 },
     });
-    driver.actionObserver = (action) => {
-      if (
-        action.type === "place-block"
-        && action.against.x === firstStep.x
-        && action.against.y === firstStep.y - 1
-        && action.against.z === firstStep.z
-        && action.face === "east"
-      ) {
-        const current = driver.paths.at(-1)?.position;
-        bridgedFromCurrentStep = current?.x === firstStep.x + 0.5
-          && current.y === firstStep.y
-          && current.z === firstStep.z + 0.5
-          && current.dimension === firstStep.dimension;
-        treadPlaced = true;
-      }
-      if (
-        action.type === "place-block"
-        && action.against.x === to.x
-        && action.against.y === to.y
-        && action.against.z === to.z
-        && action.face === "down"
-      ) {
-        supportPlaced = true;
-      }
-    };
-    driver.blockQueryResolver = ({ center, selector }) => {
+    driver.blockQueryResolver = ({ center }) => {
       const position = queriedBlockPosition(center);
       if (
-        position.x === to.x
-        && position.y === to.y
-        && position.z === to.z
+        (position.x === support.x
+          && position.y === support.y
+          && position.z === support.z)
+        || (position.x === lowerAnchor.x
+          && position.y === lowerAnchor.y
+          && position.z === lowerAnchor.z)
       ) {
-        if (selector.replaceable === false && !treadPlaced) {
-          return [];
-        }
-        return [blockObservation(to, treadPlaced
-          ? { blockId: "minecraft:cobblestone" }
-          : { blockId: "minecraft:air", replaceable: true })];
-      }
-      if (
-        position.x === support.x
-        && position.y === support.y
-        && position.z === support.z
-      ) {
-        if (selector.replaceable === false && !supportPlaced) {
-          return [];
-        }
-        return [blockObservation(support, supportPlaced
-          ? { blockId: "minecraft:cobblestone" }
-          : { blockId: "minecraft:air", replaceable: true })];
+        return [blockObservation(position, {
+          blockId: "minecraft:air",
+          replaceable: true,
+          solid: false,
+        })];
       }
       return [blockObservation(position)];
     };
 
     installStaircaseMovementSimulation(driver, from);
-    await Effect.runPromise(excavateStaircase(driver, { from, to }));
+    const result = await Effect.runPromise(
+      excavateStaircase(driver, { from, to }).pipe(Effect.either),
+    );
 
-    expect(bridgedFromCurrentStep).toBe(true);
-    expect(driver.paths.filter(({ position }) =>
-      position.x === from.x + 0.5
-      && position.y === from.y
-      && position.z === from.z + 0.5
-      && position.dimension === from.dimension
-    )).toHaveLength(1);
+    expect(result).toMatchObject({
+      _tag: "Left",
+      left: { code: "unsupported_opening", retryable: true },
+    });
+    expect(driver.paths).toContainEqual(expect.objectContaining({
+      position: feetCenter(firstStep),
+    }));
+    expect(driver.paths).not.toContainEqual(expect.objectContaining({
+      position: feetCenter(to),
+    }));
+    expect(driver.actions).not.toContainEqual(expect.objectContaining({
+      type: "place-block",
+    }));
   });
 
   it("hands an open structure interior back to ordinary pathfinding", async () => {
@@ -2159,6 +2178,7 @@ describe("beat-game behavior programs", () => {
       dimension: "minecraft:overworld",
     };
     const support = { ...to, y: 1 };
+    const lowerAnchor = { ...support, y: support.y - 1 };
     let placementAttempts = 0;
     let supportPlaced = false;
     driver.currentObservation = observation({
@@ -2167,10 +2187,10 @@ describe("beat-game behavior programs", () => {
     driver.actionResolver = (action) => {
       if (
         action.type !== "place-block"
-        || action.face !== "down"
-        || action.against.x !== to.x
-        || action.against.y !== to.y
-        || action.against.z !== to.z
+        || action.face !== "up"
+        || action.against.x !== lowerAnchor.x
+        || action.against.y !== lowerAnchor.y
+        || action.against.z !== lowerAnchor.z
       ) {
         return Effect.void;
       }
@@ -2192,10 +2212,7 @@ describe("beat-game behavior programs", () => {
         && position.y === support.y - 1
         && position.z === support.z
       ) {
-        return [blockObservation(position, {
-          blockId: "minecraft:air",
-          replaceable: true,
-        })];
+        return [blockObservation(position)];
       }
       if (
         position.x === support.x
@@ -2240,6 +2257,7 @@ describe("beat-game behavior programs", () => {
       dimension: "minecraft:overworld",
     };
     const support = { ...to, y: 1 };
+    const lowerAnchor = { ...support, y: support.y - 1 };
     let supportState: "air" | "cobblestone" | "gravel" = "gravel";
     let placementAttempts = 0;
     driver.currentObservation = observation({
@@ -2257,10 +2275,10 @@ describe("beat-game behavior programs", () => {
       }
       if (
         action.type !== "place-block"
-        || action.face !== "down"
-        || action.against.x !== to.x
-        || action.against.y !== to.y
-        || action.against.z !== to.z
+        || action.face !== "up"
+        || action.against.x !== lowerAnchor.x
+        || action.against.y !== lowerAnchor.y
+        || action.against.z !== lowerAnchor.z
       ) {
         return Effect.void;
       }
@@ -2608,6 +2626,137 @@ describe("beat-game behavior programs", () => {
     ]);
   });
 
+  it("combines alternative recipe ingredients from multiple item variants", async () => {
+    const driver = new FakeBeatGameDriver();
+    let birchLogs = 1;
+    let oakLogs = 1;
+    let birchPlanks = 0;
+    let oakPlanks = 0;
+    driver.recipeResolver = (resultItemId) => {
+      if (resultItemId === "minecraft:shield") {
+        return [{
+          recipeId: "shield",
+          recipeType: "crafting",
+          resultItemId,
+          resultCount: 1,
+          ingredients: [{
+            itemIds: [
+              "minecraft:birch_planks",
+              "minecraft:oak_planks",
+            ],
+            tags: ["minecraft:planks"],
+            count: 6,
+          }],
+        }];
+      }
+      if (
+        resultItemId === "minecraft:birch_planks"
+        || resultItemId === "minecraft:oak_planks"
+      ) {
+        const logItemId = resultItemId === "minecraft:birch_planks"
+          ? "minecraft:birch_log"
+          : "minecraft:oak_log";
+        return [{
+          recipeId: resultItemId,
+          recipeType: "crafting",
+          resultItemId,
+          resultCount: 4,
+          ingredients: [{
+            itemIds: [logItemId],
+            tags: [],
+            count: 1,
+          }],
+        }];
+      }
+      return [];
+    };
+    driver.craftabilityResolver = (recipeId, operations) => {
+      if (recipeId === "minecraft:birch_planks") {
+        return birchLogs >= operations
+          ? {
+            canCraft: true,
+            maximumCraftCount: birchLogs,
+            missing: [],
+          }
+          : {
+            canCraft: false,
+            maximumCraftCount: birchLogs,
+            missing: [{
+              itemIds: ["minecraft:birch_log"],
+              tags: [],
+              available: birchLogs,
+              missing: operations - birchLogs,
+            }],
+          };
+      }
+      if (recipeId === "minecraft:oak_planks") {
+        return oakLogs >= operations
+          ? {
+            canCraft: true,
+            maximumCraftCount: oakLogs,
+            missing: [],
+          }
+          : {
+            canCraft: false,
+            maximumCraftCount: oakLogs,
+            missing: [{
+              itemIds: ["minecraft:oak_log"],
+              tags: [],
+              available: oakLogs,
+              missing: operations - oakLogs,
+            }],
+          };
+      }
+      const planks = birchPlanks + oakPlanks;
+      return planks >= 6
+        ? { canCraft: true, maximumCraftCount: 1, missing: [] }
+        : {
+          canCraft: false,
+          maximumCraftCount: 0,
+          missing: [{
+            itemIds: [
+              "minecraft:birch_planks",
+              "minecraft:oak_planks",
+            ],
+            tags: ["minecraft:planks"],
+            available: planks,
+            missing: 6 - planks,
+          }],
+        };
+    };
+    driver.taskObserver = (task) => {
+      if (task.type !== "craft") {
+        return;
+      }
+      if (task.recipeId === "minecraft:birch_planks") {
+        birchLogs -= task.count;
+        birchPlanks += task.count * 4;
+      } else if (task.recipeId === "minecraft:oak_planks") {
+        oakLogs -= task.count;
+        oakPlanks += task.count * 4;
+      }
+    };
+
+    await Effect.runPromise(craftItem(driver, {
+      resultItemId: "minecraft:shield",
+      count: 1,
+    }));
+
+    expect(driver.tasks.filter(({ type }) => type === "craft")).toEqual([
+      {
+        type: "craft",
+        recipeId: "minecraft:birch_planks",
+        count: 1,
+      },
+      {
+        type: "craft",
+        recipeId: "minecraft:oak_planks",
+        count: 1,
+      },
+      { type: "craft", recipeId: "shield", count: 1 },
+    ]);
+  });
+
   it("classifies unavailable recipe ingredients as resource exhaustion", async () => {
     const driver = new FakeBeatGameDriver();
     driver.recipeResolver = (resultItemId) =>
@@ -2782,6 +2931,78 @@ describe("beat-game behavior programs", () => {
     ]);
   });
 
+  it("unlocks the wooden sword recipe by producing a stick first", async () => {
+    const driver = new FakeBeatGameDriver();
+    let sticksCrafted = false;
+    driver.recipeResolver = (resultItemId) => {
+      if (resultItemId === "minecraft:stick") {
+        return [{
+          recipeId: "stick",
+          recipeType: "crafting",
+          resultItemId,
+          resultCount: 4,
+          ingredients: [{
+            itemIds: ["minecraft:oak_planks"],
+            tags: [],
+            count: 2,
+          }],
+        }];
+      }
+      if (
+        resultItemId === "minecraft:wooden_sword"
+        && sticksCrafted
+      ) {
+        return [{
+          recipeId: "wooden-sword",
+          recipeType: "crafting",
+          resultItemId,
+          resultCount: 1,
+          ingredients: [
+            {
+              itemIds: ["minecraft:oak_planks"],
+              tags: [],
+              count: 2,
+            },
+            {
+              itemIds: ["minecraft:stick"],
+              tags: [],
+              count: 1,
+            },
+          ],
+        }];
+      }
+      return [];
+    };
+    driver.craftabilityResolver = () => ({
+      canCraft: true,
+      maximumCraftCount: 64,
+      missing: [],
+    });
+    driver.taskObserver = (task) => {
+      if (task.type === "craft" && task.recipeId === "stick") {
+        sticksCrafted = true;
+      }
+    };
+
+    await Effect.runPromise(craftItem(driver, {
+      resultItemId: "minecraft:wooden_sword",
+      count: 1,
+    }));
+
+    expect(driver.tasks.filter(({ type }) => type === "craft")).toEqual([
+      {
+        type: "craft",
+        recipeId: "stick",
+        count: 1,
+      },
+      {
+        type: "craft",
+        recipeId: "wooden-sword",
+        count: 1,
+      },
+    ]);
+  });
+
   it("keeps portal geometry in TypeScript", () => {
     const frame = createNetherPortalFrame({
       x: 0,
@@ -2948,8 +3169,8 @@ describe("beat-game behavior programs", () => {
           dimension,
           position: {
             ...portal,
-            x: portal.x + 0.5,
-            z: portal.z + 0.5,
+            x: portal.x + 1,
+            z: portal.z - 2.5,
             dimension,
           },
         });
@@ -2964,6 +3185,146 @@ describe("beat-game behavior programs", () => {
     expect(driver.paths).toHaveLength(1);
     expect(observations).toBeGreaterThan(1);
     expect(driver.actions).toContainEqual({ type: "reset-movement" });
+  });
+
+  it("leaves the destination portal on its supported side", async () => {
+    const driver = new FakeBeatGameDriver();
+    const sourcePortal = {
+      x: 10,
+      y: 64,
+      z: 20,
+      dimension: "minecraft:overworld",
+    };
+    const destinationPortal = {
+      x: 10,
+      y: 64,
+      z: 0,
+      dimension: "minecraft:the_nether",
+    };
+    let current = observation({
+      position: { ...sourcePortal, x: 11, z: 17.5 },
+    });
+    const sourceBlocks = [sourcePortal.x, sourcePortal.x + 1].map((x) =>
+      blockObservation(
+        { ...sourcePortal, x },
+        {
+          blockId: "minecraft:nether_portal",
+          properties: { axis: "x" },
+          diggable: false,
+        },
+      )
+    );
+    const destinationBlocks = [
+      destinationPortal.x,
+      destinationPortal.x + 1,
+    ].map((x) =>
+      blockObservation(
+        { ...destinationPortal, x },
+        {
+          blockId: "minecraft:nether_portal",
+          properties: { axis: "x" },
+          diggable: false,
+        },
+      )
+    );
+    const safeExit = {
+      x: 11,
+      y: 64,
+      z: -1,
+      dimension: "minecraft:the_nether",
+    };
+    const exitBlocks = [
+      blockObservation({ ...safeExit, y: safeExit.y - 1 }, {
+        blockId: "minecraft:netherrack",
+        replaceable: false,
+        solid: true,
+      }),
+      blockObservation(safeExit, {
+        blockId: "minecraft:air",
+        replaceable: true,
+      }),
+      blockObservation({ ...safeExit, y: safeExit.y + 1 }, {
+        blockId: "minecraft:air",
+        replaceable: true,
+      }),
+      blockObservation({ ...safeExit, z: 1, y: safeExit.y - 1 }, {
+        blockId: "minecraft:air",
+        replaceable: true,
+      }),
+      blockObservation({ ...safeExit, z: 1 }, {
+        blockId: "minecraft:air",
+        replaceable: true,
+      }),
+      blockObservation({ ...safeExit, z: 1, y: safeExit.y + 1 }, {
+        blockId: "minecraft:air",
+        replaceable: true,
+      }),
+    ];
+    driver.blockQueryResolver = ({ center, selector }) =>
+      selector.blockIds?.includes("minecraft:nether_portal") === true
+        ? center.dimension === "minecraft:the_nether"
+          ? destinationBlocks
+          : sourceBlocks
+        : exitBlocks;
+    driver.pathResolver = (position, radius, policy) =>
+      Effect.sync(() => {
+        driver.paths.push({ position, radius, policy });
+        current = observation({ position });
+      });
+    driver.actionObserver = (action) => {
+      if (action.type === "look") {
+        current = observation({
+          dimension: current.player.position.dimension,
+          position: current.player.position,
+          rotation: { yaw: action.yaw, pitch: action.pitch },
+        });
+      }
+      if (
+        action.type === "set-movement"
+        && action.forward === true
+        && action.sprint === false
+      ) {
+        current = observation({
+          dimension: "minecraft:the_nether",
+          position: {
+            ...destinationPortal,
+            x: 11,
+            z: 0.5,
+            dimension: "minecraft:the_nether",
+          },
+        });
+      }
+      if (
+        action.type === "set-movement"
+        && action.forward === true
+        && action.sprint === true
+      ) {
+        current = observation({
+          dimension: "minecraft:the_nether",
+          position: {
+            ...destinationPortal,
+            x: 11,
+            z: -1.2,
+            dimension: "minecraft:the_nether",
+          },
+        });
+      }
+    };
+    driver.observationResolver = () => Effect.succeed(current);
+
+    await Effect.runPromise(enterPortal(driver, { portal: sourcePortal }));
+
+    expect(current.player.position).toMatchObject({
+      dimension: "minecraft:the_nether",
+      z: -1.2,
+    });
+    expect(driver.actions).toContainEqual({
+      type: "set-movement",
+      forward: true,
+      sprint: true,
+    });
+    const finalLook = driver.actions.findLast(({ type }) => type === "look");
+    expect(finalLook).toMatchObject({ type: "look", yaw: 0 });
   });
 
   it("prefers observed portal geometry over a conflicting axis property", async () => {
@@ -3102,6 +3463,128 @@ describe("beat-game behavior programs", () => {
         radius: 0,
       }),
     ]);
+  });
+
+  it("excavates to a verified portal below an exhausted direct route", async () => {
+    const driver = new FakeBeatGameDriver();
+    const from = {
+      x: 9,
+      y: 50,
+      z: -17,
+      dimension: "minecraft:overworld",
+    };
+    const portal = {
+      x: 0,
+      y: 46,
+      z: -22,
+      dimension: "minecraft:overworld",
+    };
+    const portalBlocks = [portal.x, portal.x + 1].map((x) =>
+      blockObservation(
+        { ...portal, x },
+        {
+          blockId: "minecraft:nether_portal",
+          properties: { axis: "x" },
+          diggable: false,
+        },
+      )
+    );
+    driver.blockQueryResolver = ({ center, selector }) =>
+      selector.blockIds?.includes("minecraft:nether_portal") === true
+        ? portalBlocks
+        : [blockObservation(queriedBlockPosition(center))];
+    installStaircaseMovementSimulation(driver, from);
+    driver.xzPathResolver = (x, z, dimension, radius, policy) =>
+      Effect.sync(() => {
+        driver.xzPaths.push({ x, z, dimension, radius, policy });
+        driver.currentObservation = observation({
+          position: { x, y: 48, z, dimension },
+        });
+      });
+    const resolvePath = driver.pathResolver;
+    let exhaustedDirectRoute = false;
+    driver.pathResolver = (position, radius, policy) => {
+      if (!exhaustedDirectRoute && radius === 0) {
+        exhaustedDirectRoute = true;
+        driver.paths.push({ position, radius, policy });
+        return Effect.fail(new BeatGameDriverError({
+          operation: "pathfind",
+          code: "path_search_limit",
+          retryable: true,
+          message: "Pathfinding reached its search limit",
+        }));
+      }
+      return resolvePath(position, radius, policy);
+    };
+    const resolveObservation = driver.observationResolver;
+    let entered = false;
+    driver.observationResolver = () =>
+      resolveObservation().pipe(Effect.map((current) => {
+        const movement = driver.actions.findLast((action) =>
+          action.type === "set-movement" || action.type === "reset-movement"
+        );
+        if (
+          exhaustedDirectRoute
+          && movement?.type === "set-movement"
+          && movement.forward === true
+        ) {
+          entered = true;
+        }
+        return entered
+          ? {
+            ...current,
+            player: {
+              ...current.player,
+              position: {
+                ...current.player.position,
+                dimension: "minecraft:the_nether",
+              },
+            },
+          }
+          : current;
+      }));
+
+    await Effect.runPromise(enterPortal(driver, { portal }));
+
+    expect(driver.paths[0]).toMatchObject({
+      position: {
+        x: 1,
+        y: 46,
+        z: -21,
+        dimension: "minecraft:overworld",
+      },
+      radius: 0,
+    });
+    expect(driver.paths[1]).toMatchObject({
+      position: feetCenter({ ...from, x: 1, y: 48, z: -19 }),
+      radius: 0.5,
+    });
+    expect(driver.paths.at(-1)).toMatchObject({
+      position: feetCenter({ ...portal, x: 1, z: -21 }),
+      radius: 0.5,
+      policy: expect.objectContaining({
+        allowMining: false,
+        allowPlacing: false,
+      }),
+    });
+    expect(driver.actions).toContainEqual({
+      type: "dig-block",
+      position: { ...portal, x: 1, y: 48, z: -21 },
+    });
+    expect(driver.xzPaths).toEqual([
+      expect.objectContaining({
+        x: 1.5,
+        z: -16.5,
+        dimension: "minecraft:overworld",
+        radius: 1.5,
+        policy: expect.objectContaining({
+          allowPlacing: false,
+          avoidFluids: true,
+        }),
+      }),
+    ]);
+    expect(entered).toBe(true);
+    expect(driver.activeControlScopes).toBe(0);
   });
 
   it("keeps clearing movement while portal contact charges", async () => {
@@ -3424,6 +3907,113 @@ describe("beat-game behavior programs", () => {
     expect(driver.activeControlScopes).toBe(0);
   });
 
+  it("defers a distant portal support until it is within reach", async () => {
+    const driver = new FakeBeatGameDriver();
+    const portal = {
+      x: 10,
+      y: 65,
+      z: 20,
+      dimension: "minecraft:overworld",
+    };
+    const support = {
+      x: 11,
+      y: 64,
+      z: 21,
+      dimension: "minecraft:overworld",
+    };
+    const base = { ...support, y: 63 };
+    const portalBlocks = [portal.x, portal.x + 1].map((x) =>
+      blockObservation(
+        { ...portal, x },
+        {
+          blockId: "minecraft:nether_portal",
+          properties: { axis: "x" },
+          diggable: false,
+        },
+      )
+    );
+    const operations: string[] = [];
+    let supportPlaced = false;
+    driver.currentObservation = observation({
+      position: { x: 30, y: 64, z: 24 },
+    });
+    driver.blockQueryResolver = ({ selector }) => {
+      if (selector.blockIds?.includes("minecraft:nether_portal") === true) {
+        return portalBlocks;
+      }
+      if (selector.replaceable === false) {
+        return supportPlaced
+          ? [blockObservation(support, { blockId: "minecraft:cobblestone" })]
+          : [];
+      }
+      return [
+        blockObservation(support, {
+          blockId: "minecraft:air",
+          replaceable: true,
+        }),
+        blockObservation(base),
+      ];
+    };
+    driver.pathResolver = (position, radius, policy) =>
+      Effect.sync(() => {
+        operations.push("pathfind");
+        driver.paths.push({ position, radius, policy });
+        driver.currentObservation = observation({ position });
+      });
+    driver.actionObserver = (action) => {
+      if (action.type === "place-block") {
+        operations.push("place-support");
+        supportPlaced = true;
+      }
+    };
+    let entered = false;
+    driver.observationResolver = () =>
+      Effect.sync(() => {
+        const movement = driver.actions.findLast((action) =>
+          action.type === "set-movement" || action.type === "reset-movement"
+        );
+        if (
+          supportPlaced
+          || (
+            movement?.type === "set-movement"
+            && movement.forward === true
+          )
+        ) {
+          entered = true;
+        }
+        const current = driver.currentObservation;
+        const look = driver.actions.findLast((action) =>
+          action.type === "look"
+        );
+        return {
+          ...current,
+          player: {
+            ...current.player,
+            position: {
+              ...current.player.position,
+              ...(entered ? { dimension: "minecraft:the_nether" } : {}),
+            },
+            rotation: {
+              yaw: look?.type === "look" ? look.yaw : 0,
+              pitch: look?.type === "look" ? look.pitch : 0,
+            },
+          },
+        };
+      });
+
+    await Effect.runPromise(enterPortal(driver, { portal }));
+
+    expect(operations).toEqual(["pathfind", "place-support"]);
+    expect(driver.actions).toContainEqual({
+      type: "place-block",
+      against: base,
+      face: "up",
+      hand: "main",
+    });
+    expect(entered).toBe(true);
+    expect(driver.activeControlScopes).toBe(0);
+  });
+
   it("bridges a short gap leading into a generated portal", async () => {
     const driver = new FakeBeatGameDriver();
     const portal = {
@@ -3463,19 +4053,22 @@ describe("beat-game behavior programs", () => {
       if (selector.replaceable === false) {
         return supports;
       }
+      const queriedPosition = {
+        x: Math.floor(center.x),
+        y: Math.floor(center.y),
+        z: Math.floor(center.z),
+        dimension: center.dimension,
+      };
+      const queriedKey = `${queriedPosition.x},${queriedPosition.y},${
+        queriedPosition.z
+      }`;
       return [
-        blockObservation(
-          {
-            x: Math.floor(center.x),
-            y: Math.floor(center.y),
-            z: Math.floor(center.z),
-            dimension: center.dimension,
-          },
-          {
+        ...(solidSupports.has(queriedKey)
+          ? []
+          : [blockObservation(queriedPosition, {
             blockId: "minecraft:air",
             replaceable: true,
-          },
-        ),
+          })]),
         ...supports,
       ];
     };
@@ -3744,9 +4337,18 @@ describe("beat-game behavior programs", () => {
       { ...water, y: water.y - 1 },
       { ...castingStand, y: castingStand.y - 1 },
     ]) {
+      const isWaterSupport = key(support) === key({
+        ...water,
+        y: water.y - 1,
+      });
       blocks.set(
         key(support),
-        blockObservation(support, { blockId: "minecraft:deepslate" }),
+        blockObservation(support, isWaterSupport
+          ? {
+            blockId: "minecraft:crafting_table",
+            interactive: true,
+          }
+          : { blockId: "minecraft:deepslate" }),
       );
     }
     driver.currentObservation = observation({
@@ -3883,6 +4485,9 @@ describe("beat-game behavior programs", () => {
         selectedItemId === "minecraft:water_bucket"
         && pendingLavaTarget !== undefined
       ) {
+        if (action.type === "interact-block" && action.sneaking !== true) {
+          return;
+        }
         updateInventory((counts) => {
           delete counts["minecraft:water_bucket"];
           counts["minecraft:bucket"] = (counts["minecraft:bucket"] ?? 0) + 1;
@@ -4055,7 +4660,11 @@ describe("beat-game behavior programs", () => {
       position: { ...target, y: target.y - 1 },
       face: "up",
       hand: "main",
+      sneaking: true,
     });
+    expect(driver.actions.every((action) =>
+      action.type !== "interact-block" || action.sneaking === true
+    )).toBe(true);
     expect(rejectedLavaPlacement).toBe(false);
     expect(rejectedWaterPickup).toBe(true);
     expect(driver.raycasts.some(({ includeFluids }) => includeFluids === true))
@@ -4488,8 +5097,8 @@ describe("beat-game behavior programs", () => {
         replaceable: true,
       })];
     };
-    driver.pathResolver = (position, radius, policy) =>
-      Effect.sync(() => {
+    driver.pathResolver = (position, radius, policy) => {
+      const record = Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
         driver.currentObservation = observation({
           counts: driver.currentObservation.inventory.counts,
@@ -4497,10 +5106,33 @@ describe("beat-game behavior programs", () => {
           rotation: driver.currentObservation.player.rotation,
         });
       });
+      return position.x === castingStand.x
+          && position.y === castingStand.y
+          && position.z === castingStand.z
+          && radius === 0
+          && policy.allowMining === false
+        ? record.pipe(Effect.zipRight(Effect.fail(
+          new BeatGameDriverError({
+            operation: "pathfind",
+            code: "task_failed",
+            retryable: false,
+            message: "No route found to the goal!",
+          }),
+        )))
+        : record;
+    };
+    const flowingWater = blockObservation({
+      ...water,
+      z: water.z - 1,
+    }, {
+      blockId: "minecraft:water",
+      properties: { level: "1" },
+      replaceable: true,
+    });
     driver.raycastResolver = ({ includeFluids }) => {
       const source = blocks.get(key(water));
       return includeFluids === true && source !== undefined
-        ? { block: source, distance: 2 }
+        ? { block: flowingWater, distance: 1 }
         : { distance: 2 };
     };
     let selectedItemId = "";
@@ -4574,6 +5206,21 @@ describe("beat-game behavior programs", () => {
     expect(driver.paths).toContainEqual(expect.objectContaining({
       position: castingStand,
       radius: 0,
+      policy: expect.objectContaining({ allowPlacing: false }),
+    }));
+    expect(driver.paths).toContainEqual(expect.objectContaining({
+      position: castingStand,
+      radius: 0,
+      policy: expect.objectContaining({ allowPlacing: true }),
+    }));
+    expect(driver.paths).toContainEqual(expect.objectContaining({
+      position: castingStand,
+      radius: 0,
+      policy: expect.objectContaining({
+        allowMining: true,
+        allowPlacing: true,
+        protectedBlocks: expect.arrayContaining([...frame.blocks]),
+      }),
     }));
     const lavaSelectionIndex = driver.actions.findIndex((action) =>
       action.type === "select-item"
@@ -4591,6 +5238,10 @@ describe("beat-game behavior programs", () => {
     }
     expect(lavaLook.pitch).toBeGreaterThan(0);
     expect(blocks.get(key(target))?.blockId).toBe("minecraft:obsidian");
+    expect(driver.raycasts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ includeFluids: true }),
+      expect.objectContaining({ includeFluids: false }),
+    ]));
     expect(driver.activeControlScopes).toBe(0);
   });
 
@@ -5666,33 +6317,69 @@ describe("beat-game behavior programs", () => {
 
   it("enters the End exit portal and performs the credits respawn", async () => {
     const driver = new FakeBeatGameDriver();
-    driver.currentObservation = observation({
-      dimension: "minecraft:the_end",
-      counts: { "minecraft:dragon_egg": 1 },
-    });
-    const portal = {
-      x: 0,
-      y: 63,
-      z: 0,
+    const initialPosition = {
+      x: 0.5,
+      y: 64,
+      z: -3.5,
       dimension: "minecraft:the_end",
     };
+    driver.currentObservation = observation({
+      dimension: "minecraft:the_end",
+      position: initialPosition,
+    });
+    const portals = [-1, 0, 1].flatMap((x) =>
+      [-1, 0, 1].map((z) => ({
+        blockId: "minecraft:end_portal",
+        position: {
+          x,
+          y: 63,
+          z,
+          dimension: "minecraft:the_end",
+        },
+        properties: {},
+        diggable: false,
+        replaceable: false,
+        interactive: false,
+        observedAt: "2026-01-01T00:00:01.000Z",
+      }))
+    );
     driver.blockQueryResolver = ({ selector }) =>
       selector.blockIds?.includes("minecraft:end_portal") === true
-        ? [{
-          blockId: "minecraft:end_portal",
-          position: portal,
-          properties: {},
-          diggable: false,
-          replaceable: false,
-          interactive: false,
-          observedAt: "2026-01-01T00:00:01.000Z",
-        }]
+        ? portals
         : [];
+    driver.events = Stream.fromEffect(
+      Effect.sleep(10).pipe(
+        Effect.as({
+          type: "game-event" as const,
+          observedAt: "2026-01-01T00:00:02.000Z",
+          event: "win_game",
+          parameter: 1,
+        }),
+      ),
+    );
     driver.actionObserver = (action) => {
+      if (action.type === "look") {
+        driver.currentObservation = observation({
+          dimension: "minecraft:the_end",
+          position: driver.currentObservation.player.position,
+          rotation: { yaw: action.yaw, pitch: action.pitch },
+        });
+      }
+      if (action.type === "set-movement" && action.jump === true) {
+        driver.currentObservation = observation({
+          dimension: "minecraft:the_end",
+          position: {
+            x: 0.5,
+            y: 64,
+            z: -1.5,
+            dimension: "minecraft:the_end",
+          },
+          rotation: driver.currentObservation.player.rotation,
+        });
+      }
       if (action.type === "respawn") {
         driver.currentObservation = observation({
           dimension: "minecraft:overworld",
-          counts: { "minecraft:dragon_egg": 1 },
         });
       }
     };
@@ -5702,7 +6389,18 @@ describe("beat-game behavior programs", () => {
       confirmationDelayMs: 0,
     }));
 
-    expect(driver.paths[0]).toMatchObject({ position: portal, radius: 0 });
+    expect(driver.paths).toEqual([]);
+    expect(driver.actions).toContainEqual({
+      type: "set-movement",
+      forward: true,
+      jump: true,
+      sprint: false,
+    });
+    expect(driver.actions).toContainEqual({
+      type: "set-movement",
+      forward: true,
+      sprint: false,
+    });
     expect(driver.actions).toContainEqual({ type: "respawn" });
     expect(driver.activeControlScopes).toBe(0);
   });

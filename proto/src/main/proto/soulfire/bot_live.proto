@@ -1050,6 +1050,10 @@ message PathfindOptions {
   // Largest unsupported horizontal gap that parkour may cross. Set to 0 to
   // disable parkour. Values above 3 are rejected by the current controller.
   optional uint32 maximum_parkour_gap = 17;
+  // Blocks the route may move around but must never break. Positions in a
+  // different dimension are rejected instead of being silently reinterpreted
+  // in the bot's current dimension.
+  repeated BlockPosition protected_blocks = 18;
 }
 
 message GoToRequest {
@@ -1362,7 +1366,7 @@ service BotLiveService {
     };
   }
 
-  // Respawns a dead bot.
+  // Respawns a dead bot or dismisses the End credits to finish respawning.
   rpc Respawn (RespawnRequest) returns (RespawnResponse) {
     option (google.api.http) = {
       post: "/v1/instances/{instance_id}/bots/{bot_id}/actions:respawn"
@@ -1372,7 +1376,7 @@ service BotLiveService {
       display_name: "Respawn bot"
       permissions: "CONTROL_BOT_ACTIONS"
       scope: "instance.bot"
-      preconditions: "Bot must be online and dead."
+      preconditions: "Bot must be online and either dead or viewing the End credits."
       execution: "Completes after the respawn request is sent."
     };
   }

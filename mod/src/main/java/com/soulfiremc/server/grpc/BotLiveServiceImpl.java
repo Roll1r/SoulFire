@@ -44,6 +44,7 @@ import com.soulfiremc.server.bot.ControlResource;
 import com.soulfiremc.server.bot.ControlStopReason;
 import com.soulfiremc.server.bot.ControlTask;
 import com.soulfiremc.server.pathfinding.PathfindingSupport;
+import com.soulfiremc.server.pathfinding.execution.BlockPlacementSupport;
 import com.soulfiremc.server.user.PermissionContext;
 import io.grpc.Status;
 import io.grpc.stub.ServerCallStreamObserver;
@@ -52,6 +53,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.WinScreen;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
@@ -98,6 +100,7 @@ import net.minecraft.world.item.component.WritableBookContent;
 import net.minecraft.world.item.component.WrittenBookContent;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.BedBlock;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.SignBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
@@ -2034,16 +2037,22 @@ public final class BotLiveServiceImpl extends BotLiveServiceGrpc.BotLiveServiceI
   }
 
   private static final class PlaceBlockTask implements ControlTask {
+    private static final int MAX_INTERACTION_FAILURES = 4;
+    private static final int INTERACTION_RETRY_TICKS = 4;
+    private static final int NON_READY_GRACE_TICKS = 20;
+
     private final BotConnection bot;
     private final BlockPos against;
     private final Direction direction;
     private final InteractionHand hand;
     private final BlockPos target;
-    private @Nullable BlockState previousState;
-    private boolean started;
-    private boolean predictedPlacement;
+    private @Nullable Block expectedBlock;
+    private boolean awaitingConfirmation;
     private boolean done;
     private int ticks;
+    private int nonReadyTicks;
+    private int interactionFailures;
+    private int retryTicks;
 
     private PlaceBlockTask(
       BotConnection bot,
@@ -2060,6 +2069,7 @@ public final class BotLiveServiceImpl extends BotLiveServiceGrpc.BotLiveServiceI
 
     @Override
     public void tick() {
+      ticks++;
       var minecraft = bot.minecraft();
       var gameMode = minecraft.gameMode;
       var player = minecraft.player;
@@ -2069,58 +2079,169 @@ public final class BotLiveServiceImpl extends BotLiveServiceGrpc.BotLiveServiceI
           .withDescription("Bot player, level, or game mode is not available")
           .asRuntimeException();
       }
-      if (!started) {
-        requireReach(player, against);
-        previousState = level.getBlockState(target);
-        var hitPos = Vec3.atCenterOf(against)
-          .add(
-            direction.getStepX() * 0.5,
-            direction.getStepY() * 0.5,
-            direction.getStepZ() * 0.5
-          );
-        var hit = new BlockHitResult(
-          hitPos,
-          direction,
-          against,
-          false
-        );
-        var result = BotInteractionSupport.withSneaking(
-          player,
-          true,
-          () -> gameMode.useItemOn(player, hand, hit)
-        );
-        if (!(result instanceof InteractionResult.Success success)) {
-          throw Status.FAILED_PRECONDITION
-            .withDescription("The held item could not be used on the target block")
-            .asRuntimeException();
-        }
-        if (success.swingSource() == InteractionResult.SwingSource.CLIENT) {
-          player.swing(hand);
-        }
-        started = true;
-        return;
+      bot.controlState().resetAll();
+
+      if (ticks >= DEFAULT_ACTION_TIMEOUT.toSeconds() * 20 - 10) {
+        throw Status.DEADLINE_EXCEEDED
+          .withDescription(
+            "Block placement did not become ready or confirm: %s"
+              .formatted(placementDiagnostic(player, level))
+          )
+          .asRuntimeException();
       }
 
-      var currentState = level.getBlockState(target);
-      var changed = !currentState.equals(previousState);
-      var pendingPrediction =
-        BlockPredictionSupport.hasPendingPrediction(bot, target);
-      predictedPlacement |= changed || pendingPrediction;
-      if (!pendingPrediction && changed) {
+      var expected = expectedBlock;
+      if (expected != null
+        && level.getBlockState(target).getBlock() == expected
+        && !BlockPredictionSupport.hasPendingPrediction(bot, target)) {
         done = true;
         return;
       }
-      if (!pendingPrediction && predictedPlacement) {
+
+      if (awaitingConfirmation) {
+        if (BlockPredictionSupport.hasPendingPrediction(bot, target)) {
+          return;
+        }
+        // A settled prediction without the expected block is an authoritative
+        // rejection. Re-evaluate position, visibility, and held item before a
+        // bounded retry instead of repeating the same click immediately.
+        awaitingConfirmation = false;
+        interactionFailures++;
+        retryTicks = INTERACTION_RETRY_TICKS;
+        if (interactionFailures >= MAX_INTERACTION_FAILURES) {
+          throw Status.FAILED_PRECONDITION
+            .withDescription(
+              "The server repeatedly rejected block placement: %s"
+                .formatted(placementDiagnostic(player, level))
+            )
+            .asRuntimeException();
+        }
+        return;
+      }
+
+      if (retryTicks > 0) {
+        retryTicks--;
+        return;
+      }
+
+      var placement = BlockPlacementSupport.evaluate(
+        bot,
+        hand,
+        target,
+        against,
+        direction
+      );
+      if (placement.readiness()
+        == BlockPlacementSupport.Readiness.ALREADY_PLACED) {
+        done = true;
+        return;
+      }
+      if (placement.readiness()
+        == BlockPlacementSupport.Readiness.PLAYER_INTERSECTION) {
+        BlockPlacementSupport.moveToPlayerClearance(bot, target);
+        nonReadyTicks = 0;
+        return;
+      }
+      if ((placement.readiness()
+        == BlockPlacementSupport.Readiness.FACE_OCCLUDED
+        || placement.readiness()
+        == BlockPlacementSupport.Readiness.OUT_OF_REACH)
+        && BlockPlacementSupport.moveTowardPlacementView(
+        bot,
+        target,
+        against,
+        direction
+      )) {
+        nonReadyTicks = 0;
+        return;
+      }
+      if (!placement.ready()) {
+        nonReadyTicks++;
+        if (nonReadyTicks < NON_READY_GRACE_TICKS
+          && isTransientPlacementState(placement.readiness())) {
+          return;
+        }
         throw Status.FAILED_PRECONDITION
-          .withDescription("The server rejected placing the target block")
+          .withDescription(
+            "Block placement is not ready (%s): %s"
+              .formatted(placement.readiness(), placement.detail())
+          )
           .asRuntimeException();
       }
-      ticks++;
-      if (ticks >= DEFAULT_ACTION_TIMEOUT.toSeconds() * 20) {
-        throw Status.DEADLINE_EXCEEDED
-          .withDescription("Block placement confirmation timed out")
-          .asRuntimeException();
+
+      nonReadyTicks = 0;
+      var candidate = placement.candidate();
+      expectedBlock = candidate.expectedState().getBlock();
+      bot.controlState().shift(true);
+      bot.rotationControl().lookAt(candidate.hitPosition());
+      if (!bot.rotationControl().isFacing(candidate.hitPosition())) {
+        return;
       }
+
+      var result = BotInteractionSupport.withSneaking(
+        player,
+        true,
+        () -> gameMode.useItemOn(player, hand, candidate.hitResult())
+      );
+      if (!(result instanceof InteractionResult.Success success)) {
+        interactionFailures++;
+        retryTicks = INTERACTION_RETRY_TICKS;
+        if (interactionFailures >= MAX_INTERACTION_FAILURES) {
+          throw Status.FAILED_PRECONDITION
+            .withDescription(
+              "Minecraft repeatedly refused the placement interaction: %s"
+                .formatted(placementDiagnostic(player, level))
+            )
+            .asRuntimeException();
+        }
+        return;
+      }
+      if (success.swingSource() == InteractionResult.SwingSource.CLIENT) {
+        player.swing(hand);
+      }
+      awaitingConfirmation = true;
+    }
+
+    private static boolean isTransientPlacementState(
+      BlockPlacementSupport.Readiness readiness
+    ) {
+      return switch (readiness) {
+        case HELD_ITEM_NOT_BLOCK,
+             PLAYER_MOVING,
+             ENTITY_OBSTRUCTION,
+             FACE_OCCLUDED,
+             GAME_STATE_UNAVAILABLE -> true;
+        case READY,
+             ALREADY_PLACED,
+             TARGET_NOT_REPLACEABLE,
+             NO_SUPPORT,
+             OUT_OF_REACH,
+             PLAYER_INTERSECTION,
+             INVALID_PLACEMENT_STATE -> false;
+      };
+    }
+
+    private String placementDiagnostic(
+      LocalPlayer player,
+      ClientLevel level
+    ) {
+      var held = player.getItemInHand(hand);
+      return (
+        "target=%s, targetState=%s, against=%s, againstState=%s, "
+          + "held=%s, player=(%.3f, %.3f, %.3f), motion=(%.3f, %.3f, %.3f)"
+      ).formatted(
+          target,
+          level.getBlockState(target),
+          against,
+          level.getBlockState(against),
+          held,
+          player.getX(),
+          player.getY(),
+          player.getZ(),
+          player.getDeltaMovement().x,
+          player.getDeltaMovement().y,
+          player.getDeltaMovement().z
+      );
     }
 
     @Override
@@ -2133,6 +2254,7 @@ public final class BotLiveServiceImpl extends BotLiveServiceGrpc.BotLiveServiceI
       ControlStopReason reason,
       @Nullable Throwable cause
     ) {
+      bot.controlState().resetAll();
       done = true;
     }
 
@@ -2456,12 +2578,17 @@ public final class BotLiveServiceImpl extends BotLiveServiceGrpc.BotLiveServiceI
             .withDescription("Bot player is not available")
             .asRuntimeException();
         }
-        if (!player.isDeadOrDying()) {
+        var screen = bot.minecraft().gui.screen();
+        if (!player.isDeadOrDying() && !(screen instanceof WinScreen)) {
           throw Status.FAILED_PRECONDITION
-            .withDescription("Bot is not dead")
+            .withDescription("Bot is not dead or viewing the End credits")
             .asRuntimeException();
         }
-        player.respawn();
+        if (screen instanceof WinScreen winScreen) {
+          winScreen.onClose();
+        } else {
+          player.respawn();
+        }
       }),
       DEFAULT_ACTION_TIMEOUT,
       result -> RespawnResponse.newBuilder().setResult(result).build(),

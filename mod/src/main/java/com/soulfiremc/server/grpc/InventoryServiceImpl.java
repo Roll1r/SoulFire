@@ -618,18 +618,28 @@ public final class InventoryServiceImpl
       .setSelectedHotbarSlot(
         context.player.getInventory().getSelectedSlot()
       );
+    var pathBuildingBlockCount = 0;
     for (var slot : menu.slots) {
       var item = slot.getItem();
+      var slotArea = area(context.layout, slot.index);
       var itemSnapshot = InventorySlotSnapshot.newBuilder()
         .setSlot(slot.index)
-        .setArea(area(context.layout, slot.index))
+        .setArea(slotArea)
         .setMayPlace(slot.mayPlace(item.isEmpty() ? ItemStack.EMPTY : item))
         .setMayPickup(!item.isEmpty() && slot.mayPickup(context.player));
       if (!item.isEmpty()) {
         itemSnapshot.setItem(MinecraftDomainMapper.item(item));
+        if (
+          (slotArea == InventoryArea.INVENTORY_AREA_MAIN
+            || slotArea == InventoryArea.INVENTORY_AREA_HOTBAR)
+            && SFItemHelpers.isPathBuildingBlockItem(item)
+        ) {
+          pathBuildingBlockCount += item.getCount();
+        }
       }
       builder.addSlots(itemSnapshot);
     }
+    builder.setPathBuildingBlockCount(pathBuildingBlockCount);
     if (!menu.getCarried().isEmpty()) {
       builder.setCarried(MinecraftDomainMapper.item(menu.getCarried()));
     }

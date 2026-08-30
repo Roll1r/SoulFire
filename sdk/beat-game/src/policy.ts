@@ -64,9 +64,6 @@ export interface BeatGameStrategyHooks {
   readonly fightEnderDragon?: (
     context: BeatGamePolicyContext,
   ) => PolicyEffect<boolean>;
-  readonly collectDragonEgg?: (
-    context: BeatGamePolicyContext,
-  ) => PolicyEffect<void>;
   readonly exitEnd?: (
     context: BeatGamePolicyContext,
   ) => PolicyEffect<void>;

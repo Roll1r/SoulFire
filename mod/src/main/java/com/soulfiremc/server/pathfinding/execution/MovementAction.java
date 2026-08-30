@@ -88,8 +88,18 @@ public final class MovementAction implements WorldAction {
     var level = connection.minecraft().level;
     var feet = level.getBlockState(target.toBlockPos());
     var head = level.getBlockState(target.add(0, 1, 0).toBlockPos());
-    var floor = level.getBlockState(target.sub(0, 1, 0).toBlockPos());
-    return hasValidTargetStates(feet, head, floor);
+    var floorPosition = target.sub(0, 1, 0).toBlockPos();
+    var floor = level.getBlockState(floorPosition);
+    return hasValidTargetStates(
+      feet,
+      head,
+      floor,
+      SFBlockHelpers.isStableWalkableFloorBlock(
+        level,
+        floorPosition,
+        floor
+      )
+    );
   }
 
   static boolean hasValidTargetStates(
@@ -97,19 +107,37 @@ public final class MovementAction implements WorldAction {
     BlockState head,
     BlockState floor
   ) {
+    return hasValidTargetStates(
+      feet,
+      head,
+      floor,
+      SFBlockHelpers.isWalkableFloorBlock(floor)
+    );
+  }
+
+  static boolean hasValidTargetStates(
+    BlockState feet,
+    BlockState head,
+    BlockState floor,
+    boolean stableWalkableFloor
+  ) {
     var supportInsideFeet = SFBlockHelpers.canSupportFeetInBlock(feet);
+    var feetInSwimmableWater = SFBlockHelpers.isSwimmableWaterBlock(feet);
+    var headPassable = SFBlockHelpers.isBodyPassableBlock(head)
+      || SFBlockHelpers.isSwimmableWaterBlock(head);
     var climbable = feet.is(net.minecraft.tags.BlockTags.CLIMBABLE)
       || feet.is(net.minecraft.world.level.block.Blocks.LADDER)
       || feet.is(net.minecraft.world.level.block.Blocks.SCAFFOLDING);
     var feetPassable = SFBlockHelpers.isBodyPassableBlock(feet)
       || supportInsideFeet
+      || feetInSwimmableWater
       || climbable;
-    if (!feetPassable || !SFBlockHelpers.isBodyPassableBlock(head)) {
+    if (!feetPassable || !headPassable) {
       return false;
     }
-    return SFBlockHelpers.isWalkableFloorBlock(floor)
+    return stableWalkableFloor
       || supportInsideFeet
-      || SFBlockHelpers.isSwimmableWaterBlock(feet)
+      || feetInSwimmableWater
       || climbable;
   }
 

@@ -140,11 +140,39 @@ final class MovementActionTest {
   }
 
   @Test
+  void acceptsWaterWithoutASolidFloorAsASwimmingTarget() {
+    assertTrue(MovementAction.hasValidTargetStates(
+      Blocks.WATER.defaultBlockState(),
+      Blocks.AIR.defaultBlockState(),
+      Blocks.WATER.defaultBlockState()
+    ));
+  }
+
+  @Test
+  void acceptsAFullySubmergedSwimmingTarget() {
+    assertTrue(MovementAction.hasValidTargetStates(
+      Blocks.WATER.defaultBlockState(),
+      Blocks.WATER.defaultBlockState(),
+      Blocks.WATER.defaultBlockState()
+    ));
+  }
+
+  @Test
   void rejectsAStaleMovementTargetWithoutSupport() {
     assertFalse(MovementAction.hasValidTargetStates(
       Blocks.AIR.defaultBlockState(),
       Blocks.AIR.defaultBlockState(),
       Blocks.AIR.defaultBlockState()
+    ));
+  }
+
+  @Test
+  void rejectsAGravityFloorThatWillDisappearBeforeLanding() {
+    assertFalse(MovementAction.hasValidTargetStates(
+      Blocks.AIR.defaultBlockState(),
+      Blocks.AIR.defaultBlockState(),
+      Blocks.GRAVEL.defaultBlockState(),
+      false
     ));
   }
 

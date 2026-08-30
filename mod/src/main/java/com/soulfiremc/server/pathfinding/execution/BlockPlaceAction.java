@@ -27,23 +27,23 @@ import com.soulfiremc.server.util.SFBlockHelpers;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.phys.BlockHitResult;
-import net.minecraft.world.phys.Vec3;
 
 @Slf4j
 @RequiredArgsConstructor
 public final class BlockPlaceAction implements WorldAction {
   private static final int MAX_CONFIRMATION_TICKS = 40;
+  private static final int MAX_INTERACTION_FAILURES = 4;
+  private static final int INTERACTION_RETRY_TICKS = 4;
   @Getter
   private final SFVec3i blockPosition;
   private final BlockPlaceAgainstData blockPlaceAgainstData;
   private final PathConstraint pathConstraint;
-  private InteractionHand placementHand;
+  private ItemPlaceHelper.SelectedPlacementItem placementItem;
   private boolean finishedPlacing;
-  private boolean interactionRejected;
+  private int interactionFailures;
+  private int retryTicks;
   private int confirmationTicks;
 
   @Override
@@ -87,31 +87,20 @@ public final class BlockPlaceAction implements WorldAction {
   public boolean isRejected(BotConnection connection) {
     var position = blockPosition.toBlockPos();
     return placementWasRejected(
-      interactionRejected,
-      finishedPlacing,
+      interactionFailures,
       BlockPredictionSupport.hasPendingPrediction(connection, position),
-      SFBlockHelpers.isCollisionShapeFullBlock(
-        connection.minecraft().level.getBlockState(position)
-      ),
       confirmationTicks
     );
   }
 
   static boolean placementWasRejected(
-    boolean interactionRejected,
-    boolean finishedPlacing,
+    int interactionFailures,
     boolean pendingPrediction,
-    boolean fullBlockPresent,
     int confirmationTicks
   ) {
-    return interactionRejected
-      || (
-      finishedPlacing
-        && (
-        (!pendingPrediction && !fullBlockPresent)
-          || confirmationTicks >= MAX_CONFIRMATION_TICKS
-      )
-    );
+    return interactionFailures >= MAX_INTERACTION_FAILURES
+      || pendingPrediction
+      && confirmationTicks >= MAX_CONFIRMATION_TICKS;
   }
 
   @Override
@@ -125,39 +114,92 @@ public final class BlockPlaceAction implements WorldAction {
 
     connection.controlState().resetAll();
 
-    if (placementHand == null) {
-      placementHand = ItemPlaceHelper.placeBestBlockInHand(
+    if (placementItem == null) {
+      placementItem = ItemPlaceHelper.placeBestBlockInHand(
         connection,
         pathConstraint
       ).orElse(null);
       return;
     }
 
-    if (finishedPlacing) {
-      confirmationTicks++;
+    if (!placementItem.isReady(clientEntity, pathConstraint)) {
+      placementItem = null;
       return;
     }
 
-    var placeTarget = Vec3.atCenterOf(blockPlaceAgainstData.againstPos().toBlockPos()).add(
-      blockPlaceAgainstData.blockFace().toDirection().getUnitVec3().multiply(0.5, 0.5, 0.5));
+    if (finishedPlacing) {
+      var position = blockPosition.toBlockPos();
+      if (BlockPredictionSupport.hasPendingPrediction(connection, position)) {
+        confirmationTicks++;
+        return;
+      }
+      if (SFBlockHelpers.isCollisionShapeFullBlock(
+        connection.minecraft().level.getBlockState(position)
+      )) {
+        return;
+      }
+      // The client accepted and predicted the interaction, but the server
+      // rolled it back. Re-resolve player clearance and the clicked face
+      // before retrying instead of failing the complete route immediately.
+      finishedPlacing = false;
+      confirmationTicks = 0;
+      interactionFailures++;
+      retryTicks = INTERACTION_RETRY_TICKS;
+      return;
+    }
+
+    if (retryTicks > 0) {
+      retryTicks--;
+      return;
+    }
+
+    connection.controlState().shift(true);
+    var placement = BlockPlacementSupport.evaluate(
+      connection,
+      placementItem.hand(),
+      blockPosition.toBlockPos(),
+      blockPlaceAgainstData.againstPos().toBlockPos(),
+      blockPlaceAgainstData.blockFace().toDirection()
+    );
+    if (placement.readiness()
+      == BlockPlacementSupport.Readiness.PLAYER_INTERSECTION) {
+      BlockPlacementSupport.moveToPlayerClearance(
+        connection,
+        blockPosition.toBlockPos()
+      );
+      return;
+    }
+    if ((placement.readiness()
+      == BlockPlacementSupport.Readiness.FACE_OCCLUDED
+      || placement.readiness()
+      == BlockPlacementSupport.Readiness.OUT_OF_REACH)
+      && BlockPlacementSupport.moveTowardPlacementView(
+      connection,
+      blockPosition.toBlockPos(),
+      blockPlaceAgainstData.againstPos().toBlockPos(),
+      blockPlaceAgainstData.blockFace().toDirection()
+    )) {
+      return;
+    }
+    if (!placement.ready()) {
+      return;
+    }
+
+    var candidate = placement.candidate();
+    var placeTarget = candidate.hitPosition();
     connection.rotationControl().lookAt(placeTarget);
     if (!connection.rotationControl().isFacing(placeTarget)) {
       return;
     }
 
-    var hand = placementHand;
+    var hand = placementItem.hand();
     var interaction = BotInteractionSupport.withSneaking(
       clientEntity,
       true,
       () -> connection.minecraft().gameMode.useItemOn(
         clientEntity,
         hand,
-        new BlockHitResult(
-          placeTarget,
-          blockPlaceAgainstData.blockFace().toDirection(),
-          blockPlaceAgainstData.againstPos().toBlockPos(),
-          false
-        )
+        candidate.hitResult()
       )
     );
     if (interaction instanceof InteractionResult.Success success) {
@@ -166,14 +208,22 @@ public final class BlockPlaceAction implements WorldAction {
       }
       finishedPlacing = true;
     } else {
-      interactionRejected = true;
+      interactionFailures++;
+      retryTicks = INTERACTION_RETRY_TICKS;
+      log.debug(
+        "Minecraft refused block placement at {} using {}: {}",
+        blockPosition,
+        candidate.against(),
+        interaction
+      );
     }
   }
 
   @Override
   public int getAllowedTicks() {
-    // 3-seconds max to place a block
-    return 3 * 20;
+    // Allow time to brake, clear the target cell, rotate, and confirm the
+    // server result. A stalled action is still bounded by PathExecutor.
+    return 5 * 20;
   }
 
   @Override

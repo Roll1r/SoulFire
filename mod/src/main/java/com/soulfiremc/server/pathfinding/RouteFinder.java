@@ -56,6 +56,8 @@ public record RouteFinder(
   private static final long IMPROVEMENT_BUDGET_MILLIS = 50;
   private static final int MAX_NODES_AFTER_LEVEL_BOUNDARY = 2_048;
   private static final double EPSILON_STEP = 0.5;
+  private static final double SEARCH_BUDGET_MINIMUM_PROGRESS_FRACTION = 0.25;
+  private static final double SEARCH_BUDGET_MAXIMUM_PROGRESS_BLOCKS = 8;
 
   public RouteFinder(MinecraftGraph baseGraph, GoalScorer scorer) {
     this(baseGraph, scorer, ForkJoinPool.commonPool());
@@ -347,6 +349,24 @@ public record RouteFinder(
              JumpAndPlaceBelowAction _ -> true;
         default -> false;
       };
+    }
+
+    @Override
+    public boolean isValidSearchBudgetFrontier(
+      NodeState state,
+      @Nullable GraphInstructions incomingTransition,
+      double startHeuristic,
+      double stateHeuristic
+    ) {
+      if (!isValidFrontier(state, incomingTransition)) {
+        return false;
+      }
+      var minimumProgress = Math.min(
+        startHeuristic * SEARCH_BUDGET_MINIMUM_PROGRESS_FRACTION,
+        Costs.HEURISTIC_COST_PER_BLOCK
+          * SEARCH_BUDGET_MAXIMUM_PROGRESS_BLOCKS
+      );
+      return startHeuristic - stateHeuristic >= minimumProgress;
     }
   }
 

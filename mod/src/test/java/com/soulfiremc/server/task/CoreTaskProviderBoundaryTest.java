@@ -17,6 +17,7 @@
  */
 package com.soulfiremc.server.task;
 
+import com.soulfiremc.server.pathfinding.execution.UnreachableGoalException;
 import io.grpc.Status;
 import org.junit.jupiter.api.Test;
 
@@ -103,6 +104,13 @@ class CoreTaskProviderBoundaryTest {
       BotTaskManager.failureCode(
         "task_failed",
         new IllegalStateException("Unexpected provider failure")
+      )
+    );
+    assertEquals(
+      "path_quality_bound_not_met",
+      BotTaskManager.failureCode(
+        "task_failed",
+        UnreachableGoalException.qualityBound(2.6, 1.5)
       )
     );
   }

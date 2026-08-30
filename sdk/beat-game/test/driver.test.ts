@@ -24,12 +24,15 @@ import {
 function effectBot(
   taskResult: Effect.Effect<unknown, unknown> = Effect.succeed({}),
   selectHotbarResult: Effect.Effect<unknown, unknown> = Effect.succeed({}),
+  eventStream: Stream.Stream<unknown, unknown> = Stream.empty,
+  entityResults: readonly unknown[] = [],
 ) {
   const calls: {
     attack?: Readonly<Record<string, unknown>>;
     collect?: readonly unknown[];
     explore?: Readonly<Record<string, unknown>>;
     flee?: readonly unknown[];
+    sleep?: Readonly<Record<string, unknown>>;
     goTo?: readonly unknown[];
     armor?: Readonly<Record<string, unknown>>;
     eat?: readonly unknown[];
@@ -82,13 +85,14 @@ function effectBot(
           revision: 7n,
         }),
       queryBlocks: () => Effect.succeed({ blocks: [] }),
-      queryEntities: () => Effect.succeed({ entities: [] }),
+      queryEntities: () => Effect.succeed({ entities: entityResults }),
     },
     inventory: {
       snapshot: () =>
         Effect.succeed({
           revision: 9n,
           selectedHotbarSlot: 2,
+          pathBuildingBlockCount: 37,
           slots: [
             {
               slot: 10,
@@ -152,8 +156,12 @@ function effectBot(
         calls.flee = args;
         return Effect.succeed(taskHandle);
       },
+      sleep: (options: Readonly<Record<string, unknown>>) => {
+        calls.sleep = options;
+        return Effect.succeed(taskHandle);
+      },
     },
-    events: () => Stream.empty,
+    events: () => eventStream,
     attackEntity: (request: Readonly<Record<string, unknown>>) => {
       calls.attack = request;
       return Effect.succeed({});
@@ -213,9 +221,89 @@ describe("production SoulFire beat-game driver", () => {
       revision: 9n,
       selectedHotbarSlot: 2,
       emptyPlayerSlots: 34,
+      pathBuildingBlockCount: 37,
       counts: { "minecraft:spruce_log": 5 },
       hotbar: { 36: "minecraft:spruce_log" },
     });
+  });
+
+  it("maps semantic creeper fuse metadata", async () => {
+    const { bot } = effectBot(
+      Effect.succeed({}),
+      Effect.succeed({}),
+      Stream.empty,
+      [{
+        reference: {
+          connectionEpoch: "connection-epoch",
+          networkId: 42,
+        },
+        entityType: "minecraft:creeper",
+        position: {
+          x: 2,
+          y: 64,
+          z: 2,
+          dimension: "minecraft:overworld",
+        },
+        velocity: { x: 0, y: 0, z: 0 },
+        alive: true,
+        aggressive: true,
+        metadata: {
+          creeper_fuse_progress: 0.6,
+          creeper_swell_direction: 1,
+          creeper_powered: false,
+          creeper_ignited: false,
+        },
+      }],
+    );
+    const driver = makeSoulFireBeatGameDriver(bot);
+
+    const entities = await Effect.runPromise(driver.queryEntities({
+      radius: 8,
+      selector: { entityTypes: ["minecraft:creeper"] },
+    }));
+
+    expect(entities).toHaveLength(1);
+    expect(entities[0]).toMatchObject({
+      entityType: "minecraft:creeper",
+      aggressive: true,
+      creeper: {
+        fuseProgress: 0.6,
+        swellDirection: 1,
+        powered: false,
+        ignited: false,
+      },
+    });
+  });
+
+  it("normalizes the End credits game event", async () => {
+    const { bot } = effectBot(
+      Effect.succeed({}),
+      Effect.succeed({}),
+      Stream.make({
+        event: {
+          case: "environment",
+          value: {
+            change: {
+              case: "gameEvent",
+              value: { event: "win_game", parameter: 1 },
+            },
+          },
+        },
+      }),
+    );
+    const driver = makeSoulFireBeatGameDriver(bot);
+
+    const events = await Effect.runPromise(
+      driver.events.pipe(Stream.take(1), Stream.runCollect),
+    );
+
+    expect(Array.from(events)).toEqual([
+      expect.objectContaining({
+        type: "game-event",
+        event: "win_game",
+        parameter: 1,
+      }),
+    ]);
   });
 
   it("passes durable task inputs through the public task API", async () => {
@@ -231,6 +319,12 @@ describe("production SoulFire beat-game driver", () => {
     }, {
       ...defaultBeatGameStrategy.path,
       additionalPlaceItemIds: ["minecraft:oak_log"],
+      protectedBlocks: [{
+        x: 4,
+        y: 65,
+        z: -2,
+        dimension: "minecraft:overworld",
+      }],
       sprint: false,
       minimumY: 63,
       maximumY: 96,
@@ -254,6 +348,12 @@ describe("production SoulFire beat-game driver", () => {
           allowPlacing: true,
           avoidFluids: false,
           additionalPlaceItemIds: ["minecraft:oak_log"],
+          protectedBlocks: [{
+            x: 4,
+            y: 65,
+            z: -2,
+            dimension: "minecraft:overworld",
+          }],
           sprint: false,
           minimumY: 63,
           maximumY: 96,
@@ -327,6 +427,36 @@ describe("production SoulFire beat-game driver", () => {
         maximumEscapes: 1,
       }),
     ]);
+  });
+
+  it("forwards a pinned bed and bounded sleep policy", async () => {
+    const { bot, calls } = effectBot();
+    const driver = makeSoulFireBeatGameDriver(bot);
+
+    await Effect.runPromise(driver.runTask({
+      type: "sleep",
+      bed: {
+        x: 8,
+        y: 64,
+        z: -3,
+        dimension: "minecraft:overworld",
+      },
+      searchRadius: 32,
+      waitUntilPossible: false,
+      retryIntervalTicks: 20,
+    }, defaultBeatGameStrategy.path));
+
+    expect(calls.sleep).toEqual(expect.objectContaining({
+      bed: {
+        x: 8,
+        y: 64,
+        z: -3,
+        dimension: "minecraft:overworld",
+      },
+      searchRadius: 32,
+      waitUntilPossible: false,
+      retryIntervalTicks: 20,
+    }));
   });
 
   it("normalizes precise player coordinates for block-position tasks", async () => {

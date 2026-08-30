@@ -38,10 +38,12 @@ export function blockObservation(
     blockId: "minecraft:stone",
     position,
     properties: {},
+    hardness: 1.5,
     diggable: true,
     replaceable: false,
     solid: true,
     interactive: false,
+    effectiveToolTags: ["minecraft:mineable/pickaxe"],
     observedAt: "2026-01-01T00:00:00.000Z",
     ...overrides,
   };
@@ -56,6 +58,7 @@ export function observation(
     readonly remainingDurability?: Readonly<Record<string, number>>;
     readonly position?: Partial<BeatGamePosition>;
     readonly rotation?: Partial<BeatGameObservation["player"]["rotation"]>;
+    readonly velocity?: Partial<BeatGameObservation["player"]["velocity"]>;
     readonly onGround?: boolean;
     readonly equipment?: Readonly<Record<string, string>>;
     readonly connectionEpoch?: string;
@@ -65,6 +68,7 @@ export function observation(
     readonly maxAir?: number;
     readonly fireTicks?: number;
     readonly emptyPlayerSlots?: number;
+    readonly pathBuildingBlockCount?: number;
   } = {},
 ): BeatGameObservation {
   const dimension = overrides.dimension ?? "minecraft:overworld";
@@ -81,7 +85,11 @@ export function observation(
         yaw: overrides.rotation?.yaw ?? 0,
         pitch: overrides.rotation?.pitch ?? 0,
       },
-      velocity: { x: 0, y: 0, z: 0 },
+      velocity: {
+        x: overrides.velocity?.x ?? 0,
+        y: overrides.velocity?.y ?? 0,
+        z: overrides.velocity?.z ?? 0,
+      },
       onGround: overrides.onGround ?? true,
       equipment: overrides.equipment ?? {},
       health: overrides.health ?? 20,
@@ -102,6 +110,11 @@ export function observation(
       ...(overrides.emptyPlayerSlots === undefined
         ? {}
         : { emptyPlayerSlots: overrides.emptyPlayerSlots }),
+      ...(overrides.pathBuildingBlockCount === undefined
+        ? {}
+        : {
+          pathBuildingBlockCount: overrides.pathBuildingBlockCount,
+        }),
       counts: overrides.counts ?? {},
       ...(overrides.remainingDurability === undefined
         ? {}
@@ -482,13 +495,6 @@ export function postDragonHooks(
         updateObservation({
           ...current.inventory.counts,
           [itemId]: requirement.targetCount,
-        });
-      }),
-    collectDragonEgg: ({ observation: current }) =>
-      Effect.sync(() => {
-        updateObservation({
-          ...current.inventory.counts,
-          "minecraft:dragon_egg": 1,
         });
       }),
     exitEnd: ({ observation: current }) =>

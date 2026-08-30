@@ -134,7 +134,9 @@ public final class ParkourMovement extends GraphAction implements Cloneable {
       ) {
         var floor = gapFeet.sub(0, fallDistance + 1, 0);
         if (
-          SFBlockHelpers.isWalkableFloorBlock(
+          SFBlockHelpers.isStableWalkableFloorBlock(
+            graph.snapshot().blockAccessor(),
+            floor.toBlockPos(),
             graph.snapshot().blockState(floor)
           )
             && SFBlockHelpers.isBlockFree(
@@ -218,7 +220,11 @@ public final class ParkourMovement extends GraphAction implements Cloneable {
 
       // We only want to jump over dangerous blocks/gaps
       // such as air gaps, magma, or other unsafe floor blocks.
-      if (SFBlockHelpers.isWalkableFloorBlock(blockState)) {
+      if (SFBlockHelpers.isStableWalkableFloorBlock(
+        graph.snapshot().blockAccessor(),
+        absoluteKey.toBlockPos(),
+        blockState
+      )) {
         return MinecraftGraph.SubscriptionSingleResult.IMPOSSIBLE;
       }
 
@@ -233,7 +239,11 @@ public final class ParkourMovement extends GraphAction implements Cloneable {
     public MinecraftGraph.SubscriptionSingleResult processBlock(MinecraftGraph graph, SFVec3i key, ParkourMovement parkourMovement,
                                                                 BlockState blockState, SFVec3i absoluteKey) {
       // Block is safe to walk on, no need to check for more
-      if (SFBlockHelpers.isWalkableFloorBlock(blockState)) {
+      if (SFBlockHelpers.isStableWalkableFloorBlock(
+        graph.snapshot().blockAccessor(),
+        absoluteKey.toBlockPos(),
+        blockState
+      )) {
         return MinecraftGraph.SubscriptionSingleResult.CONTINUE;
       }
 

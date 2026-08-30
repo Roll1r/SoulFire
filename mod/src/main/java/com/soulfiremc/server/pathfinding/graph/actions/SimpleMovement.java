@@ -564,7 +564,11 @@ public final class SimpleMovement extends GraphAction implements Cloneable {
     public MinecraftGraph.SubscriptionSingleResult processBlock(MinecraftGraph graph, SFVec3i key, SimpleMovement simpleMovement,
                                                                 BlockState blockState, SFVec3i absoluteKey) {
       // Block is safe to walk on, no need to check for more
-      if (SFBlockHelpers.isWalkableFloorBlock(blockState)) {
+      if (SFBlockHelpers.isStableWalkableFloorBlock(
+        graph.snapshot().blockAccessor(),
+        absoluteKey.toBlockPos(),
+        blockState
+      )) {
         simpleMovement.floorHasSupport = true;
         return MinecraftGraph.SubscriptionSingleResult.CONTINUE;
       }

@@ -48,6 +48,7 @@ import net.minecraft.world.item.ProjectileWeaponItem;
 import net.minecraft.world.phys.Vec3;
 import org.checkerframework.checker.nullness.qual.Nullable;
 
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
@@ -255,7 +256,7 @@ public final class RangedAttackTaskProvider
         context.bot().minecraft().player
       ).getInventory().getSelectedSlot();
       this.goal = goal;
-      this.stagingGoals = stagingGoals;
+      this.stagingGoals = new ArrayList<>(stagingGoals);
       this.constraint = constraint;
       this.result = result;
     }
@@ -629,17 +630,17 @@ public final class RangedAttackTaskProvider
         completed.completion().join();
         completed.onStopped(ControlStopReason.COMPLETED, null);
         consecutivePathFailures = 0;
-        if (completedPurpose == PathPurpose.DRAGON_STAGING) {
-          stagingGoalIndex++;
-        }
       } catch (CompletionException exception) {
         var cause = Objects.requireNonNullElse(
           exception.getCause(),
           exception
         );
         completed.onStopped(ControlStopReason.FAILED, cause);
-        if (completedPurpose == PathPurpose.DRAGON_STAGING) {
-          stagingGoalIndex = stagingGoals.size();
+        if (
+          completedPurpose == PathPurpose.DRAGON_STAGING
+            && refineCurrentStagingGoal()
+        ) {
+          consecutivePathFailures = 0;
           return;
         }
         consecutivePathFailures++;
@@ -651,6 +652,24 @@ public final class RangedAttackTaskProvider
           );
         }
       }
+    }
+
+    private boolean refineCurrentStagingGoal() {
+      var failedGoal = currentStagingGoal();
+      if (failedGoal == null) {
+        return false;
+      }
+      var player = Objects.requireNonNull(context.bot().minecraft().player);
+      var refined = CombatTaskSupport.refineDragonWaitingGoal(
+        failedGoal,
+        player.position()
+      );
+      if (refined.isEmpty()) {
+        return false;
+      }
+      stagingGoals.add(stagingGoalIndex, refined.orElseThrow());
+      report("Refining the ranged dragon staging route", 0);
+      return true;
     }
 
     private void report(String message, double distance) {

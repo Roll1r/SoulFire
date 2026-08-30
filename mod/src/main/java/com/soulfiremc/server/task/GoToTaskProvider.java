@@ -28,9 +28,11 @@ import com.soulfiremc.server.bot.ControlResource;
 import com.soulfiremc.server.pathfinding.PathfindingSupport;
 import com.soulfiremc.server.pathfinding.execution.PathExecutor;
 import com.soulfiremc.server.pathfinding.goals.GoalScorer;
+import com.soulfiremc.server.pathfinding.graph.constraint.PathConstraint;
 
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.function.UnaryOperator;
 
 /// Core provider for durable pathfinding tasks.
 public final class GoToTaskProvider implements BotTaskProvider<GoToTask> {
@@ -67,7 +69,18 @@ public final class GoToTaskProvider implements BotTaskProvider<GoToTask> {
     GoalScorer goal,
     PathfindOptions options
   ) {
-    var constraint = PathfindingSupport.buildConstraint(context.bot(), options);
+    return start(context, goal, options, UnaryOperator.identity());
+  }
+
+  static BotTaskExecution start(
+    BotTaskContext context,
+    GoalScorer goal,
+    PathfindOptions options,
+    UnaryOperator<PathConstraint> constraintDecorator
+  ) {
+    var constraint = constraintDecorator.apply(
+      PathfindingSupport.buildConstraint(context.bot(), options)
+    );
     var executor = PathExecutor.createPathfinding(
       context.bot(),
       goal,

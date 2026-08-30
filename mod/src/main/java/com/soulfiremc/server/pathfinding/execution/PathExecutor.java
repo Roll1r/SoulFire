@@ -56,7 +56,6 @@ public final class PathExecutor implements ControlTask {
   private static final int MAX_ERROR_DISTANCE = 20;
   private static final int MAX_CONSECUTIVE_STATIONARY_PARTIAL_ROUTES = 3;
   private static final int MAX_CONSECUTIVE_STALLED_ACTIONS = 5;
-  private static final int PRECONDITION_LOOKAHEAD_ACTIONS = 4;
   private static final int PARTIAL_ROUTE_PREFETCH_ACTIONS = 8;
   private static final int WORLD_DATA_WAIT_TIMEOUT_TICKS = 20 * 30;
   private final Queue<WorldAction> worldActionQueue = new LinkedBlockingQueue<>();
@@ -360,6 +359,11 @@ public final class PathExecutor implements ControlTask {
       return;
     }
 
+    if (worldAction.isCompleted(connection)) {
+      completeCurrentAction(worldAction);
+      return;
+    }
+
     if (ticks > 0 && ticks >= worldAction.getAllowedTicks()) {
       var playerPosition = SFVec3i.fromInt(
         connection.minecraft().player.blockPosition()
@@ -390,8 +394,24 @@ public final class PathExecutor implements ControlTask {
       return;
     }
 
-    if (!hasValidLookahead()) {
-      log.info("A path precondition changed; recalculating before the affected action");
+    if (!worldAction.isValid(connection)) {
+      var playerPosition = SFVec3i.fromInt(
+        connection.minecraft().player.blockPosition()
+      );
+      var invalidAction = "invalid precondition for " + worldAction;
+      if (actionStallGuard.shouldAbort(invalidAction, playerPosition)) {
+        pathCompletionFuture.completeExceptionally(
+          UnreachableGoalException.stalledAction(
+            MAX_CONSECUTIVE_STALLED_ACTIONS,
+            invalidAction
+          )
+        );
+        return;
+      }
+      log.info(
+        "The current path action's precondition changed; recalculating before {}",
+        worldAction
+      );
       recalculatePath();
       return;
     }
@@ -427,60 +447,35 @@ public final class PathExecutor implements ControlTask {
       return;
     }
 
-    if (worldAction.isCompleted(connection)) {
-      if (
-        worldAction instanceof BlockBreakAction blockBreakAction
-          && blockBreakAction.breakAttempted()
-      ) {
-        completedBlockBreaks.add(blockBreakAction.blockPosition());
-      }
-      worldActionQueue.remove();
-      log.info("Reached goal {}/{} in {} ticks!", movementNumber, totalMovements, ticks);
-      movementNumber++;
-      ticks = 0;
-
-      // Directly use tick to execute next goal
-      worldAction = worldActionQueue.peek();
-
-      // If there are no more goals, stop
-      if (worldAction == null) {
-        log.info("Finished all goals!");
-        connection.controlState().resetAll();
-        pathCompletionFuture.complete(null);
-        return;
-      }
-
-      if (worldAction instanceof RecalculatePathAction) {
-        continuePartialRoute();
-        return;
-      }
-
-      log.debug("Next goal: {}", worldAction);
-    }
-
     ticks++;
     worldAction.tick(connection);
   }
 
-  private boolean hasValidLookahead() {
-    var checked = 0;
-    for (var action : worldActionQueue) {
-      if (checked++ >= PRECONDITION_LOOKAHEAD_ACTIONS) {
-        break;
-      }
-      if (!action.isValid(connection)) {
-        return false;
-      }
-      if (
-        action instanceof BlockBreakAction
-          || action instanceof BlockPlaceAction
-          || action instanceof JumpAndPlaceBelowAction
-          || action instanceof InteractBlockAction
-      ) {
-        break;
-      }
+  private void completeCurrentAction(WorldAction worldAction) {
+    if (
+      worldAction instanceof BlockBreakAction blockBreakAction
+        && blockBreakAction.breakAttempted()
+    ) {
+      completedBlockBreaks.add(blockBreakAction.blockPosition());
     }
-    return true;
+    worldActionQueue.remove();
+    log.info(
+      "Reached goal {}/{} in {} ticks!",
+      movementNumber,
+      totalMovements,
+      ticks
+    );
+    movementNumber++;
+    ticks = 0;
+
+    var nextAction = worldActionQueue.peek();
+    if (nextAction == null) {
+      log.info("Finished all goals!");
+      connection.controlState().resetAll();
+      pathCompletionFuture.complete(null);
+      return;
+    }
+    log.debug("Next goal: {}", nextAction);
   }
 
   @Override

@@ -178,7 +178,11 @@ public final class WaterLandingMovement extends GraphAction implements Cloneable
       BlockState blockState,
       SFVec3i absoluteKey
     ) {
-      return SFBlockHelpers.isWalkableFloorBlock(blockState)
+      return SFBlockHelpers.isStableWalkableFloorBlock(
+        graph.snapshot().blockAccessor(),
+        absoluteKey.toBlockPos(),
+        blockState
+      )
         ? MinecraftGraph.SubscriptionSingleResult.CONTINUE
         : MinecraftGraph.SubscriptionSingleResult.IMPOSSIBLE;
     }

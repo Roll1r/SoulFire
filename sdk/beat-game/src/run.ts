@@ -16,7 +16,6 @@ import {
   buildNetherPortal,
   buildStructure,
   castNetherPortal,
-  collectDragonEgg,
   collectBlocks,
   collectNearbyDrops,
   craftItem,
@@ -32,6 +31,7 @@ import {
   fightEnderDragon,
   respawnAndRecover,
   smelt,
+  staircaseStartPosition,
   throwEyeOfEnder,
   transferContainerItems,
 } from "./behaviors.js";
@@ -42,6 +42,7 @@ import {
 } from "./coordinator.js";
 import {
   makeSoulFireBeatGameDriver,
+  type BeatGameBlockFace,
   type BeatGameDriver,
   type BeatGameEntitySelector,
   type BeatGameSurfaceColumn,
@@ -72,6 +73,7 @@ import {
 import {
   BEAT_GAME_CHECKPOINT_SCHEMA_VERSION,
   BeatGameDurableSkillKind,
+  BeatGamePathSearchMode,
   BeatGamePhase,
   BeatGameRunStatus,
   BeatGameTeamRole,
@@ -123,6 +125,7 @@ import {
   requirementCount,
 } from "./requirements.js";
 import {
+  abandonActiveDurableSkill,
   advanceDurableSkill,
   completeDurableSkill,
   latestResumablePortalWorkspace,
@@ -167,15 +170,48 @@ const LOCAL_NAVIGATION_RECOVERY_MINIMUM_DISTANCE = 3;
 const LOCAL_NAVIGATION_RECOVERY_MAX_SEARCH_TIME_MS = 5_000;
 const LOCAL_NAVIGATION_RECOVERY_TIMEOUT_MS = 15_000;
 const DRY_SHAFT_RECOVERY_MAXIMUM_RISE = 16;
+const SURFACE_RECOVERY_MAXIMUM_STAIR_SEGMENTS = 384;
+const SURFACE_RECOVERY_DIRECT_PATH_SEARCH_TIMEOUT_MS = 2_000;
+const SURFACE_RECOVERY_DIRECT_PATH_EXECUTION_TIMEOUT_MS = 60_000;
+const SURFACE_RECOVERY_DIRECT_PATH_CANDIDATES = 2;
 const DRY_SHAFT_RECOVERY_STEP_RADIUS = 0.35;
 const DRY_SHAFT_RECOVERY_STEP_TIMEOUT_MS = 10_000;
+const DRY_SHAFT_RECOVERY_SUPPORT_ITEM_IDS = [
+  "minecraft:cobblestone",
+  "minecraft:cobbled_deepslate",
+  "minecraft:dirt",
+  "minecraft:coarse_dirt",
+  "minecraft:netherrack",
+  ...PLANK_ITEM_IDS,
+  ...LOG_ITEM_IDS,
+] as const;
+const NETHER_EXPLORATION_BUILDING_BLOCK_IDS = [
+  "minecraft:netherrack",
+] as const;
+const NETHER_EXPLORATION_MINIMUM_BUILDING_BLOCKS = 16;
+const NETHER_EXPLORATION_TARGET_BUILDING_BLOCKS = 64;
+const NETHER_EXPLORATION_PICKAXE_DURABILITY_RESERVE = 64;
+const WOODEN_PICKAXE_MAXIMUM_DURABILITY = 59;
 const EXPLORATION_MAXIMUM_LEG_DISTANCE = 32;
 const EXPLORATION_MAXIMUM_SURFACE_ELEVATION_CHANGE = 12;
+const REMEMBERED_PORTAL_MAXIMUM_LEG_DISTANCE = 16;
+const REMEMBERED_PORTAL_LEG_RADIUS = 8;
+const REMEMBERED_PORTAL_FINAL_APPROACH_DISTANCE = 20;
+const REMEMBERED_PORTAL_MAXIMUM_APPROACH_LEGS = 32;
+const REMEMBERED_PORTAL_MINIMUM_LEG_PROGRESS = 4;
+const REMEMBERED_PORTAL_PREFERRED_QUALITY_BOUND = 1.5;
+const REMEMBERED_PORTAL_FALLBACK_QUALITY_BOUND = 3;
+const PORTAL_CAREFUL_QUALITY_BOUND = 1.2;
+const REMEMBERED_PORTAL_MAXIMUM_EXPANDED_STATES = 100_000;
+const REMEMBERED_PORTAL_ROUTE_COOLDOWN_MS = 10_000;
+const REMEMBERED_PORTAL_REPLAN_DELAY_MS = 1_000;
 const MAX_SAFE_DEATH_RECOVERY_FAILURES = 3;
+const MAXIMUM_DEATH_RECOVERY_SAFETY_INTERRUPTS = 6;
 const DEATH_RECOVERY_PREPARATION_PROGRESS_DISTANCE = 8;
 const DISTANT_DEATH_RECOVERY_BOOTSTRAP_DISTANCE = 128;
 const ACTIVE_CORPSE_RECOVERY_DISTANCE = 512;
 const ACTIVE_CORPSE_RECOVERY_MAX_AGE_MS = 4 * 60_000;
+const DEATH_RECOVERY_MAXIMUM_QUALITY_BOUND = 2;
 const IMMEDIATE_CORPSE_RECOVERY_DISTANCE = 12;
 const STALE_CORPSE_SCOUT_MAXIMUM_DISTANCE = 96;
 const STALE_CORPSE_SCOUT_MAXIMUM_VERTICAL_DISTANCE = 12;
@@ -324,6 +360,50 @@ const INVENTORY_DISCARD_PRIORITY = [
   "minecraft:granite",
   "minecraft:tuff",
 ] as const;
+const REDUNDANT_EQUIPMENT_FAMILIES = [
+  [
+    "minecraft:wooden_pickaxe",
+    "minecraft:stone_pickaxe",
+    "minecraft:iron_pickaxe",
+    "minecraft:diamond_pickaxe",
+    "minecraft:netherite_pickaxe",
+  ],
+  [
+    "minecraft:wooden_sword",
+    "minecraft:stone_sword",
+    "minecraft:iron_sword",
+    "minecraft:diamond_sword",
+    "minecraft:netherite_sword",
+  ],
+  [
+    "minecraft:wooden_axe",
+    "minecraft:stone_axe",
+    "minecraft:iron_axe",
+    "minecraft:diamond_axe",
+    "minecraft:netherite_axe",
+  ],
+  [
+    "minecraft:wooden_shovel",
+    "minecraft:stone_shovel",
+    "minecraft:iron_shovel",
+    "minecraft:diamond_shovel",
+    "minecraft:netherite_shovel",
+  ],
+  [
+    "minecraft:wooden_hoe",
+    "minecraft:stone_hoe",
+    "minecraft:iron_hoe",
+    "minecraft:diamond_hoe",
+    "minecraft:netherite_hoe",
+  ],
+] as const;
+const SINGLETON_EQUIPMENT_ITEM_IDS = [
+  "minecraft:shield",
+  "minecraft:flint_and_steel",
+  "minecraft:shears",
+  "minecraft:bow",
+  "minecraft:crossbow",
+] as const;
 const INVENTORY_BUILDING_BLOCK_RESERVE = 64;
 const INVENTORY_EMPTY_SLOT_BUFFER = 2;
 const INVENTORY_EMPTY_SLOT_STABILITY_OBSERVATIONS = 12;
@@ -372,6 +452,7 @@ const HUNT_APPROACH_BUFFER = 4;
 const HUNT_APPROACH_GOAL_RADIUS = 2;
 const HUNT_MAXIMUM_APPROACH_DISTANCE = 48;
 const LAND_HUNT_MAXIMUM_VERTICAL_DISTANCE = 12;
+const FOOD_LAND_HUNT_MAXIMUM_VERTICAL_RISE = 40;
 const DIRECTED_HUNT_MAXIMUM_DETOUR = 32;
 const DIRECTED_HUNT_DESTINATION_REACHED_RADIUS = 3;
 const URGENT_AQUATIC_HUNT_MAXIMUM_HORIZONTAL_DISTANCE = 64;
@@ -381,7 +462,6 @@ const AQUATIC_HUNT_CHASE_TIMEOUT_MS = 30_000;
 const AQUATIC_HUNT_MINIMUM_AIR_TICKS = 120;
 const HUNT_DROP_RECOVERY_RADIUS = 48;
 const HUNT_DROP_RECOVERY_MAXIMUM_VERTICAL_DISTANCE = 4;
-const AQUATIC_HUNT_EMERGENCY_AIR_TICKS = 60;
 const AQUATIC_HUNT_MAXIMUM_CHASE_ATTEMPTS = 3;
 const WOUNDED_AQUATIC_FALLBACK_FOOD_LEVEL = 18;
 const MAXIMUM_DAMAGE_FREE_FALL_DISTANCE = 3;
@@ -406,6 +486,8 @@ const HUNT_DROP_ITEM_IDS_BY_ENTITY_TYPE: Readonly<
   "minecraft:zombie_villager": ["minecraft:rotten_flesh"],
 };
 const LIQUID_INTERACTION_APPROACH_RADIUS = 3;
+const LIQUID_SOURCE_MAXIMUM_PATH_ATTEMPTS = 8;
+const LIQUID_SOURCE_UNREACHABLE_TTL_MS = 10 * 60_000;
 // Keep a margin below the protocol interaction limit. A candidate at the
 // exact limit can become unreachable after pathfinding settles within radius.
 const FISHING_SHORE_SEARCH_RADIUS = Math.ceil(LIQUID_INTERACTION_REACH);
@@ -417,6 +499,10 @@ const FISHING_MAXIMUM_DOWNWARD_CAST_PITCH = 30;
 const MAXIMUM_LIQUID_SIGHT_CLEARING_BLOCKS = 4;
 const LAVA_RETREAT_DISTANCE = 8;
 const LAVA_EMERGENCY_SPRINT_MS = 1_500;
+const LAVA_ESCAPE_LEDGE_SEARCH_RADIUS = 12;
+const LAVA_ESCAPE_MAXIMUM_SWIMMABLE_RISE = 8;
+const LAVA_ESCAPE_MAXIMUM_LEDGE_DROP = 1;
+const LAVA_ESCAPE_MAXIMUM_APPROACH_ATTEMPTS = 50;
 const IRON_SEARCH_Y = 16;
 const IRON_SEARCH_MAX_Y = 24;
 const IRON_SEARCH_DESCENT_STEP = 12;
@@ -437,10 +523,19 @@ const PORTAL_CASTING_ADDITIONAL_LAVA_SOURCE_COUNT =
 const EXPLORATION_REANCHOR_DISTANCE = 16;
 const EXPLORATION_FRONTIER_LIMIT = 64;
 const EXPLORATION_DEATH_DISPLACEMENT_WINDOW_MS = 10 * 60 * 1_000;
+const EXPLORATION_MAXIMUM_SEARCH_TIME_MS = 5_000;
+const EXPLORATION_MAXIMUM_EXPANDED_STATES = 12_000;
+const EXPLORATION_MINIMUM_PROGRESS_DISTANCE = 4;
+const EXPLORATION_TARGET_REACHED_RADIUS = 6;
+const EXPLORATION_RETRY_DIRECTIONS = 4;
+const EXPLORATION_RETRY_DISTANCE_SCALES = [1, 2 / 3, 1 / 3] as const;
 const EYE_TRIANGULATION_BASELINE = 32;
 const AIR_ESCAPE_SURFACE_SEARCH_RADIUS = 16;
 const AIR_ESCAPE_EXTENDED_SURFACE_SEARCH_RADIUS = 96;
 const AIR_ESCAPE_EXTENDED_SURFACE_SAMPLE_STEP = 4;
+const AIR_ESCAPE_LOCAL_LEDGE_SEARCH_RADIUS = 6;
+const AIR_ESCAPE_LOCAL_LEDGE_QUERY_RESULTS = 512;
+const AIR_ESCAPE_LOCAL_LEDGE_CANDIDATES = 64;
 const AIR_ESCAPE_SURFACE_APPROACH_ATTEMPTS = 180;
 const AIR_ESCAPE_STAGNANT_OBSERVATIONS = 30;
 const AIR_ESCAPE_MAXIMUM_RECOVERY_ATTEMPTS = 3;
@@ -486,6 +581,30 @@ const MINING_PICKAXE_ITEM_IDS = [
   "minecraft:wooden_pickaxe",
   "minecraft:golden_pickaxe",
 ] as const;
+const MINING_AXE_ITEM_IDS = [
+  "minecraft:netherite_axe",
+  "minecraft:diamond_axe",
+  "minecraft:iron_axe",
+  "minecraft:stone_axe",
+  "minecraft:wooden_axe",
+  "minecraft:golden_axe",
+] as const;
+const MINING_SHOVEL_ITEM_IDS = [
+  "minecraft:netherite_shovel",
+  "minecraft:diamond_shovel",
+  "minecraft:iron_shovel",
+  "minecraft:stone_shovel",
+  "minecraft:wooden_shovel",
+  "minecraft:golden_shovel",
+] as const;
+const MINING_HOE_ITEM_IDS = [
+  "minecraft:netherite_hoe",
+  "minecraft:diamond_hoe",
+  "minecraft:iron_hoe",
+  "minecraft:stone_hoe",
+  "minecraft:wooden_hoe",
+  "minecraft:golden_hoe",
+] as const;
 const MELEE_WEAPON_ITEM_IDS = [
   "minecraft:netherite_sword",
   "minecraft:diamond_sword",
@@ -499,6 +618,11 @@ const STONE_OR_BETTER_MINING_PICKAXE_ITEM_IDS = [
   "minecraft:iron_pickaxe",
   "minecraft:stone_pickaxe",
 ] as const;
+const STONE_TOOL_MATERIAL_ITEM_IDS = [
+  "minecraft:blackstone",
+  "minecraft:cobbled_deepslate",
+  "minecraft:cobblestone",
+] as const;
 const PLAYER_FLUID_BLOCK_IDS = [
   "minecraft:water",
   "minecraft:bubble_column",
@@ -507,6 +631,11 @@ const PLAYER_FLUID_BLOCK_IDS = [
   "minecraft:seagrass",
   "minecraft:tall_seagrass",
   "minecraft:lava",
+] as const;
+const NETHER_FORTRESS_BLOCK_IDS = [
+  "minecraft:nether_bricks",
+  "minecraft:nether_brick_fence",
+  "minecraft:nether_brick_stairs",
 ] as const;
 const DURABLE_MINING_PICKAXE_ITEM_IDS = [
   "minecraft:netherite_pickaxe",
@@ -561,16 +690,32 @@ const SAFE_AQUATIC_FALLBACK_EXPLORATION_LEGS = 12;
 
 const DANGEROUS_NEUTRAL_ENTITY_TYPES = [
   "minecraft:bee",
+  "minecraft:cave_spider",
   "minecraft:dolphin",
   "minecraft:enderman",
   "minecraft:goat",
   "minecraft:iron_golem",
   "minecraft:llama",
   "minecraft:panda",
+  "minecraft:piglin",
   "minecraft:polar_bear",
+  "minecraft:spider",
   "minecraft:trader_llama",
   "minecraft:wolf",
+  "minecraft:zombified_piglin",
 ] as const;
+const CONDITIONALLY_HOSTILE_ENTITY_TYPES = new Set([
+  "minecraft:cave_spider",
+  "minecraft:enderman",
+  "minecraft:piglin",
+  "minecraft:spider",
+  "minecraft:zombified_piglin",
+]);
+const GROUP_AGGRO_ENTITY_TYPES = new Set([
+  "minecraft:piglin",
+  "minecraft:piglin_brute",
+  "minecraft:zombified_piglin",
+]);
 const PROACTIVE_MELEE_HOSTILE_ENTITY_TYPES = new Set([
   "minecraft:blaze",
   "minecraft:bogged",
@@ -603,9 +748,11 @@ const PROACTIVE_MELEE_HOSTILE_ENTITY_TYPES = new Set([
 const SHIELD_BLOCKING_HOSTILE_ENTITY_TYPES = new Set([
   "minecraft:bogged",
   "minecraft:drowned",
+  "minecraft:piglin",
   "minecraft:pillager",
   "minecraft:skeleton",
   "minecraft:stray",
+  "minecraft:zombified_piglin",
 ]);
 const PROACTIVE_RANGED_HOSTILE_ENTITY_TYPES = new Set([
   "minecraft:bogged",
@@ -620,15 +767,19 @@ const COMMITTABLE_CLOSE_MELEE_ENTITY_TYPES = new Set([
   "minecraft:endermite",
   "minecraft:husk",
   "minecraft:magma_cube",
+  "minecraft:piglin",
   "minecraft:silverfish",
   "minecraft:slime",
   "minecraft:spider",
+  "minecraft:zombified_piglin",
   "minecraft:zombie",
   "minecraft:zombie_villager",
 ]);
 const FAST_MELEE_PURSUER_ENTITY_TYPES = new Set([
   "minecraft:cave_spider",
+  "minecraft:piglin",
   "minecraft:spider",
+  "minecraft:zombified_piglin",
 ]);
 const ESCAPE_ONLY_DEFENSIVE_ENTITY_TYPES = new Set([
   "minecraft:creeper",
@@ -652,6 +803,7 @@ const BAREHANDED_RANGED_DEFENSE_MAX_DISTANCE = 8;
 const EMERGENCY_KNOCKBACK_RANGE = 3.5;
 const EMERGENCY_ESCAPE_SPRINT_MS = 1_250;
 const RANGED_ESCAPE_SPRINT_MS = 2_500;
+const RANGED_ESCAPE_MINIMUM_AWAY_ALIGNMENT = 0;
 const FAST_PURSUER_ADDITIONAL_DIRECT_ESCAPE_ATTEMPTS = 2;
 const EMERGENCY_ESCAPE_FLUID_PROJECTION_DISTANCE = 2;
 const EMERGENCY_ESCAPE_SURFACE_PROJECTION_DISTANCE = 10;
@@ -661,6 +813,13 @@ const CREEPER_ESCAPE_SPRINT_SEGMENT_MS = 350;
 const CREEPER_ESCAPE_MINIMUM_SEGMENT_DISTANCE = 0.5;
 const CREEPER_ESCAPE_MINIMUM_AWAY_ALIGNMENT = 0.25;
 const CREEPER_ESCAPE_SURFACE_PROJECTION_DISTANCE = 18;
+const CREEPER_FUSE_DURATION_MS = 1_500;
+const CREEPER_ESCAPE_REACTION_MARGIN_MS = 300;
+const CREEPER_SPRINT_BLOCKS_PER_SECOND = 5.6;
+const CREEPER_BLAST_SAFE_DISTANCE = 6;
+const CHARGED_CREEPER_BLAST_SAFE_DISTANCE = 12;
+const CREEPER_SHIELD_POLL_MS = 50;
+const CREEPER_SHIELD_MAXIMUM_POLLS = 40;
 const EMERGENCY_ESCAPE_LAVA_CHECK_RADIUS = 4;
 const NIGHT_SHELTER_START_TICK = 13_000n;
 const NIGHT_SHELTER_END_TICK = 1_000n;
@@ -670,7 +829,32 @@ const NIGHT_SHELTER_DEEP_SURFACE_COVER = 32;
 const NIGHT_SHELTER_POLL_MS = 1_000;
 const NIGHT_SHELTER_DESCENT_ATTEMPTS = 30;
 const NIGHT_SHELTER_DAYLIGHT_CONFIRMATIONS = 3;
+const NIGHT_SHELTER_RELOCATION_SCAN_RADIUS = 32;
+const NIGHT_SHELTER_RELOCATION_MINIMUM_DISTANCE = 4;
 const NIGHT_SHELTER_ACTION = "survive:night-shelter";
+const BED_COLORS = [
+  "white",
+  "orange",
+  "magenta",
+  "light_blue",
+  "yellow",
+  "lime",
+  "pink",
+  "gray",
+  "light_gray",
+  "cyan",
+  "purple",
+  "blue",
+  "brown",
+  "green",
+  "red",
+  "black",
+] as const;
+const BED_ITEM_IDS = BED_COLORS.map((color) => `minecraft:${color}_bed`);
+const NIGHT_BED_SEARCH_RADIUS = 32;
+const NIGHT_BED_PLACEMENT_SEARCH_RADIUS = 5;
+const NIGHT_BED_PLACEMENT_CONFIRMATION_ATTEMPTS = 20;
+const NIGHT_BED_MORNING_TIMEOUT_MS = 20_000;
 const NIGHT_SHELTER_BLOCK_ITEM_IDS = [
   "minecraft:dirt",
   "minecraft:coarse_dirt",
@@ -683,6 +867,7 @@ const DEATH_OBSERVATION_DEDUPLICATION_WINDOW_MS = 5_000;
 const BAREHANDED_DEFENSE_MINIMUM_HEALTH = 18;
 const MELEE_DISENGAGE_HEALTH = 16;
 const LETHAL_MELEE_DISENGAGE_HEALTH = 7;
+const SHIELDED_RANGED_FIGHT_MINIMUM_HEALTH = MELEE_DISENGAGE_HEALTH;
 const UNSHIELDED_RANGED_FIGHT_MINIMUM_HEALTH = 14;
 const CAUGHT_MELEE_COMMIT_MINIMUM_HEALTH = MELEE_DISENGAGE_HEALTH;
 const THREAT_ESCAPE_SAFE_DISTANCE = 24;
@@ -699,12 +884,27 @@ const MAXIMUM_RECOVERY_POLL_MS = 500;
 const MINIMUM_RECOVERY_POLL_MS = 100;
 const MINIMUM_SAFE_AIR_TICKS = 260;
 const AIR_ESCAPE_CRITICAL_AIR_TICKS = 100;
+const AIR_ESCAPE_DIG_AIR_RESERVE_TICKS = 60;
+const AIR_ESCAPE_DIG_SETTLE_ATTEMPTS = 20;
+const AIR_ESCAPE_DIG_TIMEOUT_BUFFER_TICKS = 20;
 const AIR_ESCAPE_ASCENT_STAGNATION_OBSERVATIONS = 10;
 const AIR_ESCAPE_ASCENT_PROGRESS_EPSILON = 0.05;
 const AIR_ESCAPE_OPEN_COLUMN_SEARCH_RADIUS = 4;
 const AIR_ESCAPE_BREATHING_POCKET_SEARCH_RADIUS = 8;
 const AIR_ESCAPE_BREATHING_POCKET_CANDIDATES = 16;
 const AIR_ESCAPE_BREATHING_POCKET_PATH_TIMEOUT_MS = 4_000;
+const AIR_ESCAPE_BREATHING_POCKET_PATH_RESERVE_TICKS =
+  AIR_ESCAPE_CRITICAL_AIR_TICKS
+  + Math.ceil(AIR_ESCAPE_BREATHING_POCKET_PATH_TIMEOUT_MS / 50);
+const FALL_CLUTCH_TRIGGER_VELOCITY = -0.7;
+const FALL_CLUTCH_SAFE_VELOCITY = -0.2;
+const FALL_CLUTCH_RAYCAST_DISTANCE = 96;
+const FALL_CLUTCH_PLACEMENT_REACH = Math.min(
+  LIQUID_INTERACTION_REACH,
+  4.5,
+);
+const FALL_CLUTCH_POLL_MS = 50;
+const FALL_CLUTCH_MAXIMUM_ATTEMPTS = 200;
 
 export interface BeatGameRun {
   readonly id: string;
@@ -765,6 +965,13 @@ interface PendingDeath {
   readonly message?: string;
 }
 
+interface CrossDimensionDeathRecoveryResult {
+  readonly status: "entered" | "pending";
+  readonly observation: BeatGameObservation;
+  readonly portalTarget?: BeatGamePosition;
+  readonly reason?: string;
+}
+
 interface ActionResult {
   readonly checkpoint?: (
     checkpoint: BeatGameCheckpoint,
@@ -772,9 +979,12 @@ interface ActionResult {
   readonly phase?: BeatGamePhase;
   readonly replanReason?: string;
   readonly replanDelayMs?: number;
+  readonly continueReason?: string;
+  readonly continueDelayMs?: number;
   readonly defenseTarget?: BeatGameEntityObservation;
   readonly escapeTarget?: BeatGameEntityObservation;
   readonly airEscapePosition?: BeatGamePosition;
+  readonly fallClutchPosition?: BeatGamePosition;
   readonly environmentalEscapePosition?: BeatGamePosition;
   readonly travelMealRequested?: boolean;
   readonly completedPendingDeath?: string;
@@ -1134,21 +1344,31 @@ function runLoop(
         observeWithRecovery(state),
       );
       let checkpoint = yield* Ref.get(state.checkpoint);
+      const previousPhase = checkpoint.planner.phase;
       const previousRequirements = new Map(
         checkpoint.planner.requirements.map((requirement) => [
           requirement.key,
           requirement,
         ]),
       );
-      checkpoint = yield* persist(state, (current) => ({
-        ...current,
-        connectionEpoch: observation.player.connectionEpoch,
-        planner: plannerWithObservation(
-          current.planner,
-          observation,
-          state.strategy,
-        ),
-      }));
+      checkpoint = yield* persist(state, (current) => {
+        const recovered = shouldRepairCatastrophicInventoryLoss(
+            current,
+            observation,
+          )
+          ? resetAfterCatastrophicInventoryLoss(current, observation)
+          : current;
+        return {
+          ...recovered,
+          connectionEpoch: observation.player.connectionEpoch,
+          planner: plannerWithObservation(
+            recovered.planner,
+            observation,
+            state.strategy,
+            recovered,
+          ),
+        };
+      });
       yield* emit(state, {
         type: "observation-recorded",
         observedAt: observation.observedAt,
@@ -1156,6 +1376,28 @@ function runLoop(
         playerRevision: observation.player.revision.toString(),
         inventoryRevision: observation.inventory.revision.toString(),
       });
+      if (checkpoint.planner.phase !== previousPhase) {
+        yield* state.coordinator.updateMember(
+          checkpoint.teamId,
+          checkpoint.botId,
+          checkpoint.planner.phase,
+          BeatGameRunStatus.RUNNING,
+        );
+        yield* emit(state, {
+          type: "phase-changed",
+          previous: previousPhase,
+          current: checkpoint.planner.phase,
+        });
+        yield* emit(state, {
+          type: "objective-changed",
+          objective: checkpoint.planner.objective,
+        });
+        yield* emit(state, {
+          type: "diagnostic",
+          message:
+            "Restarted Overworld preparation after catastrophic inventory loss",
+        });
+      }
       checkpoint = yield* mergeSharedDiscoveries(state, checkpoint);
       for (const requirement of checkpoint.planner.requirements) {
         const previous = previousRequirements.get(requirement.key);
@@ -1348,6 +1590,9 @@ function shouldTakeNightShelter(
     if (yield* hasVisibleValuableCorpseDrops(state, observation)) {
       return false;
     }
+    if (yield* hasSolidNightTravelCover(state.driver, observation)) {
+      return false;
+    }
     if (yield* isSafelyBelowOverworldSurface(state.driver, observation)) {
       return false;
     }
@@ -1362,6 +1607,25 @@ function shouldTakeNightShelter(
     }
     return true;
   });
+}
+
+function hasSolidNightTravelCover(
+  driver: BeatGameDriver,
+  observation: BeatGameObservation,
+): Effect.Effect<boolean, BeatGameDriverError> {
+  const player = observation.player.position;
+  return queryExactBlock(driver, {
+    x: Math.floor(player.x),
+    y: Math.floor(player.y) + 2,
+    z: Math.floor(player.z),
+    dimension: player.dimension,
+  }).pipe(
+    Effect.map((overhead) =>
+      overhead !== undefined
+      && !overhead.replaceable
+      && !isTreeCanopySurface(overhead.blockId)
+    ),
+  );
 }
 
 function isSafelyBelowOverworldSurface(
@@ -1398,6 +1662,324 @@ function isTreeCanopySurface(blockId: string | undefined): boolean {
     || blockId?.endsWith("_stem") === true;
 }
 
+interface NightBedPlacementSite {
+  readonly stand: BeatGameBlockPosition;
+  readonly foot: BeatGameBlockPosition;
+  readonly support: BeatGameBlockPosition;
+}
+
+function trySleepThroughNight(
+  state: RunState,
+  observation: BeatGameObservation,
+): Effect.Effect<boolean, BeatGameError | BeatGameDriverError> {
+  if (state.driver.environment === undefined) {
+    return Effect.succeed(false);
+  }
+  return Effect.gen(function* () {
+    const environment = yield* state.driver.environment!;
+    if (!isHostileNight(environment.gameTime)) {
+      return true;
+    }
+    let current = observation;
+    let beds = yield* findNearbyNightBeds(state.driver, current);
+    if (beds.length === 0) {
+      let bedItemId = carriedBedItemId(current);
+      if (bedItemId === undefined) {
+        const craftableBed = craftableBedItemId(current);
+        if (craftableBed !== undefined) {
+          const crafted = yield* craftWithTable(
+            state,
+            current,
+            craftableBed,
+            1,
+          ).pipe(Effect.either);
+          if (crafted._tag === "Right") {
+            current = yield* state.driver.observe;
+            bedItemId = carriedBedItemId(current);
+          }
+        }
+      }
+      if (bedItemId !== undefined) {
+        const placedBed = yield* placeNightBed(
+          state,
+          current,
+          bedItemId,
+        );
+        if (placedBed !== undefined) {
+          beds = [placedBed];
+        }
+      }
+    }
+    for (const bed of beds) {
+      const sleepAttempt = yield* state.driver.runTask({
+        type: "sleep",
+        bed: bed.position,
+        searchRadius: NIGHT_BED_SEARCH_RADIUS,
+        waitUntilPossible: false,
+        retryIntervalTicks: 20,
+      }, {
+        ...state.strategy.path,
+        allowMining: false,
+        allowPlacing: false,
+        avoidFluids: true,
+        sprint: true,
+        maxFallDistance: Math.min(
+          state.strategy.path.maxFallDistance,
+          MAXIMUM_DAMAGE_FREE_FALL_DISTANCE,
+        ),
+        maxSearchTimeMs: Math.min(
+          state.strategy.path.maxSearchTimeMs,
+          30_000,
+        ),
+      }).pipe(Effect.either);
+      if (sleepAttempt._tag === "Left") {
+        continue;
+      }
+      if (yield* waitForMorningAfterBed(state)) {
+        yield* persist(state, (checkpoint) =>
+          rememberWorldPlace(checkpoint, "SHELTER", bed.position, 1)
+        );
+        yield* emit(state, {
+          type: "diagnostic",
+          message: "Slept through the hostile night in a bed",
+          data: { position: bed.position },
+        });
+        return true;
+      }
+    }
+    return false;
+  });
+}
+
+function findNearbyNightBeds(
+  driver: BeatGameDriver,
+  observation: BeatGameObservation,
+): Effect.Effect<readonly BeatGameBlockObservation[], BeatGameDriverError> {
+  return driver.queryBlocks({
+    center: observation.player.position,
+    radius: NIGHT_BED_SEARCH_RADIUS,
+    selector: { blockIds: BED_ITEM_IDS },
+    maximumResults: 32,
+  }).pipe(
+    Effect.map((beds) => beds
+      .filter(({ blockId }) => BED_ITEM_IDS.includes(blockId))
+      .sort((left, right) =>
+        distanceSquared(observation.player.position, left.position)
+          - distanceSquared(observation.player.position, right.position)
+      )),
+  );
+}
+
+function carriedBedItemId(
+  observation: BeatGameObservation,
+): string | undefined {
+  return BED_ITEM_IDS.find((itemId) =>
+    (observation.inventory.counts[itemId] ?? 0) > 0
+  );
+}
+
+function craftableBedItemId(
+  observation: BeatGameObservation,
+): string | undefined {
+  const plankCount = PLANK_ITEM_IDS.reduce(
+    (count, itemId) => count + (observation.inventory.counts[itemId] ?? 0),
+    0,
+  );
+  const logCount = LOG_ITEM_IDS.reduce(
+    (count, itemId) => count + (observation.inventory.counts[itemId] ?? 0),
+    0,
+  );
+  if (plankCount + logCount * 4 < 3) {
+    return undefined;
+  }
+  const color = BED_COLORS.find((candidate) =>
+    (observation.inventory.counts[`minecraft:${candidate}_wool`] ?? 0) >= 3
+  );
+  return color === undefined ? undefined : `minecraft:${color}_bed`;
+}
+
+function placeNightBed(
+  state: RunState,
+  observation: BeatGameObservation,
+  bedItemId: string,
+): Effect.Effect<BeatGameBlockObservation | undefined, BeatGameDriverError> {
+  return Effect.gen(function* () {
+    const sites = yield* findNightBedPlacementSites(state.driver, observation);
+    for (const site of sites) {
+      const attempt = yield* Effect.gen(function* () {
+        yield* state.driver.pathfind(
+          {
+            x: site.stand.x + 0.5,
+            y: site.stand.y,
+            z: site.stand.z + 0.5,
+            dimension: site.stand.dimension,
+          },
+          0.5,
+          {
+            ...state.strategy.path,
+            allowMining: false,
+            allowPlacing: false,
+            avoidFluids: true,
+            maxSearchTimeMs: Math.min(
+              state.strategy.path.maxSearchTimeMs,
+              30_000,
+            ),
+          },
+        );
+        yield* state.driver.act({
+          type: "select-item",
+          selector: { itemIds: [bedItemId] },
+        });
+        yield* state.driver.act({
+          type: "place-block",
+          against: site.support,
+          face: "up",
+          hand: "main",
+        });
+        for (
+          let confirmation = 0;
+          confirmation < NIGHT_BED_PLACEMENT_CONFIRMATION_ATTEMPTS;
+          confirmation += 1
+        ) {
+          const placed = yield* queryExactBlock(state.driver, site.foot);
+          if (
+            placed !== undefined
+            && BED_ITEM_IDS.includes(placed.blockId)
+          ) {
+            return placed;
+          }
+          yield* Effect.sleep(100);
+        }
+        return undefined;
+      }).pipe(Effect.either);
+      if (attempt._tag === "Right" && attempt.right !== undefined) {
+        return attempt.right;
+      }
+      const current = yield* state.driver.observe;
+      if (current.player.dead || carriedBedItemId(current) === undefined) {
+        return undefined;
+      }
+    }
+    return undefined;
+  });
+}
+
+function findNightBedPlacementSites(
+  driver: BeatGameDriver,
+  observation: BeatGameObservation,
+): Effect.Effect<readonly NightBedPlacementSite[], BeatGameDriverError> {
+  const origin = {
+    x: Math.floor(observation.player.position.x),
+    y: Math.floor(observation.player.position.y),
+    z: Math.floor(observation.player.position.z),
+    dimension: observation.player.position.dimension,
+  };
+  return driver.queryBlocks({
+    center: blockCenter(origin),
+    radius: NIGHT_BED_PLACEMENT_SEARCH_RADIUS + 4,
+    selector: {},
+    maximumResults: 4_096,
+  }).pipe(Effect.map((blocks) => {
+    const byPosition = new Map(blocks.map((block) => [
+      `${block.position.x}:${block.position.y}:${block.position.z}`,
+      block,
+    ]));
+    const blockAt = (position: BeatGameBlockPosition) =>
+      byPosition.get(`${position.x}:${position.y}:${position.z}`);
+    const directions = [
+      { x: 0, z: 1 },
+      { x: 1, z: 0 },
+      { x: 0, z: -1 },
+      { x: -1, z: 0 },
+    ] as const;
+    const candidates: NightBedPlacementSite[] = [];
+    for (
+      let radius = 0;
+      radius <= NIGHT_BED_PLACEMENT_SEARCH_RADIUS;
+      radius += 1
+    ) {
+      for (let xOffset = -radius; xOffset <= radius; xOffset += 1) {
+        for (let zOffset = -radius; zOffset <= radius; zOffset += 1) {
+          if (
+            radius > 0
+            && Math.max(Math.abs(xOffset), Math.abs(zOffset)) !== radius
+          ) {
+            continue;
+          }
+          for (const direction of directions) {
+            const stand = {
+              ...origin,
+              x: origin.x + xOffset,
+              z: origin.z + zOffset,
+            };
+            const foot = {
+              ...origin,
+              x: stand.x + direction.x,
+              z: stand.z + direction.z,
+            };
+            const head = {
+              ...origin,
+              x: foot.x + direction.x,
+              z: foot.z + direction.z,
+            };
+            const support = { ...foot, y: foot.y - 1 };
+            const headSupport = { ...head, y: head.y - 1 };
+            const standSupport = { ...stand, y: stand.y - 1 };
+            const standBlock = blockAt(stand);
+            const standAbove = blockAt({ ...stand, y: stand.y + 1 });
+            const footBlock = blockAt(foot);
+            const footAbove = blockAt({ ...foot, y: foot.y + 1 });
+            const headBlock = blockAt(head);
+            const headAbove = blockAt({ ...head, y: head.y + 1 });
+            const standFloor = blockAt(standSupport);
+            const footFloor = blockAt(support);
+            const headFloor = blockAt(headSupport);
+            if (
+              standBlock?.replaceable === true
+              && standAbove?.replaceable === true
+              && footBlock?.replaceable === true
+              && footAbove?.replaceable === true
+              && headBlock?.replaceable === true
+              && headAbove?.replaceable === true
+              && standFloor?.solid === true
+              && footFloor?.solid === true
+              && headFloor?.solid === true
+            ) {
+              candidates.push({ stand, foot, support });
+            }
+          }
+        }
+      }
+    }
+    return candidates;
+  }));
+}
+
+function waitForMorningAfterBed(
+  state: RunState,
+): Effect.Effect<boolean, BeatGameDriverError> {
+  return Effect.gen(function* () {
+    const deadline = Date.now() + NIGHT_BED_MORNING_TIMEOUT_MS;
+    let daylightConfirmations = 0;
+    while (Date.now() < deadline) {
+      const environment = yield* state.driver.environment!;
+      daylightConfirmations = environment.gameTime !== undefined
+          && !isHostileNight(environment.gameTime)
+        ? daylightConfirmations + 1
+        : 0;
+      if (daylightConfirmations >= NIGHT_SHELTER_DAYLIGHT_CONFIRMATIONS) {
+        return true;
+      }
+      const current = yield* state.driver.observe;
+      if (current.player.dead) {
+        return false;
+      }
+      yield* Effect.sleep(250);
+    }
+    return false;
+  });
+}
+
 function shelterUntilMorning(
   state: RunState,
   observation: BeatGameObservation,
@@ -1426,76 +2008,38 @@ function shelterUntilMorning(
         return false;
       }
     }
-    const nearbyThreats = yield* state.driver.queryEntities({
-      origin: {
-        ...shelterObservation.player.position,
-        y: shelterObservation.player.position.y + 1.62,
-      },
-      radius: THREAT_ESCAPE_SAFE_DISTANCE,
-      selector: {
-        categories: [2],
-        alive: true,
-        requireLineOfSight: true,
-      },
-      maximumResults: 1,
-    });
-    if (nearbyThreats.length > 0) {
+    const nearbyThreat = yield* findImmediateThreat(
+      state,
+      shelterObservation,
+    );
+    if (nearbyThreat !== undefined) {
       yield* emit(state, {
         type: "diagnostic",
         message: "Creating distance from nearby hostiles before sheltering",
         data: {
           position: shelterObservation.player.position,
-          threat: nearbyThreats[0],
+          threat: nearbyThreat.target,
+          response: nearbyThreat.response,
         },
       });
-      yield* flee(state.driver, {
-        selector: {
-          categories: [2],
-          alive: true,
-          requireLineOfSight: true,
-        },
-        triggerRadius: THREAT_ESCAPE_SAFE_DISTANCE,
-        safeDistance: RANGED_THREAT_ESCAPE_SAFE_DISTANCE,
-        safeSeconds: 1,
-        completeWhenSafe: true,
-        maximumEscapes: SINGLE_THREAT_MAXIMUM_ESCAPES,
-        path: {
-          ...state.strategy.path,
-          allowMining: false,
-          allowPlacing: false,
-          avoidFluids: true,
-          sprint: true,
-          maxFallDistance: Math.min(
-            state.strategy.path.maxFallDistance,
-            MAXIMUM_DAMAGE_FREE_FALL_DISTANCE,
-          ),
-        },
-      });
+      yield* respondToNightShelterTravelThreat(state, nearbyThreat);
       shelterObservation = yield* state.driver.observe;
       if (shelterObservation.player.dead) {
         return false;
       }
-      const remainingThreats = yield* state.driver.queryEntities({
-        origin: {
-          ...shelterObservation.player.position,
-          y: shelterObservation.player.position.y + 1.62,
-        },
-        radius: THREAT_ESCAPE_SAFE_DISTANCE,
-        selector: {
-          categories: [2],
-          alive: true,
-          requireLineOfSight: true,
-        },
-        maximumResults: 1,
-      });
-      if (remainingThreats.length > 0) {
+      const remainingThreat = yield* findImmediateThreat(
+        state,
+        shelterObservation,
+      );
+      if (remainingThreat !== undefined) {
         yield* emit(state, {
           type: "diagnostic",
           message:
             "A nearby hostile still prevents safe shelter construction",
           data: {
             position: shelterObservation.player.position,
-            threat: remainingThreats[0],
+            threat: remainingThreat.target,
+            response: remainingThreat.response,
           },
         });
         return false;
@@ -1536,6 +2080,25 @@ function shelterUntilMorning(
       }
       shelterObservation = yield* state.driver.observe;
     }
+    const sleptThroughNight = yield* trySleepThroughNight(
+      state,
+      shelterObservation,
+    ).pipe(
+      Effect.catchAll((error) =>
+        emit(state, {
+          type: "diagnostic",
+          message: "Could not use a bed before constructing a night shelter",
+          data: {
+            position: shelterObservation.player.position,
+            error: error.message,
+          },
+        }).pipe(Effect.as(false))
+      ),
+    );
+    if (sleptThroughNight) {
+      return true;
+    }
+    shelterObservation = yield* state.driver.observe;
     const initialPlayerBlock = {
       x: Math.floor(shelterObservation.player.position.x),
       y: Math.floor(shelterObservation.player.position.y),
@@ -1853,7 +2416,95 @@ function prepareStableNightShelterSite(
       }
       return current;
     }
-    return undefined;
+    const relocated = yield* relocateFromRejectedNightShelterSite(
+      state,
+      observation,
+    );
+    return relocated !== undefined
+        && (yield* isViableNightShelterColumn(
+          state.driver,
+          relocated.player.position,
+        ))
+      ? relocated
+      : undefined;
+  });
+}
+
+function relocateFromRejectedNightShelterSite(
+  state: RunState,
+  observation: BeatGameObservation,
+): Effect.Effect<BeatGameObservation | undefined, BeatGameDriverError> {
+  const origin = observation.player.position;
+  const path = {
+    ...survivalPathPolicy(
+      state.strategy.path,
+      observation.player.health,
+      state.strategy.minimumHealth,
+    ),
+    allowMining: false,
+    allowPlacing: false,
+    avoidFluids: true,
+    sprint: observation.player.food > CRITICAL_HUNGER_FOOD_LEVEL,
+    maxFallDistance: Math.min(
+      state.strategy.path.maxFallDistance,
+      MAXIMUM_DAMAGE_FREE_FALL_DISTANCE,
+    ),
+    maxSearchTimeMs: Math.min(
+      state.strategy.path.maxSearchTimeMs,
+      15_000,
+    ),
+  };
+  return Effect.gen(function* () {
+    yield* emit(state, {
+      type: "diagnostic",
+      message: "Relocating after nearby night shelter columns were rejected",
+      data: { position: origin },
+    });
+    const relocationOutcome = yield* Effect.raceFirst(
+      advanceExplorationFrontier(
+        state,
+        origin,
+        explorationPurpose("night-shelter-relocation", origin),
+        NIGHT_SHELTER_RELOCATION_SCAN_RADIUS,
+        path,
+        true,
+        false,
+      ).pipe(
+        Effect.either,
+        Effect.map((result) => ({ type: "path" as const, result })),
+      ),
+      waitForNightShelterTravelThreat(state).pipe(
+        Effect.map((threat) => ({ type: "threat" as const, threat })),
+      ),
+    );
+    if (relocationOutcome.type === "threat") {
+      yield* respondToNightShelterTravelThreat(
+        state,
+        relocationOutcome.threat,
+      );
+      return undefined;
+    }
+    if (relocationOutcome.result._tag === "Left") {
+      yield* emit(state, {
+        type: "diagnostic",
+        message: "Could not relocate from the rejected night shelter site",
+        data: {
+          position: origin,
+          error: relocationOutcome.result.left.message,
+        },
+      });
+      return undefined;
+    }
+    const current = yield* state.driver.observe;
+    if (
+      current.player.dead
+      || horizontalDistanceSquared(current.player.position, origin)
+        < NIGHT_SHELTER_RELOCATION_MINIMUM_DISTANCE ** 2
+      || (yield* isPlayerInFluid(state.driver, current.player.position))
+    ) {
+      return undefined;
+    }
+    return current;
   });
 }
 
@@ -1889,7 +2540,7 @@ function respondToNightShelterTravelThreat(
 ): Effect.Effect<void, BeatGameDriverError> {
   return emit(state, {
     type: "diagnostic",
-    message: "Interrupted night shelter relocation for a nearby hostile",
+    message: "Interrupted night shelter work for a nearby hostile",
     data: {
       response: threat.response,
       target: threat.target,
@@ -2189,6 +2840,7 @@ function runDecisionWithRetry(
                       completed.planner,
                       fresh,
                       state.strategy,
+                      completed,
                     ),
                     retryCount: 0,
                     completedActions: [
@@ -2219,6 +2871,26 @@ function runDecisionWithRetry(
         ),
       );
       if (result === undefined) {
+        return;
+      }
+      if (result.continueReason !== undefined) {
+        yield* persist(state, (checkpoint) => ({
+          ...checkpoint,
+          planner: withoutCurrentAction({
+            ...checkpoint.planner,
+            retryCount: 0,
+            updatedAt: new Date().toISOString(),
+          }),
+        }));
+        yield* emit(state, {
+          type: "action-progressed",
+          action,
+          attempt: number,
+          detail: result.continueReason,
+        });
+        if (result.continueDelayMs !== undefined) {
+          yield* Effect.sleep(result.continueDelayMs);
+        }
         return;
       }
       if (result.replanReason !== undefined) {
@@ -2385,6 +3057,7 @@ function executeDecision(
           }
           const customRecovery = state.hooks.recoverDeath;
           let recoveryAttempted = pendingDeath.recoverItems;
+          let recoveryOrigin: BeatGamePosition | undefined;
           if (customRecovery !== undefined) {
             yield* customRecovery(policyContext);
           } else {
@@ -2419,6 +3092,47 @@ function executeDecision(
               path: state.strategy.path,
             });
             let respawned = yield* observeDriverFresh(state);
+            const safetyInterruptions =
+              deathRecoverySafetyInterruptionCount(actionCheckpoint);
+            if (
+              pendingDeath.recoverItems
+              && safetyInterruptions
+                >= MAXIMUM_DEATH_RECOVERY_SAFETY_INTERRUPTS
+            ) {
+              return yield* abandonPendingDeath(
+                state,
+                pendingDeath,
+                respawned,
+                "Abandoned corpse recovery after six safety interruptions",
+              );
+            }
+            const exhaustedPreparationAttempts =
+              deathRecoveryFailureCount(
+                actionCheckpoint,
+                pendingDeath.observedAt,
+                "preparation",
+              ) >= MAX_SAFE_DEATH_RECOVERY_FAILURES;
+            if (pendingDeath.recoverItems && exhaustedPreparationAttempts) {
+              return yield* abandonPendingDeath(
+                state,
+                pendingDeath,
+                respawned,
+                "Abandoned a distant corpse after three bounded preparation attempts",
+              );
+            }
+            const exhaustedPickupAttempts = deathRecoveryFailureCount(
+              actionCheckpoint,
+              pendingDeath.observedAt,
+              "pickup",
+            ) >= MAX_SAFE_DEATH_RECOVERY_FAILURES;
+            if (pendingDeath.recoverItems && exhaustedPickupAttempts) {
+              return yield* abandonPendingDeath(
+                state,
+                pendingDeath,
+                respawned,
+                "Abandoned an unrecoverable corpse after three safe recovery attempts",
+              );
+            }
             if (
               respawned.player.health < state.strategy.minimumHealth
             ) {
@@ -2460,6 +3174,71 @@ function executeDecision(
                 path: state.strategy.path,
               });
               respawned = yield* observeDriverFresh(state);
+            }
+            if (
+              pendingDeath.recoverItems
+              && shouldAttemptCrossDimensionDeathRecovery(
+                pendingDeath,
+                respawned.player.position,
+              )
+            ) {
+              const transitOrigin = respawned;
+              const transit = yield* enterDeathRecoveryDimension(
+                state,
+                pendingDeath,
+                respawned,
+              );
+              if (transit.status === "pending") {
+                const madePreparationProgress =
+                  madeCrossDimensionDeathRecoveryProgress(
+                    transitOrigin,
+                    transit.observation,
+                    transit.portalTarget,
+                  );
+                const preparationFailures = madePreparationProgress
+                  ? yield* clearDeathRecoveryFailure(
+                    state,
+                    pendingDeath.observedAt,
+                    "preparation",
+                  ).pipe(Effect.as(0))
+                  : yield* recordDeathRecoveryFailure(
+                    state,
+                    pendingDeath.observedAt,
+                    "preparation",
+                  );
+                if (
+                  preparationFailures >= MAX_SAFE_DEATH_RECOVERY_FAILURES
+                ) {
+                  return yield* abandonPendingDeath(
+                    state,
+                    pendingDeath,
+                    transit.observation,
+                    "Abandoned a cross-dimension corpse after three bounded portal recovery attempts",
+                  );
+                }
+                yield* emit(state, {
+                  type: "diagnostic",
+                  message:
+                    "Continuing portal preparation for a cross-dimension corpse",
+                  data: {
+                    deathPosition: pendingDeath.position,
+                    portalTarget: transit.portalTarget,
+                    preparationFailures,
+                    madePreparationProgress,
+                    reason: transit.reason,
+                  },
+                });
+                return {
+                  replanReason: transit.reason
+                    ?? "cross-dimension corpse recovery remains pending",
+                } satisfies ActionResult;
+              }
+              yield* clearDeathRecoveryFailure(
+                state,
+                pendingDeath.observedAt,
+                "preparation",
+              );
+              respawned = transit.observation;
             }
             recoveryAttempted = pendingDeath.recoverItems
               && shouldAttemptDeathRecovery(
@@ -2574,7 +3353,6 @@ function executeDecision(
                 if (
                   preparationFailures
                     >= MAX_SAFE_DEATH_RECOVERY_FAILURES
-                  && recoveryClass !== "valuable"
                 ) {
                   return yield* abandonPendingDeath(
                     state,
@@ -2617,6 +3395,7 @@ function executeDecision(
                 respawned,
                 pendingDeath.inventoryCounts,
               );
+              recoveryOrigin = respawned.player.position;
               yield* respawnAndRecover(state.driver, {
                 deathPosition: pendingDeath.position,
                 retryThroughFluids: true,
@@ -2627,22 +3406,26 @@ function executeDecision(
                   additionalPlaceItemIds:
                     DEATH_RECOVERY_ADDITIONAL_PLACE_ITEM_IDS,
                   sprint: false,
+                  maxFallDistance: Math.min(
+                    1,
+                    state.strategy.path.maxFallDistance,
+                  ),
+                  searchMode: BeatGamePathSearchMode.URGENT,
+                  maximumQualityBound:
+                    DEATH_RECOVERY_MAXIMUM_QUALITY_BOUND,
                 },
               });
             } else if (pendingDeath.recoverItems) {
-              yield* emit(state, {
-                type: "items-recovered",
-                detail:
-                  "Skipped a distant corpse containing only renewable or unknown items",
-              });
-              return {
-                checkpoint: (checkpoint) =>
-                  forgetDeathPosition(
-                    checkpoint,
-                    pendingDeath.observedAt,
-                  ),
-                completedPendingDeath: pendingDeath.observedAt,
-              } satisfies ActionResult;
+              const crossedDimension = pendingDeath.position.dimension
+                !== respawned.player.position.dimension;
+              return yield* abandonPendingDeath(
+                state,
+                pendingDeath,
+                respawned,
+                crossedDimension
+                  ? "Abandoned a cross-dimension corpse and restarted progression from the surviving inventory"
+                  : "Skipped a distant corpse containing only renewable or unknown items",
+              );
             }
           }
           if (recoveryAttempted) {
@@ -2691,17 +3474,25 @@ function executeDecision(
                 completedPendingDeath: pendingDeath.observedAt,
               } satisfies ActionResult;
             }
-            const recoveryFailures = yield* recordDeathRecoveryFailure(
-              state,
-              pendingDeath.observedAt,
-              "pickup",
-            );
-            const recoveryClass = classifyDeathRecoveryInventory(
-              pendingDeath.inventoryCounts,
-            );
+            const madeMeaningfulApproach = recoveryOrigin !== undefined
+              && madeMeaningfulDeathRecoveryApproach(
+                pendingDeath.position,
+                recoveryOrigin,
+                current.player.position,
+              );
+            const recoveryFailures = madeMeaningfulApproach
+              ? yield* clearDeathRecoveryFailure(
+                state,
+                pendingDeath.observedAt,
+                "pickup",
+              ).pipe(Effect.as(0))
+              : yield* recordDeathRecoveryFailure(
+                state,
+                pendingDeath.observedAt,
+                "pickup",
+              );
             if (
               recoveryFailures >= MAX_SAFE_DEATH_RECOVERY_FAILURES
-              && recoveryClass !== "valuable"
             ) {
               return yield* abandonPendingDeath(
                 state,
@@ -2709,21 +3500,6 @@ function executeDecision(
                 current,
                 "Abandoned an unrecoverable corpse after three safe recovery attempts",
               );
-            }
-            if (
-              recoveryFailures >= MAX_SAFE_DEATH_RECOVERY_FAILURES
-              && recoveryClass === "valuable"
-            ) {
-              yield* emit(state, {
-                type: "diagnostic",
-                message:
-                  "Keeping a valuable corpse pending after failed recovery attempts",
-                data: {
-                  closeEnoughToInspectDrops,
-                  recoveryFailures,
-                  remainingDrops: remainingCorpseDrops.length,
-                },
-              });
             }
             if (
               (yield* needsOverworldSurfaceRecovery(
@@ -2748,11 +3524,15 @@ function executeDecision(
               ? "Death recovery completed"
               : "Respawn completed without a risky corpse recovery",
           });
+          const recoveryObservation = yield* state.driver.observe;
           return {
             checkpoint: (checkpoint) =>
-              forgetDeathPosition(
-                checkpoint,
-                pendingDeath.observedAt,
+              resetAfterCatastrophicInventoryLoss(
+                forgetDeathPosition(
+                  checkpoint,
+                  pendingDeath.observedAt,
+                ),
+                recoveryObservation,
               ),
             completedPendingDeath: pendingDeath.observedAt,
           } satisfies ActionResult;
@@ -2815,36 +3595,59 @@ function executeDecision(
         );
       }
       case "build-and-enter-nether": {
-        if (state.hooks.buildAndEnterNether !== undefined) {
-          return state.hooks.buildAndEnterNether(policyContext).pipe(
-            Effect.as({} satisfies ActionResult),
-          );
-        }
-        const useCastPortal =
-          state.strategy.portalStrategy === PortalStrategy.CAST
-          || (
-            state.strategy.portalStrategy === PortalStrategy.AUTO
-            && (
-              observation.inventory.counts["minecraft:obsidian"] ?? 0
-            ) < state.strategy.targetObsidianCount
-          );
-        return enterKnownPortal(
-          state,
+        const hadReusablePortal = hasReusablePortalEvidence(
           actionCheckpoint,
-          observation,
-        ).pipe(
-          Effect.flatMap((knownPortal): Effect.Effect<
-            ActionResult,
-            BeatGameError | BeatGameDriverError
-          > =>
-            knownPortal
-              ? Effect.succeed({})
-              : buildAndEnterDurablePortal(
-                state,
-                actionCheckpoint,
-                observation,
-                useCastPortal,
-              )
+          observation.player.position.dimension,
+        );
+        const buildAndEnter = state.hooks.buildAndEnterNether !== undefined
+          ? state.hooks.buildAndEnterNether(policyContext).pipe(
+            Effect.as({} satisfies ActionResult),
+          )
+          : enterKnownPortal(
+            state,
+            actionCheckpoint,
+            observation,
+          ).pipe(
+            Effect.flatMap((knownPortal): Effect.Effect<
+              ActionResult,
+              BeatGameError | BeatGameDriverError
+            > => {
+              const useCastPortal =
+                state.strategy.portalStrategy === PortalStrategy.CAST
+                || (
+                  state.strategy.portalStrategy === PortalStrategy.AUTO
+                  && (
+                    observation.inventory.counts["minecraft:obsidian"] ?? 0
+                  ) < state.strategy.targetObsidianCount
+                );
+              return knownPortal
+                ? Effect.succeed({})
+                : hadReusablePortal
+                ? Effect.succeed({
+                  replanReason:
+                    "revalidated remembered portal evidence before considering construction",
+                  replanDelayMs: REMEMBERED_PORTAL_REPLAN_DELAY_MS,
+                })
+                : buildAndEnterDurablePortal(
+                  state,
+                  actionCheckpoint,
+                  observation,
+                  useCastPortal,
+                );
+            }),
+          );
+        return buildAndEnter.pipe(
+          Effect.catchAll((error) =>
+            error instanceof BeatGameDriverError
+                && isRouteUnavailable(error)
+              ? Effect.succeed({
+                replanReason:
+                  `retained the portal workspace after a local route failure: ${
+                    error.message
+                  }`,
+                replanDelayMs: MINIMUM_RECOVERY_POLL_MS,
+              } satisfies ActionResult)
+              : Effect.fail(error)
           ),
         );
       }
@@ -2996,18 +3799,11 @@ function executeDecision(
         if (state.hooks.fightEnderDragon !== undefined) {
           return state.hooks.fightEnderDragon(policyContext).pipe(
             Effect.map((defeated): ActionResult =>
-              defeated ? { phase: BeatGamePhase.COLLECT_DRAGON_EGG } : {}
+              defeated ? { phase: BeatGamePhase.EXIT_END } : {}
             ),
           );
         }
         return fightDragon(state);
-      case "collect-dragon-egg":
-        return (
-          state.hooks.collectDragonEgg?.(policyContext)
-            ?? collectDragonEgg(state.driver, {
-              path: state.strategy.path,
-            })
-        ).pipe(Effect.as({} satisfies ActionResult));
       case "exit-end":
         return (
           state.hooks.exitEnd?.(policyContext)
@@ -3035,7 +3831,9 @@ function executeDecision(
           : Effect.succeed(initialThreat)
       ),
       Effect.flatMap((result) => {
-      const response = result.airEscapePosition !== undefined
+      const response = result.fallClutchPosition !== undefined
+        ? performWaterBucketFallClutch(state)
+        : result.airEscapePosition !== undefined
         ? emergencyAirAscent(
           state,
           result.airEscapePosition,
@@ -3081,17 +3879,23 @@ function executeDecision(
         )
         : Effect.void;
       const interruptedForSafety =
-        result.airEscapePosition !== undefined
+        result.fallClutchPosition !== undefined
+        || result.airEscapePosition !== undefined
         || result.environmentalEscapePosition !== undefined
         || result.escapeTarget !== undefined
         || result.defenseTarget !== undefined
         || result.travelMealRequested === true;
       const handledResponse = result.airEscapePosition === undefined
+          && result.fallClutchPosition === undefined
         ? response.pipe(
           Effect.catchTag("BeatGameDriverError", () => Effect.void),
         )
         : response;
-      return handledResponse.pipe(
+      const protectedResponse = interruptedForSafety
+          && result.fallClutchPosition === undefined
+        ? protectFromFatalFall(state, handledResponse)
+        : handledResponse;
+      return protectedResponse.pipe(
         Effect.flatMap(() =>
           decision.type === "recover-death" && interruptedForSafety
             ? Effect.all([
@@ -3149,34 +3953,73 @@ function findImmediateActionThreat(
   >,
   observation: BeatGameObservation,
 ): Effect.Effect<ActionResult | undefined, BeatGameDriverError> {
+  if (hasDangerousFall(observation)) {
+    return Effect.succeed({
+      replanReason: "interrupted an action to clutch a dangerous fall",
+      fallClutchPosition: observation.player.position,
+    });
+  }
+  return findAirSafetyInterruption(state, decision, observation).pipe(
+    Effect.flatMap((airSafety) => {
+      if (airSafety !== undefined) {
+        return Effect.succeed(airSafety);
+      }
+      if (
+        decision.type === "retreat"
+        || decision.type === "fight-ender-dragon"
+        || observation.player.dead
+      ) {
+        return Effect.succeed(undefined);
+      }
+      return findImmediateThreat(state, observation).pipe(
+        Effect.map((threat) => {
+          if (threat === undefined) {
+            return undefined;
+          }
+          return {
+            replanReason: decision.type === "recover-death"
+              ? threat.response === "flee"
+                ? "paused item recovery to evade an immediate hostile"
+                : "paused item recovery to defend against an immediate hostile"
+              : threat.response === "flee"
+              ? "delayed an action to evade an immediate threat"
+              : "delayed an action to preempt a nearby hostile",
+            ...(
+              threat.response === "flee"
+                ? { escapeTarget: threat.target }
+                : { defenseTarget: threat.target }
+            ),
+            replanDelayMs: MINIMUM_RECOVERY_POLL_MS,
+          } satisfies ActionResult;
+        }),
+      );
+    }),
+  );
+}
+
+function findAirSafetyInterruption(
+  state: RunState,
+  decision: Exclude<
+    BeatGamePlannerDecision,
+    { readonly type: "advance-phase" }
+  >,
+  observation: BeatGameObservation,
+): Effect.Effect<ActionResult | undefined, BeatGameDriverError> {
   if (
-    decision.type === "retreat"
-    || decision.type === "fight-ender-dragon"
-    || observation.player.dead
+    observation.player.dead
+    || !hasUnsafeAirDuringAction(decision, observation)
   ) {
     return Effect.succeed(undefined);
   }
-  return findImmediateThreat(state, observation).pipe(
-    Effect.map((threat) => {
-      if (threat === undefined) {
-        return undefined;
-      }
-      return {
-        replanReason: decision.type === "recover-death"
-          ? threat.response === "flee"
-            ? "paused item recovery to evade an immediate hostile"
-            : "paused item recovery to defend against an immediate hostile"
-          : threat.response === "flee"
-          ? "delayed an action to evade an immediate threat"
-          : "delayed an action to preempt a nearby hostile",
-        ...(
-          threat.response === "flee"
-            ? { escapeTarget: threat.target }
-            : { defenseTarget: threat.target }
-        ),
-        replanDelayMs: MINIMUM_RECOVERY_POLL_MS,
-      } satisfies ActionResult;
-    }),
+  return isPlayerInFluid(state.driver, observation.player.position).pipe(
+    Effect.map((inFluid) =>
+      inFluid
+        ? {
+          replanReason: "air fell below the safety threshold",
+          airEscapePosition: observation.player.position,
+        } satisfies ActionResult
+        : undefined
+    ),
   );
 }
 
@@ -3224,60 +4067,72 @@ function monitorActionSafety(
               ) {
                 return Effect.suspend(() => monitor(observation));
               }
-              if (
-                decision.type !== "retreat"
-                && decision.type !== "fight-ender-dragon"
-                && !observation.player.dead
-              ) {
-                if (hasUnsafeAirDuringAction(decision, observation)) {
-                  return Effect.succeed({
-                    replanReason: "air fell below the safety threshold",
-                    airEscapePosition: observation.player.position,
-                  } satisfies ActionResult);
-                }
-                return findImmediateThreat(state, observation).pipe(
-                  Effect.flatMap((threat) => {
-                    if (threat === undefined) {
-                      return monitorObservedSafety(
-                        state,
-                        decision,
-                        previousObservation,
-                        observation,
-                        monitor,
-                        actionObservation.observedAt,
-                      );
-                    }
-                    const response = threat.response;
-                    return Effect.succeed({
-                        replanReason: decision.type === "recover-death"
-                          ? response === "flee"
-                            ? "interrupted item recovery to evade a hostile"
-                            : "interrupted item recovery to defend against a hostile"
-                          : response === "flee"
-                          ? "interrupted an action to evade an immediate threat"
-                          : "interrupted an action to preempt a nearby hostile",
-                        ...(
-                          response === "flee"
-                          ? { escapeTarget: threat.target }
-                          : { defenseTarget: threat.target }
-                        ),
-                        replanDelayMs: MINIMUM_RECOVERY_POLL_MS,
-                      } satisfies ActionResult);
-                  }),
-                  Effect.catchTag("BeatGameDriverError", (error) =>
-                    isPositionDimensionTransitionRace(error)
-                      ? Effect.suspend(() => monitor(observation))
-                      : Effect.fail(error)
-                  ),
-                );
+              if (hasDangerousFall(observation)) {
+                return Effect.succeed({
+                  replanReason:
+                    "interrupted an action to clutch a dangerous fall",
+                  fallClutchPosition: observation.player.position,
+                } satisfies ActionResult);
               }
-              return monitorObservedSafety(
+              return findAirSafetyInterruption(
                 state,
                 decision,
-                previousObservation,
                 observation,
-                monitor,
-                actionObservation.observedAt,
+              ).pipe(
+                Effect.flatMap((airSafety) => {
+                  if (airSafety !== undefined) {
+                    return Effect.succeed(airSafety);
+                  }
+                  if (
+                    decision.type !== "retreat"
+                    && decision.type !== "fight-ender-dragon"
+                    && !observation.player.dead
+                  ) {
+                    return findImmediateThreat(state, observation).pipe(
+                      Effect.flatMap((threat) => {
+                        if (threat === undefined) {
+                          return monitorObservedSafety(
+                            state,
+                            decision,
+                            previousObservation,
+                            observation,
+                            monitor,
+                            actionObservation.observedAt,
+                          );
+                        }
+                        const response = threat.response;
+                        return Effect.succeed({
+                            replanReason: decision.type === "recover-death"
+                              ? response === "flee"
+                                ? "interrupted item recovery to evade a hostile"
+                                : "interrupted item recovery to defend against a hostile"
+                              : response === "flee"
+                              ? "interrupted an action to evade an immediate threat"
+                              : "interrupted an action to preempt a nearby hostile",
+                            ...(
+                              response === "flee"
+                              ? { escapeTarget: threat.target }
+                              : { defenseTarget: threat.target }
+                            ),
+                            replanDelayMs: MINIMUM_RECOVERY_POLL_MS,
+                          } satisfies ActionResult);
+                      }),
+                    );
+                  }
+                  return monitorObservedSafety(
+                    state,
+                    decision,
+                    previousObservation,
+                    observation,
+                    monitor,
+                    actionObservation.observedAt,
+                  );
+                }),
+                Effect.catchTag("BeatGameDriverError", (error) =>
+                  isPositionDimensionTransitionRace(error)
+                    ? Effect.suspend(() => monitor(observation))
+                    : Effect.fail(error)
+                ),
               );
                   }),
                 )
@@ -3319,16 +4174,15 @@ function monitorObservedSafety(
       replanReason: "bot died again during recovery",
     } satisfies ActionResult);
   }
-  if (
-    !observation.player.dead
-    && hasUnsafeAirDuringAction(decision, observation)
-  ) {
+  if (hasDangerousFall(observation)) {
     return Effect.succeed({
-      replanReason: "air fell below the safety threshold",
-      airEscapePosition: observation.player.position,
+      replanReason: "interrupted an action to clutch a dangerous fall",
+      fallClutchPosition: observation.player.position,
     } satisfies ActionResult);
   }
   if (
+    decision.type !== "retreat"
+    &&
     decision.type !== "fight-ender-dragon"
     && observation.player.health < previousObservation.player.health
   ) {
@@ -3474,6 +4328,138 @@ function monitorObservedSafety(
   return Effect.suspend(() => monitor(observation));
 }
 
+function hasDangerousFall(observation: BeatGameObservation): boolean {
+  return !observation.player.dead
+    && !observation.player.onGround
+    && observation.player.velocity.y <= FALL_CLUTCH_TRIGGER_VELOCITY
+    && !isNether(observation.player.position.dimension)
+    && (observation.inventory.counts["minecraft:water_bucket"] ?? 0) > 0;
+}
+
+function protectFromFatalFall(
+  state: RunState,
+  response: Effect.Effect<void, BeatGameDriverError>,
+): Effect.Effect<void, BeatGameDriverError> {
+  return Effect.raceFirst(
+    response,
+    monitorDangerousFall(state).pipe(
+      Effect.flatMap(() => performWaterBucketFallClutch(state)),
+    ),
+  );
+}
+
+function monitorDangerousFall(
+  state: RunState,
+): Effect.Effect<BeatGamePosition, BeatGameDriverError> {
+  const poll = (): Effect.Effect<BeatGamePosition, BeatGameDriverError> =>
+    state.driver.observe.pipe(
+      Effect.flatMap((observation) =>
+        hasDangerousFall(observation)
+          ? Effect.succeed(observation.player.position)
+          : Effect.sleep(FALL_CLUTCH_POLL_MS).pipe(
+            Effect.zipRight(Effect.suspend(poll)),
+          )
+      ),
+      Effect.catchTag("BeatGameDriverError", () =>
+        Effect.sleep(FALL_CLUTCH_POLL_MS).pipe(
+          Effect.zipRight(Effect.suspend(poll)),
+        )
+      ),
+    );
+  return Effect.suspend(poll);
+}
+
+function performWaterBucketFallClutch(
+  state: RunState,
+): Effect.Effect<void, BeatGameDriverError> {
+  return state.driver.withControl(
+    Effect.gen(function* () {
+      let observation = yield* state.driver.observe;
+      if (
+        observation.player.dead
+        || observation.player.onGround
+        || observation.player.velocity.y >= FALL_CLUTCH_SAFE_VELOCITY
+      ) {
+        return;
+      }
+      if (
+        isNether(observation.player.position.dimension)
+        || (observation.inventory.counts["minecraft:water_bucket"] ?? 0) === 0
+      ) {
+        return yield* Effect.fail(new BeatGameDriverError({
+          operation: "fall-clutch",
+          code: "missing_water_bucket",
+          retryable: true,
+          message: "A dangerous fall started without a usable water bucket",
+        }));
+      }
+
+      yield* state.driver.act({ type: "reset-movement" });
+      yield* state.driver.act({
+        type: "select-item",
+        selector: { itemIds: ["minecraft:water_bucket"] },
+      });
+      yield* state.driver.act({
+        type: "look",
+        yaw: observation.player.rotation.yaw,
+        pitch: 90,
+      });
+
+      let placementAttempted = false;
+      for (
+        let attempt = 0;
+        attempt < FALL_CLUTCH_MAXIMUM_ATTEMPTS;
+        attempt += 1
+      ) {
+        observation = yield* state.driver.observe;
+        if (
+          observation.player.dead
+          || observation.player.onGround
+          || observation.player.velocity.y >= FALL_CLUTCH_SAFE_VELOCITY
+        ) {
+          return;
+        }
+
+        const landing = yield* state.driver.raycast({
+          direction: { x: 0, y: -1, z: 0 },
+          maximumDistance: FALL_CLUTCH_RAYCAST_DISTANCE,
+          includeFluids: true,
+        });
+        const landingInSafeFluid = landing.block !== undefined
+          && isSafeFallFluidBlock(landing.block.blockId);
+        if (
+          !landingInSafeFluid
+          && landing.block !== undefined
+          && landing.distance <= FALL_CLUTCH_PLACEMENT_REACH
+          && (observation.inventory.counts["minecraft:water_bucket"] ?? 0) > 0
+        ) {
+          yield* state.driver.act({ type: "use-item", hand: "main" });
+          placementAttempted = true;
+        }
+        yield* Effect.sleep(FALL_CLUTCH_POLL_MS);
+      }
+
+      return yield* Effect.fail(new BeatGameDriverError({
+        operation: "fall-clutch",
+        code: placementAttempted ? "clutch_not_confirmed" : "no_landing_block",
+        retryable: true,
+        message: placementAttempted
+          ? "Water placement did not stop the dangerous fall"
+          : "No landing block entered water-bucket reach during the fall",
+      }));
+    }).pipe(
+      Effect.ensuring(
+        state.driver.act({ type: "reset-movement" }).pipe(Effect.ignore),
+      ),
+    ),
+  );
+}
+
+function isSafeFallFluidBlock(blockId: string): boolean {
+  return blockId !== "minecraft:lava"
+    && (PLAYER_FLUID_BLOCK_IDS as readonly string[]).includes(blockId);
+}
+
 function findImmediateThreat(
   state: RunState,
   observation: BeatGameObservation,
@@ -3519,7 +4505,7 @@ function findImmediateThreat(
     ]) => {
       const hostiles = new Map(
         [
-          ...visibleHostiles,
+          ...visibleHostiles.filter(isCurrentlyHostileMob),
           ...nearbyEscapeOnlyThreats,
           ...nearbyDangerousNeutralMobs.filter(isAggressiveNeutralMob),
         ].map((entity) => [
@@ -3540,7 +4526,14 @@ function findImmediateThreat(
             target.position,
           ),
         }))
-        .sort((left, right) => left.distanceSquared - right.distanceSquared);
+        .sort((left, right) =>
+          threatPriorityScore(left.target, left.distanceSquared)
+          - threatPriorityScore(right.target, right.distanceSquared)
+        );
+      const nearbyGroupCandidates = deduplicateEntityTargets([
+        ...visibleHostiles,
+        ...nearbyDangerousNeutralMobs,
+      ]);
       const escapeOnlyThreat = candidates.find(
         ({ target, distanceSquared }) =>
           ESCAPE_ONLY_DEFENSIVE_ENTITY_TYPES.has(target.entityType)
@@ -3559,7 +4552,7 @@ function findImmediateThreat(
       }
       const melee = candidates.find(({ target, distanceSquared }) => {
         if (
-          !PROACTIVE_MELEE_HOSTILE_ENTITY_TYPES.has(target.entityType)
+          !isActiveMeleeHostile(target)
           || PROACTIVE_RANGED_HOSTILE_ENTITY_TYPES.has(target.entityType)
         ) {
           return false;
@@ -3574,6 +4567,12 @@ function findImmediateThreat(
         return distanceSquared <= responseRadius ** 2;
       });
       if (melee !== undefined) {
+        if (hasNearbyGroupAggroMember(
+          melee.target,
+          nearbyGroupCandidates,
+        )) {
+          return { target: melee.target, response: "flee" };
+        }
         const nearbyThreats = candidates.filter(({ distanceSquared }) =>
           distanceSquared
             <= PROACTIVE_RANGED_ENGAGEMENT_RADIUS
@@ -3690,6 +4689,49 @@ function proactiveEscapeOnlyEvasionRadius(
     : PROACTIVE_ESCAPE_ONLY_EVASION_RADIUS;
 }
 
+function threatPriorityScore(
+  target: BeatGameEntityObservation,
+  targetDistanceSquared: number,
+): number {
+  return isFusingCreeper(target)
+    ? targetDistanceSquared * 0.2
+    : targetDistanceSquared;
+}
+
+function isFusingCreeper(target: BeatGameEntityObservation): boolean {
+  return target.entityType === "minecraft:creeper"
+    && (
+      target.creeper?.ignited === true
+      || (target.creeper?.swellDirection ?? -1) > 0
+      || (target.creeper?.fuseProgress ?? 0) > 0
+    );
+}
+
+function shouldShieldCreeperExplosion(
+  observation: BeatGameObservation,
+  target: BeatGameEntityObservation,
+): boolean {
+  if (
+    !isFusingCreeper(target)
+    || (observation.inventory.counts["minecraft:shield"] ?? 0) <= 0
+  ) {
+    return false;
+  }
+  const fuseProgress = Math.min(1, target.creeper?.fuseProgress ?? 0);
+  const remainingFuseMs = (1 - fuseProgress) * CREEPER_FUSE_DURATION_MS;
+  const currentDistance = Math.sqrt(distanceSquared(
+    observation.player.position,
+    target.position,
+  ));
+  const safeDistance = target.creeper?.powered === true
+    ? CHARGED_CREEPER_BLAST_SAFE_DISTANCE
+    : CREEPER_BLAST_SAFE_DISTANCE;
+  const requiredSprintMs = Math.max(0, safeDistance - currentDistance)
+    / CREEPER_SPRINT_BLOCKS_PER_SECOND * 1_000;
+  return remainingFuseMs
+    <= requiredSprintMs + CREEPER_ESCAPE_REACTION_MARGIN_MS;
+}
+
 function escapeThreatSelector(
   target: BeatGameEntityObservation,
   includeHostileGroup = false,
@@ -3700,7 +4742,8 @@ function escapeThreatSelector(
   const escapeFromHostileGroup =
     ESCAPE_ONLY_DEFENSIVE_ENTITY_TYPES.has(target.entityType)
     || PROACTIVE_MELEE_HOSTILE_ENTITY_TYPES.has(target.entityType)
-    || PROACTIVE_RANGED_HOSTILE_ENTITY_TYPES.has(target.entityType);
+    || PROACTIVE_RANGED_HOSTILE_ENTITY_TYPES.has(target.entityType)
+    || isActiveConditionalHostile(target);
   return escapeFromHostileGroup
     ? { categories: [2], alive: true }
     : { networkId: target.networkId, alive: true };
@@ -3712,7 +4755,6 @@ function shouldEngageRangedFight(
   target: BeatGameEntityObservation,
 ): boolean {
   return shouldCommitToRangedFight(observation, target)
-    || shouldCommitToUndergroundRangedFight(observation, target)
     || shouldCommitToBarehandedRangedFight(observation, target)
     || (
       hasMeleeWeapon(observation)
@@ -3724,11 +4766,16 @@ function shouldCommitToRangedFight(
   observation: BeatGameObservation,
   target: BeatGameEntityObservation,
 ): boolean {
+  const hasShield =
+    (observation.inventory.counts["minecraft:shield"] ?? 0) > 0;
   return PROACTIVE_RANGED_HOSTILE_ENTITY_TYPES.has(target.entityType)
-    && (
-      (observation.inventory.counts["minecraft:shield"] ?? 0) > 0
-      || shouldCommitToUnshieldedRangedFight(observation, target)
-    );
+    && hasMeleeWeapon(observation)
+    && observation.player.health >= (
+      hasShield
+        ? SHIELDED_RANGED_FIGHT_MINIMUM_HEALTH
+        : UNSHIELDED_RANGED_FIGHT_MINIMUM_HEALTH
+    )
+    && observation.player.food > URGENT_HUNGER_FOOD_LEVEL;
 }
 
 function shouldCommitToUnshieldedRangedFight(
@@ -3737,19 +4784,9 @@ function shouldCommitToUnshieldedRangedFight(
 ): boolean {
   return PROACTIVE_RANGED_HOSTILE_ENTITY_TYPES.has(target.entityType)
     && hasMeleeWeapon(observation)
+    && (observation.inventory.counts["minecraft:shield"] ?? 0) === 0
     && observation.player.health >= UNSHIELDED_RANGED_FIGHT_MINIMUM_HEALTH
     && observation.player.food > URGENT_HUNGER_FOOD_LEVEL;
-}
-
-function shouldCommitToUndergroundRangedFight(
-  observation: BeatGameObservation,
-  target: BeatGameEntityObservation,
-): boolean {
-  return observation.player.position.y <= OVERWORLD_LOW_GROUND_MAX_Y
-    && PROACTIVE_RANGED_HOSTILE_ENTITY_TYPES.has(target.entityType)
-    && hasMeleeWeapon(observation)
-    && observation.player.health > LETHAL_MELEE_DISENGAGE_HEALTH
-    && observation.player.food > CRITICAL_HUNGER_FOOD_LEVEL;
 }
 
 function shouldCommitToCloseRangedFight(
@@ -3889,11 +4926,16 @@ function escapeFromTarget(
     if (observation.player.dead) {
       return;
     }
+    if (shouldShieldCreeperExplosion(observation, target)) {
+      yield* blockCreeperExplosion(state, observation, target);
+      return;
+    }
     let directEscapeSucceeded = false;
     if (
       target.entityType === "minecraft:creeper"
       || PROACTIVE_RANGED_HOSTILE_ENTITY_TYPES.has(target.entityType)
       || PROACTIVE_MELEE_HOSTILE_ENTITY_TYPES.has(target.entityType)
+      || isActiveConditionalHostile(target)
       || shouldDisengageFromThreat(state, observation, target)
     ) {
       directEscapeSucceeded = yield* knockBackAndSprintAway(
@@ -3906,12 +4948,19 @@ function escapeFromTarget(
     if (latest.player.dead) {
       return;
     }
-    const nearbyEscapeThreats = yield* state.driver.queryEntities({
+    const nearbyEscapeCandidates = yield* state.driver.queryEntities({
       origin: latest.player.position,
       radius: RANGED_THREAT_ESCAPE_SAFE_DISTANCE,
       selector: { categories: [2], alive: true },
       maximumResults: 32,
     });
+    const nearbyEscapeThreats = nearbyEscapeCandidates.filter(
+      isCurrentlyHostileMob,
+    );
+    const groupAggroRisk = hasNearbyGroupAggroMember(
+      target,
+      nearbyEscapeCandidates,
+    );
     const rangedThreat = deduplicateEntityTargets([
       target,
       ...nearbyEscapeThreats,
@@ -3984,7 +5033,9 @@ function escapeFromTarget(
       path: {
         ...escapePath,
         allowMining: needsRecovery && !rangedThreat,
-        allowPlacing: false,
+        allowPlacing: !rangedThreat
+          && isActiveMeleeHostile(target)
+          && pathBuildingBlockCount(latest) > 0,
         avoidFluids: !(
           currentlyInFluid
           || fluidFallbackAllowed
@@ -4000,7 +5051,8 @@ function escapeFromTarget(
       target.entityType,
     )
       || rangedThreat
-      || PROACTIVE_MELEE_HOSTILE_ENTITY_TYPES.has(target.entityType);
+      || PROACTIVE_MELEE_HOSTILE_ENTITY_TYPES.has(target.entityType)
+      || isActiveConditionalHostile(target);
     const shouldPreferDryEscape = dryEscapeTarget !== undefined
       && (currentlyInFluid || !requiresDynamicEscape);
     const navigation = endermanWaterEscapeTarget !== undefined
@@ -4074,12 +5126,17 @@ function escapeFromTarget(
       | { readonly type: "defended" };
     const mustContinueEscaping =
       ESCAPE_ONLY_DEFENSIVE_ENTITY_TYPES.has(target.entityType)
+      || groupAggroRisk
       || (
         PROACTIVE_RANGED_HOSTILE_ENTITY_TYPES.has(target.entityType)
         && !shouldCommitToRangedFight(latest, target)
       )
       || (
         PROACTIVE_MELEE_HOSTILE_ENTITY_TYPES.has(target.entityType)
+        && !shouldCommitToMeleeFight(latest, target)
+      )
+      || (
+        isActiveConditionalHostile(target)
         && !shouldCommitToMeleeFight(latest, target)
       )
       || shouldDisengageFromThreat(state, latest, target);
@@ -4090,13 +5147,35 @@ function escapeFromTarget(
           EscapeNavigationFallback,
           BeatGameDriverError
         > =>
-          mustContinueEscaping
-            ? knockBackAndSprintAway(state, latest, target).pipe(
-              Effect.as({ type: "escape-route-failed" }),
-            )
-            : defendAgainstTarget(state, target).pipe(
-              Effect.as({ type: "defended" }),
-            ),
+          Effect.gen(function* () {
+            const current = yield* state.driver.observe;
+            if (current.player.dead) {
+              return {
+                type: "escape-route-failed",
+              } satisfies EscapeNavigationFallback;
+            }
+            if (mustContinueEscaping) {
+              const [currentTarget] = yield* state.driver.queryEntities({
+                origin: current.player.position,
+                radius: THREAT_ESCAPE_SAFE_DISTANCE,
+                selector: {
+                  networkId: target.networkId,
+                  alive: true,
+                },
+                maximumResults: 1,
+              });
+              yield* knockBackAndSprintAway(
+                state,
+                current,
+                currentTarget ?? target,
+              );
+              return {
+                type: "escape-route-failed",
+              } satisfies EscapeNavigationFallback;
+            }
+            yield* defendAgainstTarget(state, target);
+            return { type: "defended" } satisfies EscapeNavigationFallback;
+          }),
       ),
     );
     const outcome = yield* Effect.raceFirst(
@@ -4115,11 +5194,7 @@ function escapeFromTarget(
       return;
     }
     if (outcome.type === "escape-route-failed") {
-      const current = yield* state.driver.observe;
-      yield* recoverLocalNavigationTrap(
-        state,
-        current.player.position,
-      );
+      yield* recoverAfterFailedEscape(state, target);
       return;
     }
     if (outcome.type === "defend") {
@@ -4138,6 +5213,87 @@ function escapeFromTarget(
     }
     if (outcome.type === "escape") {
       yield* escapeFromTarget(state, outcome.target, options);
+    }
+  });
+}
+
+function recoverAfterFailedEscape(
+  state: RunState,
+  escapedTarget: BeatGameEntityObservation,
+): Effect.Effect<void, BeatGameDriverError> {
+  return Effect.gen(function* () {
+    const observation = yield* state.driver.observe;
+    if (observation.player.dead) {
+      return;
+    }
+    const nearbyThreat = yield* findNearbyAttackThreat(state, observation);
+    const closeMeleeThreat = nearbyThreat?.target;
+    const canFightOut = closeMeleeThreat !== undefined
+      && PROACTIVE_MELEE_HOSTILE_ENTITY_TYPES.has(
+        closeMeleeThreat.entityType,
+      )
+      && !GROUP_AGGRO_ENTITY_TYPES.has(closeMeleeThreat.entityType)
+      && !PROACTIVE_RANGED_HOSTILE_ENTITY_TYPES.has(
+        closeMeleeThreat.entityType,
+      )
+      && !ESCAPE_ONLY_DEFENSIVE_ENTITY_TYPES.has(
+        closeMeleeThreat.entityType,
+      )
+      && closeMeleeThreat.entityType !== "minecraft:enderman"
+      && distanceSquared(
+          observation.player.position,
+          closeMeleeThreat.position,
+        ) <= EMERGENCY_KNOCKBACK_RANGE ** 2;
+    if (canFightOut) {
+      yield* emit(state, {
+        type: "diagnostic",
+        message: "Fighting a close pursuer after its escape route failed",
+        data: {
+          escapedThreatNetworkId: escapedTarget.networkId,
+          pursuerNetworkId: closeMeleeThreat.networkId,
+          pursuerType: closeMeleeThreat.entityType,
+          position: observation.player.position,
+        },
+      });
+      const defended = yield* defendAgainstTarget(
+        state,
+        closeMeleeThreat,
+      ).pipe(
+        Effect.as(true),
+        Effect.catchTag("BeatGameDriverError", () => Effect.succeed(false)),
+      );
+      if (defended) {
+        return;
+      }
+    }
+    const activeMeleePursuer = closeMeleeThreat !== undefined
+      && PROACTIVE_MELEE_HOSTILE_ENTITY_TYPES.has(
+        closeMeleeThreat.entityType,
+      )
+      && !PROACTIVE_RANGED_HOSTILE_ENTITY_TYPES.has(
+        closeMeleeThreat.entityType,
+      )
+      && !ESCAPE_ONLY_DEFENSIVE_ENTITY_TYPES.has(
+        closeMeleeThreat.entityType,
+      )
+      && closeMeleeThreat.entityType !== "minecraft:enderman";
+    if (activeMeleePursuer) {
+      yield* emit(state, {
+        type: "diagnostic",
+        message:
+          "Deferred local navigation recovery while a melee pursuer remained active",
+        data: {
+          escapedThreatNetworkId: escapedTarget.networkId,
+          pursuerNetworkId: closeMeleeThreat.networkId,
+          pursuerType: closeMeleeThreat.entityType,
+          position: observation.player.position,
+        },
+      });
+      return;
+    }
+    const current = yield* state.driver.observe;
+    if (!current.player.dead) {
+      yield* recoverLocalNavigationTrap(state, current.player.position);
     }
   });
 }
@@ -4275,9 +5431,25 @@ function monitorEscapeSafety(
           },
           maximumResults: 8,
         })),
+        Effect.zip(
+          GROUP_AGGRO_ENTITY_TYPES.has(target.entityType)
+            ? state.driver.queryEntities({
+              origin: observation.player.position,
+              radius: monitoringRadius,
+              selector: {
+                entityTypes: groupAggroFamilyEntityTypes(target),
+                alive: true,
+              },
+              maximumResults: 32,
+            })
+            : Effect.succeed<readonly BeatGameEntityObservation[]>([]),
+        ),
         Effect.flatMap(([
-          [[currentTarget], immediateThreat],
-          visibleCreepers,
+          [
+            [[currentTarget], immediateThreat],
+            visibleCreepers,
+          ],
+          nearbyGroupCandidates,
         ]) => {
           const urgentCreeper = immediateThreat?.response === "flee"
               && immediateThreat.target.entityType === "minecraft:creeper"
@@ -4344,6 +5516,18 @@ function monitorEscapeSafety(
               target: immediateThreat.target,
             } as const);
           }
+          if (requiresPersistentGroupEscape(
+            target,
+            nearbyGroupCandidates,
+          )) {
+            return monitorEscapeSafety(
+              state,
+              target,
+              observation,
+              continueEscapingWhenHit,
+              rangedGroupEscape,
+            );
+          }
           if (currentTarget === undefined) {
             return immediateThreat === undefined
               ? Effect.succeed({ type: "safe" } as const)
@@ -4358,6 +5542,7 @@ function monitorEscapeSafety(
             PROACTIVE_MELEE_HOSTILE_ENTITY_TYPES.has(
               currentTarget.entityType,
             )
+            && !GROUP_AGGRO_ENTITY_TYPES.has(currentTarget.entityType)
             && !PROACTIVE_RANGED_HOSTILE_ENTITY_TYPES.has(
               currentTarget.entityType,
             )
@@ -4397,10 +5582,16 @@ function monitorEscapeSafety(
           if (
             FAST_MELEE_PURSUER_ENTITY_TYPES.has(currentTarget.entityType)
             && distanceSquared(
-                observation.player.position,
-                currentTarget.position,
-              ) <= EMERGENCY_KNOCKBACK_RANGE ** 2
+              observation.player.position,
+              currentTarget.position,
+            ) <= EMERGENCY_KNOCKBACK_RANGE ** 2
           ) {
+            const groupEscapeRequired =
+              GROUP_AGGRO_ENTITY_TYPES.has(
+                currentTarget.entityType,
+              )
+              && isActiveConditionalHostile(currentTarget)
+              && immediateThreat?.response === "flee";
             const shouldFightCaughtPursuer = shouldCommitToMeleeFight(
               observation,
               currentTarget,
@@ -4408,9 +5599,11 @@ function monitorEscapeSafety(
               hasMeleeWeapon(observation)
               || observation.player.health
                 < previousObservation.player.health
-            );
+            ) && !groupEscapeRequired;
             return Effect.succeed({
-              type: shouldFightCaughtPursuer
+              type: groupEscapeRequired
+                ? "escape"
+                : shouldFightCaughtPursuer
                 ? "defend"
                 : "escape",
               target: currentTarget,
@@ -4609,15 +5802,26 @@ function knockBackAndSprintAway(
       state.driver,
       playerPosition,
     );
-    const nearbyThreats = yield* state.driver.queryEntities({
+    const nearbyEntityCandidates = yield* state.driver.queryEntities({
       origin: playerPosition,
       radius: RANGED_THREAT_ESCAPE_SAFE_DISTANCE,
       selector: { categories: [2], alive: true },
       maximumResults: 32,
     });
+    const nearbyThreats = nearbyEntityCandidates.filter(isCurrentlyHostileMob);
+    const groupAggroRisk = hasNearbyGroupAggroMember(
+      threat,
+      nearbyEntityCandidates,
+    );
+    const nearbyGroupMembers = groupAggroRisk
+      ? nearbyEntityCandidates.filter((candidate) =>
+        sharesGroupAggroFamily(threat, candidate)
+      )
+      : [];
     const escapeThreats = deduplicateEntityTargets([
       threat,
       ...nearbyThreats,
+      ...nearbyGroupMembers,
     ]).filter((candidate) =>
       candidate.position.dimension === playerPosition.dimension
     );
@@ -4655,24 +5859,59 @@ function knockBackAndSprintAway(
       {
         minimumPreferredAlignment: threat.entityType === "minecraft:creeper"
           ? CREEPER_ESCAPE_MINIMUM_AWAY_ALIGNMENT
+          : rangedThreat
+          ? RANGED_ESCAPE_MINIMUM_AWAY_ALIGNMENT
           : -1,
       },
     );
+    const alignedSwimmableDirection = threat.entityType === "minecraft:creeper"
+      && dryDirection === undefined
+      ? selectSafeDirectEscapeDirection(
+        escapeSurface,
+        playerPosition,
+        preferredDirection,
+        escapeThreats,
+        directSprintDistance,
+        0,
+        {
+          allowSwimmableSurface: true,
+          minimumPreferredAlignment: CREEPER_ESCAPE_MINIMUM_AWAY_ALIGNMENT,
+        },
+      )
+      : undefined;
+    const groupSafeDryDirection = threat.entityType === "minecraft:creeper"
+      && dryDirection === undefined
+      && alignedSwimmableDirection === undefined
+      && escapeThreats.length > 1
+      ? selectSafeDirectEscapeDirection(
+        escapeSurface,
+        playerPosition,
+        preferredDirection,
+        escapeThreats,
+        directSprintDistance,
+        rangedThreat ? 2 : 0,
+      )
+      : undefined;
+    const groupSafeSwimmableDirection = threat.entityType
+        === "minecraft:creeper"
+      && dryDirection === undefined
+      && alignedSwimmableDirection === undefined
+      && groupSafeDryDirection === undefined
+      && escapeThreats.length > 1
+      ? selectSafeDirectEscapeDirection(
+        escapeSurface,
+        playerPosition,
+        preferredDirection,
+        escapeThreats,
+        directSprintDistance,
+        0,
+        { allowSwimmableSurface: true },
+      )
+      : undefined;
     const direction = dryDirection
-      ?? (threat.entityType === "minecraft:creeper"
-        ? selectSafeDirectEscapeDirection(
-          escapeSurface,
-          playerPosition,
-          preferredDirection,
-          escapeThreats,
-          directSprintDistance,
-          0,
-          {
-            allowSwimmableSurface: true,
-            minimumPreferredAlignment: CREEPER_ESCAPE_MINIMUM_AWAY_ALIGNMENT,
-          },
-        )
-        : undefined);
+      ?? alignedSwimmableDirection
+      ?? groupSafeDryDirection
+      ?? groupSafeSwimmableDirection;
     const projectedPosition = direction === undefined
       ? playerPosition
       : {
@@ -4688,9 +5927,14 @@ function knockBackAndSprintAway(
     const emergencyBlindCreeperSprint =
       threat.entityType === "minecraft:creeper"
       && distance <= CREEPER_EMERGENCY_REEVASION_RADIUS
+      && escapeThreats.length === 1
       && nearbyLava.length === 0;
     return yield* state.driver.withControl(Effect.gen(function* () {
-      if (distance <= EMERGENCY_KNOCKBACK_RANGE) {
+      if (
+        distance <= EMERGENCY_KNOCKBACK_RANGE
+        && !isFusingCreeper(threat)
+        && (!groupAggroRisk || isAggressiveNeutralMob(threat))
+      ) {
         yield* performKnockbackStrike(state, observation, threat);
       }
       if (
@@ -4783,12 +6027,12 @@ function knockBackAndSprintAway(
             directSprintDistance,
             1,
           );
-          const refreshedThreats = yield* state.driver.queryEntities({
+          const refreshedThreats = (yield* state.driver.queryEntities({
             origin: current.player.position,
             radius: THREAT_ESCAPE_SAFE_DISTANCE,
             selector: { categories: [2], alive: true },
             maximumResults: 32,
-          });
+          })).filter(isCurrentlyHostileMob);
           const refreshedThreat = refreshedThreats.find((candidate) =>
             isSameEntityTarget(candidate, threat)
           ) ?? threat;
@@ -4846,6 +6090,71 @@ function knockBackAndSprintAway(
   });
 }
 
+function blockCreeperExplosion(
+  state: RunState,
+  observation: BeatGameObservation,
+  threat: BeatGameEntityObservation,
+): Effect.Effect<void, BeatGameDriverError> {
+  return state.driver.withControl(Effect.gen(function* () {
+    yield* state.driver.act({ type: "reset-movement" });
+    if (observation.player.equipment.offhand !== "minecraft:shield") {
+      yield* state.driver.act({
+        type: "equip-item",
+        selector: { itemIds: ["minecraft:shield"] },
+        equipmentSlot: "offhand",
+      });
+    }
+    const lookAtCreeper = (
+      player: BeatGamePosition,
+      creeper: BeatGameEntityObservation,
+    ): Effect.Effect<unknown, BeatGameDriverError> => {
+      const rotation = rotationToward(player, {
+        ...creeper.position,
+        y: creeper.position.y + 0.85,
+      });
+      return state.driver.act({
+        type: "look",
+        yaw: rotation.yaw,
+        pitch: rotation.pitch,
+      });
+    };
+    yield* lookAtCreeper(observation.player.position, threat);
+    yield* state.driver.act({ type: "use-item", hand: "off" });
+    for (
+      let poll = 0;
+      poll < CREEPER_SHIELD_MAXIMUM_POLLS;
+      poll += 1
+    ) {
+      yield* Effect.sleep(CREEPER_SHIELD_POLL_MS);
+      const current = yield* state.driver.observe;
+      if (current.player.dead) {
+        return;
+      }
+      const [currentThreat] = yield* state.driver.queryEntities({
+        origin: current.player.position,
+        radius: CHARGED_CREEPER_BLAST_SAFE_DISTANCE,
+        selector: { networkId: threat.networkId, alive: true },
+        maximumResults: 1,
+      });
+      if (currentThreat === undefined || !isFusingCreeper(currentThreat)) {
+        return;
+      }
+      if (poll % 4 === 3) {
+        yield* lookAtCreeper(current.player.position, currentThreat);
+      }
+    }
+  }).pipe(
+    Effect.ensuring(
+      state.driver.act({ type: "release-item" }).pipe(
+        Effect.ignore,
+        Effect.zipRight(
+          state.driver.act({ type: "reset-movement" }).pipe(Effect.ignore),
+        ),
+      ),
+    ),
+  ));
+}
+
 function performKnockbackStrike(
   state: RunState,
   observation: BeatGameObservation,
@@ -4883,6 +6192,59 @@ function deduplicateEntityTargets(
     `${entity.connectionEpoch}:${entity.networkId}`,
     entity,
   ])).values()];
+}
+
+function hasNearbyGroupAggroMember(
+  target: BeatGameEntityObservation,
+  candidates: readonly BeatGameEntityObservation[],
+): boolean {
+  return GROUP_AGGRO_ENTITY_TYPES.has(target.entityType)
+    && candidates.some((candidate) =>
+      !isSameEntityTarget(target, candidate)
+      && candidate.position.dimension === target.position.dimension
+      && sharesGroupAggroFamily(target, candidate)
+    );
+}
+
+function requiresPersistentGroupEscape(
+  target: BeatGameEntityObservation,
+  candidates: readonly BeatGameEntityObservation[],
+): boolean {
+  if (!hasNearbyGroupAggroMember(target, candidates)) {
+    return false;
+  }
+  return target.entityType === "minecraft:piglin_brute"
+    || isAggressiveNeutralMob(target)
+    || candidates.some((candidate) =>
+      sharesGroupAggroFamily(target, candidate)
+      && (
+        candidate.entityType === "minecraft:piglin_brute"
+        || isAggressiveNeutralMob(candidate)
+      )
+    );
+}
+
+function groupAggroFamilyEntityTypes(
+  target: BeatGameEntityObservation,
+): readonly string[] {
+  return target.entityType === "minecraft:zombified_piglin"
+    ? ["minecraft:zombified_piglin"]
+    : ["minecraft:piglin", "minecraft:piglin_brute"];
+}
+
+function sharesGroupAggroFamily(
+  left: BeatGameEntityObservation,
+  right: BeatGameEntityObservation,
+): boolean {
+  if (
+    !GROUP_AGGRO_ENTITY_TYPES.has(left.entityType)
+    || !GROUP_AGGRO_ENTITY_TYPES.has(right.entityType)
+  ) {
+    return false;
+  }
+  const leftIsZombified = left.entityType === "minecraft:zombified_piglin";
+  const rightIsZombified = right.entityType === "minecraft:zombified_piglin";
+  return leftIsZombified === rightIsZombified;
 }
 
 function selectSafeDirectEscapeDirection(
@@ -4945,6 +6307,16 @@ function selectSafeDirectEscapeDirection(
     ) {
       continue;
     }
+    if (
+      !hasNonRegressingThreatEscapeCorridor(
+        player,
+        direction,
+        threats,
+        distance,
+      )
+    ) {
+      continue;
+    }
     const endpoint = {
       ...player,
       x: player.x + direction.x * distance,
@@ -4974,6 +6346,88 @@ function selectSafeDirectEscapeDirection(
     }
   }
   return best?.direction;
+}
+
+export function hasNonRegressingThreatEscapeCorridor(
+  player: BeatGamePosition,
+  direction: Readonly<{ x: number; z: number }>,
+  threats: readonly BeatGameEntityObservation[],
+  distance: number,
+): boolean {
+  const normalizedDirection = normalizeHorizontalDirection(direction);
+  for (const threat of threats) {
+    if (threat.position.dimension !== player.dimension) {
+      continue;
+    }
+    const exclusionRadius = directEscapeThreatExclusionRadius(threat);
+    const influenceRadius = directEscapeThreatInfluenceRadius(threat);
+    let previousDistance = Math.sqrt(horizontalDistanceSquared(
+      player,
+      threat.position,
+    ));
+    let outsideInfluence = previousDistance >= influenceRadius;
+    let outsideExclusion = previousDistance >= exclusionRadius;
+    for (let offset = 0.5; offset <= distance; offset += 0.5) {
+      const candidate = {
+        ...player,
+        x: player.x + normalizedDirection.x * offset,
+        z: player.z + normalizedDirection.z * offset,
+      };
+      const candidateDistance = Math.sqrt(horizontalDistanceSquared(
+        candidate,
+        threat.position,
+      ));
+      if (
+        candidateDistance < exclusionRadius
+        && (
+          outsideExclusion
+          || candidateDistance + 0.1 < previousDistance
+        )
+      ) {
+        return false;
+      }
+      if (
+        candidateDistance < influenceRadius
+        && (
+          outsideInfluence
+          || candidateDistance + 0.1 < previousDistance
+        )
+      ) {
+        return false;
+      }
+      outsideExclusion ||= candidateDistance >= exclusionRadius;
+      outsideInfluence ||= candidateDistance >= influenceRadius;
+      previousDistance = candidateDistance;
+    }
+  }
+  return true;
+}
+
+function directEscapeThreatExclusionRadius(
+  threat: BeatGameEntityObservation,
+): number {
+  if (threat.entityType === "minecraft:creeper") {
+    return 8;
+  }
+  if (
+    PROACTIVE_RANGED_HOSTILE_ENTITY_TYPES.has(threat.entityType)
+    || threat.entityType === "minecraft:drowned"
+  ) {
+    return 10;
+  }
+  if (threat.entityType === "minecraft:enderman") {
+    return 6;
+  }
+  return 4;
+}
+
+function directEscapeThreatInfluenceRadius(
+  threat: BeatGameEntityObservation,
+): number {
+  return PROACTIVE_RANGED_HOSTILE_ENTITY_TYPES.has(threat.entityType)
+      || threat.entityType === "minecraft:drowned"
+    ? RANGED_THREAT_ESCAPE_SAFE_DISTANCE
+    : THREAT_ESCAPE_SAFE_DISTANCE;
 }
 
 function normalizeHorizontalDirection(
@@ -5181,32 +6635,17 @@ function preferredUsableFoodItemIds(
 function hasUnsafeAir(observation: BeatGameObservation): boolean {
   return observation.player.maxAir > 0
     && observation.player.air
-      <= Math.min(MINIMUM_SAFE_AIR_TICKS, observation.player.maxAir * 2 / 3);
+      <= Math.min(MINIMUM_SAFE_AIR_TICKS, observation.player.maxAir);
 }
 
 function hasUnsafeAirDuringAction(
-  decision: Exclude<
+  _decision: Exclude<
     BeatGamePlannerDecision,
     { readonly type: "advance-phase" }
   >,
   observation: BeatGameObservation,
 ): boolean {
-  const managesAirRecovery = decision.type === "satisfy-requirement"
-    && (
-      decision.requirement.key === "food"
-      || decision.requirement.key === "food-supply"
-      || decision.requirement.key === "lava-bucket"
-    )
-    || isUrgentCorpseRecoveryFoodSearch(decision, observation);
-  if (!managesAirRecovery) {
-    return hasUnsafeAir(observation);
-  }
-  return observation.player.maxAir > 0
-    && observation.player.air
-      <= Math.min(
-        AQUATIC_HUNT_EMERGENCY_AIR_TICKS,
-        observation.player.maxAir / 5,
-      );
+  return hasUnsafeAir(observation);
 }
 
 function shouldResumeUrgentAquaticFoodHunt(
@@ -5323,11 +6762,30 @@ function monitorAirRecoveryThreat(
           : hasUnsafeAir(observation)
           ? Effect.suspend(poll)
           : findImmediateThreat(state, observation).pipe(
-            Effect.flatMap((threat) =>
-              threat === undefined
-                ? Effect.suspend(poll)
-                : Effect.succeed(threat)
-            ),
+            Effect.flatMap((threat) => {
+              if (threat !== undefined && isFusingCreeper(threat.target)) {
+                return Effect.succeed(threat);
+              }
+              if (threat === undefined) {
+                return Effect.suspend(poll);
+              }
+              return isPlayerInFluid(
+                state.driver,
+                observation.player.position,
+              ).pipe(
+                Effect.flatMap((inFluid) =>
+                  inFluid
+                    ? observation.player.maxAir <= 0
+                        || observation.player.air
+                          >= observation.player.maxAir
+                      ? Effect.succeed(threat)
+                      : Effect.suspend(poll)
+                    : observation.player.onGround
+                    ? Effect.succeed(threat)
+                    : Effect.suspend(poll)
+                ),
+              );
+            }),
           )
       ),
     );
@@ -5338,20 +6796,42 @@ function respondToAirRecoveryThreat(
   state: RunState,
   threat: ImmediateThreat,
 ): Effect.Effect<void, BeatGameDriverError> {
-  return threat.response === "flee"
-    ? escapeFromTarget(state, threat.target)
-    : defendAgainstTarget(state, threat.target).pipe(
-      Effect.catchTag(
-        "BeatGameDriverError",
-        (error) =>
-          error.operation === "task.attack-entity"
-              || error.operation === "task.attack-nearest"
-              || error.code === "not_found"
-              || error.code === "unreachable"
-            ? recoverFromFailedDefense(state, threat.target)
-            : Effect.fail(error),
-      ),
-    );
+  return state.driver.observe.pipe(
+    Effect.flatMap((observation) =>
+      shouldShieldCreeperExplosion(observation, threat.target)
+        ? blockCreeperExplosion(state, observation, threat.target).pipe(
+          Effect.zipRight(state.driver.observe),
+          Effect.flatMap((latest) =>
+            latest.player.dead
+              ? Effect.void
+              : isPlayerInFluid(
+                state.driver,
+                latest.player.position,
+              ).pipe(
+                Effect.flatMap((inFluid) =>
+                  inFluid
+                    ? emergencyAirAscent(state, latest.player.position)
+                    : Effect.void
+                ),
+              )
+          ),
+        )
+        : threat.response === "flee"
+        ? escapeFromTarget(state, threat.target)
+        : defendAgainstTarget(state, threat.target).pipe(
+          Effect.catchTag(
+            "BeatGameDriverError",
+            (error) =>
+              error.operation === "task.attack-entity"
+                  || error.operation === "task.attack-nearest"
+                  || error.code === "not_found"
+                  || error.code === "unreachable"
+                ? recoverFromFailedDefense(state, threat.target)
+                : Effect.fail(error),
+          ),
+        )
+    ),
+  );
 }
 
 function recoverFromFailedDefense(
@@ -5409,9 +6889,7 @@ function recoverFromFluid(
     }).pipe(
       Effect.zipRight(state.driver.act({
         type: "set-movement",
-        forward: true,
         jump: true,
-        sprint: observation.player.food > CRITICAL_HUNGER_FOOD_LEVEL,
       })),
       Effect.zipRight(waitForAirRecovery(
         state,
@@ -5427,17 +6905,23 @@ function recoverFromFluid(
     Effect.flatMap((recovered) =>
       recovered && !seekDrySurfaceAfterRecovery
         ? Effect.succeed(true)
-        : swimToNearbyDrySurface(state, !recovered).pipe(
-          Effect.flatMap((reachedDrySurface) =>
-            reachedDrySurface
-              ? Effect.succeed(true)
-              : state.driver.observe.pipe(
-                Effect.flatMap((latest) =>
-                  hasCriticalAir(latest)
-                    ? Effect.succeed(false)
-                    : escapeNearbyBreathingPocket(state, latest)
-                ),
-              )
+        : (
+          recovered
+            ? Effect.succeed(false)
+            : state.driver.observe.pipe(
+              Effect.flatMap((latest) =>
+                hasAirForBreathingPocketPath(latest)
+                  ? escapeNearbyBreathingPocket(state, latest)
+                  : Effect.succeed(false)
+              ),
+            )
+        ).pipe(
+          Effect.flatMap((reachedBreathingPocket) =>
+            swimToNearbyDrySurface(state, true).pipe(
+              Effect.map((reachedDrySurface) =>
+                reachedDrySurface || reachedBreathingPocket
+              ),
+            )
           ),
         )
     ),
@@ -5452,7 +6936,16 @@ function recoverFromFluid(
                   escaped ? Effect.void : excavateAirEscapeShaft(state)
                 ),
               )
-              : escapeToOverworldSurface(state, originalPosition)
+              : hasBreathableHeadSpace(
+                state.driver,
+                latest.player.position,
+              ).pipe(
+                Effect.flatMap((breathingAtSurface) =>
+                  breathingAtSurface
+                    ? Effect.void
+                    : escapeToOverworldSurface(state, originalPosition)
+                ),
+              )
           ),
           Effect.either,
           Effect.flatMap(() => state.driver.observe),
@@ -5550,55 +7043,129 @@ function tryBreathingPocketCandidates(
   if (candidate === undefined) {
     return Effect.succeed(false);
   }
-  const feet = {
-    x: Math.floor(candidate.target.x),
-    y: Math.floor(candidate.target.y),
-    z: Math.floor(candidate.target.z),
-    dimension: candidate.target.dimension,
-  } satisfies BeatGameBlockPosition;
-  return queryExactBlock(state.driver, feet).pipe(
-    Effect.flatMap((feetBlock) =>
-      feetBlock !== undefined && !feetBlock.replaceable
-        ? Effect.succeed(false)
-        : state.driver.pathfind(
-          candidate.target,
-          0.75,
-          {
-            ...state.strategy.path,
-            allowMining: false,
-            allowPlacing: false,
-            avoidFluids: false,
-            maxSearchTimeMs: Math.min(
-              state.strategy.path.maxSearchTimeMs,
-              AIR_ESCAPE_BREATHING_POCKET_PATH_TIMEOUT_MS,
-            ),
-          },
-        ).pipe(
-          Effect.timeoutFail({
-            duration: AIR_ESCAPE_BREATHING_POCKET_PATH_TIMEOUT_MS,
-            onTimeout: () => new BeatGameDriverError({
-              operation: "pathfind",
-              code: "unreachable",
-              retryable: true,
-              message: `Timed out reaching breathing pocket at ${
-                positionKey(candidate.target)
-              }`,
-            }),
-          }),
-          Effect.zipRight(state.driver.observe),
-          Effect.flatMap((current) =>
-            hasBreathableHeadSpace(
-              state.driver,
-              current.player.position,
+  return state.driver.observe.pipe(
+    Effect.flatMap((observation) => {
+      if (
+        observation.player.dead
+        || !hasAirForBreathingPocketPath(observation)
+      ) {
+        return Effect.succeed(false);
+      }
+      const feet = {
+        x: Math.floor(candidate.target.x),
+        y: Math.floor(candidate.target.y),
+        z: Math.floor(candidate.target.z),
+        dimension: candidate.target.dimension,
+      } satisfies BeatGameBlockPosition;
+      return queryExactBlock(state.driver, feet).pipe(
+        Effect.flatMap((feetBlock) =>
+          feetBlock !== undefined && !feetBlock.replaceable
+            ? Effect.succeed(false)
+            : state.driver.pathfind(
+              candidate.target,
+              0.75,
+              {
+                ...state.strategy.path,
+                allowMining: false,
+                allowPlacing: false,
+                avoidFluids: false,
+                maxSearchTimeMs: Math.min(
+                  state.strategy.path.maxSearchTimeMs,
+                  AIR_ESCAPE_BREATHING_POCKET_PATH_TIMEOUT_MS,
+                ),
+              },
+            ).pipe(
+              Effect.timeoutFail({
+                duration: AIR_ESCAPE_BREATHING_POCKET_PATH_TIMEOUT_MS,
+                onTimeout: () => new BeatGameDriverError({
+                  operation: "pathfind",
+                  code: "unreachable",
+                  retryable: true,
+                  message: `Timed out reaching breathing pocket at ${
+                    positionKey(candidate.target)
+                  }`,
+                }),
+              }),
+              Effect.zipRight(state.driver.observe),
+              Effect.flatMap((current) =>
+                hasBreathableHeadSpace(
+                  state.driver,
+                  current.player.position,
+                ).pipe(
+                  Effect.flatMap((breathable) =>
+                    breathable
+                      ? waitForBreathingPocketRecovery(state)
+                      : Effect.succeed(false)
+                  ),
+                )
+              ),
+              Effect.catchTag(
+                "BeatGameDriverError",
+                () => Effect.succeed(false),
+              ),
             )
-          ),
-          Effect.catchTag("BeatGameDriverError", () => Effect.succeed(false)),
-        )
-    ),
+        ),
+      );
+    }),
     Effect.flatMap((reached) =>
       reached
         ? Effect.succeed(true)
         : tryBreathingPocketCandidates(state, candidates, index + 1)
+    ),
+  );
+}
+
+function waitForBreathingPocketRecovery(
+  state: RunState,
+): Effect.Effect<boolean, BeatGameDriverError> {
+  const wait = (
+    previousAir: number,
+    attemptsRemaining: number,
+    stagnantObservations = 0,
+  ): Effect.Effect<boolean, BeatGameDriverError> =>
+    Effect.sleep(100).pipe(
+      Effect.zipRight(state.driver.observe),
+      Effect.flatMap((observation) => {
+        if (observation.player.dead) {
+          return Effect.succeed(false);
+        }
+        if (
+          observation.player.maxAir <= 0
+          || observation.player.air >= observation.player.maxAir
+        ) {
+          return Effect.succeed(true);
+        }
+        const recovering = observation.player.air > previousAir;
+        const nextStagnantObservations = recovering
+          ? 0
+          : stagnantObservations + 1;
+        return attemptsRemaining <= 1
+            || nextStagnantObservations
+              >= AIR_ESCAPE_ASCENT_STAGNATION_OBSERVATIONS
+          ? Effect.succeed(false)
+          : wait(
+            observation.player.air,
+            attemptsRemaining - 1,
+            nextStagnantObservations,
+          );
+      }),
+    );
+  return state.driver.observe.pipe(
+    Effect.flatMap((observation) =>
+      state.driver.withControl(
+        state.driver.act({
+          type: "set-movement",
+          jump: true,
+        }).pipe(
+          Effect.zipRight(wait(
+            observation.player.air,
+            AIR_ESCAPE_SURFACE_APPROACH_ATTEMPTS,
+          )),
+          Effect.ensuring(
+            state.driver.act({ type: "reset-movement" }).pipe(Effect.ignore),
+          ),
+        ),
+      )
     ),
   );
 }
@@ -5631,7 +7198,6 @@ function waitForAirRecovery(
         observation.player.dead
         || observation.player.maxAir <= 0
         || observation.player.air >= observation.player.maxAir
-        || observation.player.air > highestAir
       ) {
         return Effect.succeed(true);
       }
@@ -5669,16 +7235,20 @@ function swimToNearbyDrySurface(
     if (observation.player.dead) {
       return true;
     }
-    const surfaces = (yield* findDrySurfaceEscapeColumns(
+    const surfaces = yield* findDrySurfaceEscapeColumns(
       state,
       observation.player.position,
-    )).filter((surface) =>
-      surface.surfaceY - observation.player.position.y
-        <= AIR_ESCAPE_MAXIMUM_SWIMMABLE_RISE
     );
     if (surfaces.length === 0) {
       return false;
     }
+    const directlyReachableSurfaces = surfaces.filter((surface) =>
+      surface.surfaceY - observation.player.position.y
+        <= AIR_ESCAPE_MAXIMUM_SWIMMABLE_RISE
+    );
+    const usableSurfaces: Array<
+      Readonly<{ x: number; z: number; surfaceY: number }>
+    > = [];
     for (const surface of surfaces) {
       const support = yield* queryExactBlock(state.driver, {
         x: surface.x,
@@ -5695,63 +7265,161 @@ function swimToNearbyDrySurface(
       ) {
         continue;
       }
-      const target = {
-        x: surface.x + 0.5,
-        y: surface.surfaceY + 1,
-        z: surface.z + 0.5,
-        dimension: observation.player.position.dimension,
-      };
-      if (!swimDirectly) {
-        yield* state.driver.pathfind(
-          target,
-          DRY_SURFACE_APPROACH_RADIUS,
-          {
-            ...survivalPathPolicy(
-              state.strategy.path,
-              observation.player.health,
-              state.strategy.minimumHealth,
-            ),
-            allowMining: false,
-            allowPlacing: false,
-            avoidFluids: false,
-            sprint: observation.player.food > CRITICAL_HUNGER_FOOD_LEVEL,
-            maxSearchTimeMs: Math.min(
-              state.strategy.path.maxSearchTimeMs,
-              SHORE_PATH_MAX_SEARCH_TIME_MS,
-            ),
-          },
-        ).pipe(
-          Effect.timeoutFail({
-            duration: SHORE_PATH_TIMEOUT_MS,
-            onTimeout: () => new BeatGameDriverError({
-              operation: "pathfind",
-              code: "unreachable",
-              retryable: true,
-              message: `Timed out pathfinding toward dry surface at ${
-                positionKey(target)
-              }`,
-            }),
-          }),
-          Effect.either,
-        );
+      usableSurfaces.push(surface);
+    }
+    const directlyUsableSurfaces = usableSurfaces.filter((surface) =>
+      directlyReachableSurfaces.includes(surface)
+    );
+    if (swimDirectly) {
+      const reachedDirectly = yield* swimDirectlyToDrySurfaceCandidates(
+        state,
+        directlyUsableSurfaces,
+      );
+      if (reachedDirectly) {
+        return true;
+      }
+    }
+    if (!swimDirectly) {
+      const firstDirectSurface = directlyUsableSurfaces[0];
+      if (
+        firstDirectSurface !== undefined
+        && (yield* pathfindTowardDrySurface(state, firstDirectSurface))
+      ) {
+        return true;
+      }
+      const afterApproach = yield* state.driver.observe;
+      if (afterApproach.player.dead) {
+        return true;
+      }
+      if (hasUnsafeAir(afterApproach)) {
+        return false;
+      }
+      const reachedDirectly = yield* swimDirectlyToDrySurfaceCandidates(
+        state,
+        directlyUsableSurfaces,
+      );
+      if (reachedDirectly) {
+        return true;
+      }
+    }
+    const plannedSurfaces = swimDirectly
+      ? usableSurfaces
+      : usableSurfaces.filter((surface) =>
+        !directlyUsableSurfaces.includes(surface)
+      );
+    for (
+      const surface of plannedSurfaces.slice(
+        0,
+        SURFACE_RECOVERY_DIRECT_PATH_CANDIDATES,
+      )
+    ) {
+      if (yield* pathfindTowardDrySurface(state, surface)) {
+        return true;
       }
       const current = yield* state.driver.observe;
       if (current.player.dead) {
         return true;
       }
-      if (!(yield* isPlayerInFluid(
-        state.driver,
-        current.player.position,
-      ))) {
-        return true;
+      if (hasUnsafeAir(current)) {
+        return false;
       }
-      const reached = yield* swimTowardDrySurface(state, surface);
+    }
+    return false;
+  });
+}
+
+function pathfindTowardDrySurface(
+  state: RunState,
+  surface: Readonly<{ x: number; z: number; surfaceY: number }>,
+): Effect.Effect<boolean, BeatGameDriverError> {
+  return Effect.gen(function* () {
+    const observation = yield* state.driver.observe;
+    if (observation.player.dead) {
+      return true;
+    }
+    if (
+      !hasAirForBreathingPocketPath(observation)
+      || !(yield* hasBreathableHeadSpace(
+        state.driver,
+        observation.player.position,
+      ))
+    ) {
+      return false;
+    }
+    const target = {
+      x: surface.x + 0.5,
+      y: surface.surfaceY + 1,
+      z: surface.z + 0.5,
+      dimension: observation.player.position.dimension,
+    };
+    yield* Effect.raceFirst(
+      state.driver.pathfind(
+        target,
+        DRY_SURFACE_APPROACH_RADIUS,
+        {
+          ...survivalPathPolicy(
+            state.strategy.path,
+            observation.player.health,
+            state.strategy.minimumHealth,
+          ),
+          allowMining: false,
+          allowPlacing: false,
+          avoidFluids: false,
+          sprint: observation.player.food > CRITICAL_HUNGER_FOOD_LEVEL,
+          maxSearchTimeMs: Math.min(
+            state.strategy.path.maxSearchTimeMs,
+            SHORE_PATH_MAX_SEARCH_TIME_MS,
+          ),
+        },
+      ).pipe(
+        Effect.timeoutFail({
+          duration: SHORE_PATH_TIMEOUT_MS,
+          onTimeout: () => new BeatGameDriverError({
+            operation: "pathfind",
+            code: "unreachable",
+            retryable: true,
+            message: `Timed out pathfinding toward dry surface at ${
+              positionKey(target)
+            }`,
+          }),
+        }),
+        Effect.catchTag("BeatGameDriverError", () => Effect.void),
+      ),
+      waitForUnsafeAir(state).pipe(Effect.asVoid),
+    );
+    const current = yield* state.driver.observe;
+    if (current.player.dead) {
+      return true;
+    }
+    return !(yield* isPlayerInFluid(
+      state.driver,
+      current.player.position,
+    )) && current.player.onGround;
+  });
+}
+
+function swimDirectlyToDrySurfaceCandidates(
+  state: RunState,
+  candidates: readonly Readonly<{
+    x: number;
+    z: number;
+    surfaceY: number;
+  }>[],
+  maximumApproachAttempts = AIR_ESCAPE_SURFACE_APPROACH_ATTEMPTS,
+): Effect.Effect<boolean, BeatGameDriverError> {
+  return Effect.gen(function* () {
+    for (const surface of candidates) {
+      const reached = yield* swimTowardDrySurface(
+        state,
+        surface,
+        maximumApproachAttempts,
+      );
       if (reached) {
         return true;
       }
       const latest = yield* state.driver.observe;
       if (!(yield* isPlayerInFluid(state.driver, latest.player.position))) {
-        return true;
+        return latest.player.onGround;
       }
       if (hasCriticalAir(latest)) {
         return false;
@@ -5768,26 +7436,114 @@ function findDrySurfaceEscapeColumns(
   readonly { readonly x: number; readonly z: number; readonly surfaceY: number }[],
   BeatGameDriverError
 > {
-  return state.driver.sampleSurface(
-    position,
-    AIR_ESCAPE_SURFACE_SEARCH_RADIUS,
-    1,
-  ).pipe(
-    Effect.map((columns) =>
-      selectStableSurfaceEscapeColumns(columns, position)
-    ),
-    Effect.flatMap((nearbySurfaces) =>
-      nearbySurfaces.length > 0
-        ? Effect.succeed(nearbySurfaces)
+  return findNearbyDryEscapeLedges(state, position).pipe(
+    Effect.flatMap((nearbyLedges) =>
+      nearbyLedges.length > 0
+        ? Effect.succeed(nearbyLedges)
         : state.driver.sampleSurface(
           position,
-          AIR_ESCAPE_EXTENDED_SURFACE_SEARCH_RADIUS,
-          AIR_ESCAPE_EXTENDED_SURFACE_SAMPLE_STEP,
+          AIR_ESCAPE_SURFACE_SEARCH_RADIUS,
+          1,
         ).pipe(
           Effect.map((columns) =>
-            selectSurfaceEscapeColumns(columns, position)
+            selectStableSurfaceEscapeColumns(columns, position)
+          ),
+          Effect.flatMap((nearbySurfaces) =>
+            nearbySurfaces.length > 0
+              ? Effect.succeed(nearbySurfaces)
+              : state.driver.sampleSurface(
+                position,
+                AIR_ESCAPE_EXTENDED_SURFACE_SEARCH_RADIUS,
+                AIR_ESCAPE_EXTENDED_SURFACE_SAMPLE_STEP,
+              ).pipe(
+                Effect.map((columns) =>
+                  selectSurfaceEscapeColumns(columns, position)
+                ),
+              )
           ),
         )
+    ),
+  );
+}
+
+function findNearbyDryEscapeLedges(
+  state: RunState,
+  position: BeatGamePosition,
+  options: {
+    readonly radius?: number;
+    readonly maximumResults?: number;
+    readonly maximumCandidates?: number;
+    readonly maximumDrop?: number;
+    readonly maximumRise?: number;
+  } = {},
+): Effect.Effect<
+  readonly { readonly x: number; readonly z: number; readonly surfaceY: number }[],
+  BeatGameDriverError
+> {
+  const radius = options.radius ?? AIR_ESCAPE_LOCAL_LEDGE_SEARCH_RADIUS;
+  const maximumResults = options.maximumResults
+    ?? AIR_ESCAPE_LOCAL_LEDGE_QUERY_RESULTS;
+  const maximumCandidates = options.maximumCandidates
+    ?? AIR_ESCAPE_LOCAL_LEDGE_CANDIDATES;
+  const maximumDrop = options.maximumDrop
+    ?? MAXIMUM_DAMAGE_FREE_FALL_DISTANCE;
+  const maximumRise = options.maximumRise
+    ?? AIR_ESCAPE_MAXIMUM_SWIMMABLE_RISE;
+  return state.driver.queryBlocks({
+    center: position,
+    radius,
+    selector: { solid: true },
+    maximumResults,
+  }).pipe(
+    Effect.map((supports) =>
+      [...new Map(supports.flatMap((support) => {
+        const targetY = support.position.y + 1;
+        return isStableDryShaftSupport(support)
+            && !isUnsafeSurfaceBlock(support.blockId)
+            && targetY >= position.y - maximumDrop
+            && targetY - position.y <= maximumRise
+          ? [[positionKey(support.position), support] as const]
+          : [];
+      })).values()].sort((left, right) =>
+        distanceSquared(
+          blockCenter({ ...left.position, y: left.position.y + 1 }),
+          position,
+        ) - distanceSquared(
+          blockCenter({ ...right.position, y: right.position.y + 1 }),
+          position,
+        )
+      ).slice(0, maximumCandidates)
+    ),
+    Effect.flatMap((supports) =>
+      Effect.forEach(
+        supports,
+        (support) => {
+          const feet = { ...support.position, y: support.position.y + 1 };
+          const head = { ...feet, y: feet.y + 1 };
+          return Effect.all([
+            queryExactBlock(state.driver, feet),
+            queryExactBlock(state.driver, head),
+          ], { concurrency: 2 }).pipe(
+            Effect.map(([feetBlock, headBlock]) =>
+              isDryWalkingSpace(feetBlock) && isDryWalkingSpace(headBlock)
+                ? {
+                  x: support.position.x,
+                  z: support.position.z,
+                  surfaceY: support.position.y,
+                }
+                : undefined
+            ),
+          );
+        },
+        { concurrency: 8 },
+      )
+    ),
+    Effect.map((candidates) =>
+      selectDirectionalSurfaceColumns(
+        candidates.filter((candidate) => candidate !== undefined),
+        position,
+        AIR_ESCAPE_DIRECTION_SECTORS,
+      )
     ),
   );
 }
@@ -5898,7 +7654,22 @@ function excavateAirEscapeShaft(
             } at ${positionKey(overhead)}`,
           }));
         }
-        yield* digAirEscapeObstruction(state, observation, overhead);
+        const cleared = yield* digAirEscapeObstruction(
+          state,
+          observation,
+          obstruction,
+          overhead,
+        );
+        if (!cleared) {
+          return yield* Effect.fail(new BeatGameDriverError({
+            operation: "escape-submerged-cavity",
+            code: "unreachable",
+            retryable: true,
+            message: `Breaking ${obstruction.blockId} at ${
+              positionKey(overhead)
+            } would consume the emergency air reserve`,
+          }));
+        }
       }
       const rose = yield* swimUpOneLevel(
         state,
@@ -5935,30 +7706,105 @@ function excavateAirEscapeShaft(
 function digAirEscapeObstruction(
   state: RunState,
   observation: BeatGameObservation,
+  block: BeatGameBlockObservation,
   obstruction: BeatGameBlockPosition,
-): Effect.Effect<void, BeatGameDriverError> {
-  const dig = Effect.gen(function* () {
-    if (hasMiningPickaxe(observation)) {
+): Effect.Effect<boolean, BeatGameDriverError> {
+  return Effect.gen(function* () {
+    const toolItemIds = miningToolItemIdsFor(block);
+    const selectedTool = toolItemIds.find((itemId) =>
+      (observation.inventory.counts[itemId] ?? 0) > 0
+    );
+    if (selectedTool !== undefined) {
       yield* state.driver.act({
         type: "select-item",
-        selector: { itemIds: MINING_PICKAXE_ITEM_IDS },
+        selector: { itemIds: toolItemIds },
       });
     }
-    yield* state.driver.act({
+    const settled = yield* settleForSubmergedDig(state);
+    const inFluid = yield* isPlayerInFluid(
+      state.driver,
+      settled.player.position,
+    );
+    const estimatedTicks = estimatedBlockBreakTicks(
+      block,
+      selectedTool,
+      inFluid,
+      settled.player.onGround,
+    );
+    const usableAirTicks = settled.player.maxAir <= 0
+      ? Number.POSITIVE_INFINITY
+      : settled.player.air - AIR_ESCAPE_DIG_AIR_RESERVE_TICKS;
+    if (!Number.isFinite(estimatedTicks) || estimatedTicks > usableAirTicks) {
+      return false;
+    }
+    const timeoutMs = Math.max(
+      250,
+      (estimatedTicks + AIR_ESCAPE_DIG_TIMEOUT_BUFFER_TICKS) * 50,
+    );
+    const dig = state.driver.act({
       type: "dig-block",
       position: obstruction,
-    });
+    }).pipe(
+      Effect.timeoutFail({
+        duration: timeoutMs,
+        onTimeout: () => new BeatGameDriverError({
+          operation: "act.dig-block",
+          code: "deadline_exceeded",
+          retryable: true,
+          message: `Timed out clearing ${block.blockId} at ${
+            positionKey(obstruction)
+          } within the available air budget`,
+        }),
+      }),
+    );
+    if (!inFluid) {
+      yield* dig;
+      return true;
+    }
+    yield* state.driver.withControl(
+      state.driver.act({
+        type: "set-movement",
+        sneak: true,
+      }).pipe(
+        Effect.zipRight(dig),
+        Effect.ensuring(
+          state.driver.act({ type: "reset-movement" }).pipe(
+            Effect.ignore,
+          ),
+        ),
+      ),
+    );
+    return true;
   });
-  return isPlayerInFluid(state.driver, observation.player.position).pipe(
-    Effect.flatMap((inFluid) =>
-      !inFluid
-        ? dig
+}
+
+function settleForSubmergedDig(
+  state: RunState,
+): Effect.Effect<BeatGameObservation, BeatGameDriverError> {
+  const wait = (
+    attemptsRemaining: number,
+  ): Effect.Effect<BeatGameObservation, BeatGameDriverError> =>
+    Effect.sleep(100).pipe(
+      Effect.zipRight(state.driver.observe),
+      Effect.flatMap((observation) =>
+        observation.player.dead
+            || observation.player.onGround
+            || attemptsRemaining <= 1
+            || hasCriticalAir(observation)
+          ? Effect.succeed(observation)
+          : wait(attemptsRemaining - 1)
+      ),
+    );
+  return state.driver.observe.pipe(
+    Effect.flatMap((observation) =>
+      observation.player.dead || observation.player.onGround
+        ? Effect.succeed(observation)
         : state.driver.withControl(
           state.driver.act({
             type: "set-movement",
-            jump: true,
+            sneak: true,
           }).pipe(
-            Effect.zipRight(dig),
+            Effect.zipRight(wait(AIR_ESCAPE_DIG_SETTLE_ATTEMPTS)),
             Effect.ensuring(
               state.driver.act({ type: "reset-movement" }).pipe(
                 Effect.ignore,
@@ -5968,6 +7814,120 @@ function digAirEscapeObstruction(
         )
     ),
   );
+}
+
+function miningToolItemIdsFor(
+  block: BeatGameBlockObservation,
+): readonly string[] {
+  const toolTags = block.effectiveToolTags ?? [];
+  if (toolTags.includes("minecraft:mineable/axe")) {
+    return MINING_AXE_ITEM_IDS;
+  }
+  if (toolTags.includes("minecraft:mineable/shovel")) {
+    return MINING_SHOVEL_ITEM_IDS;
+  }
+  if (toolTags.includes("minecraft:mineable/hoe")) {
+    return MINING_HOE_ITEM_IDS;
+  }
+  return MINING_PICKAXE_ITEM_IDS;
+}
+
+function estimatedBlockBreakTicks(
+  block: BeatGameBlockObservation,
+  toolItemId: string | undefined,
+  submerged: boolean,
+  onGround: boolean,
+): number {
+  const hardness = block.hardness ?? 1.5;
+  if (!block.diggable || hardness < 0) {
+    return Number.POSITIVE_INFINITY;
+  }
+  if (hardness === 0) {
+    return 1;
+  }
+  const effectiveTool = selectedToolMatchesBlock(block, toolItemId);
+  const speed = effectiveTool ? miningToolSpeed(toolItemId) : 1;
+  const correctTool = effectiveTool
+    && selectedToolMeetsRequiredTier(block, toolItemId);
+  const baseTicks = hardness * (correctTool ? 30 : 100) / speed;
+  const environmentMultiplier = (submerged ? 5 : 1) * (onGround ? 1 : 5);
+  return Math.max(
+    1,
+    Math.ceil(baseTicks * environmentMultiplier * 1.25) + 5,
+  );
+}
+
+function selectedToolMatchesBlock(
+  block: BeatGameBlockObservation,
+  toolItemId: string | undefined,
+): boolean {
+  if (toolItemId === undefined) {
+    return false;
+  }
+  return (block.effectiveToolTags ?? []).some((tag) =>
+    tag === "minecraft:mineable/pickaxe"
+      ? toolItemId.endsWith("_pickaxe")
+      : tag === "minecraft:mineable/axe"
+      ? toolItemId.endsWith("_axe")
+      : tag === "minecraft:mineable/shovel"
+      ? toolItemId.endsWith("_shovel")
+      : tag === "minecraft:mineable/hoe"
+      ? toolItemId.endsWith("_hoe")
+      : false
+  );
+}
+
+function selectedToolMeetsRequiredTier(
+  block: BeatGameBlockObservation,
+  toolItemId: string | undefined,
+): boolean {
+  const toolTier = miningToolTier(toolItemId);
+  const toolTags = block.effectiveToolTags ?? [];
+  const requiredTier = toolTags.includes(
+      "minecraft:needs_diamond_tool",
+    )
+    ? 3
+    : toolTags.includes("minecraft:needs_iron_tool")
+    ? 2
+    : toolTags.includes("minecraft:needs_stone_tool")
+    ? 1
+    : 0;
+  return toolTier >= requiredTier;
+}
+
+function miningToolTier(toolItemId: string | undefined): number {
+  if (toolItemId?.startsWith("minecraft:netherite_") === true) {
+    return 4;
+  }
+  if (toolItemId?.startsWith("minecraft:diamond_") === true) {
+    return 3;
+  }
+  if (toolItemId?.startsWith("minecraft:iron_") === true) {
+    return 2;
+  }
+  if (toolItemId?.startsWith("minecraft:stone_") === true) {
+    return 1;
+  }
+  return 0;
+}
+
+function miningToolSpeed(toolItemId: string | undefined): number {
+  if (toolItemId?.startsWith("minecraft:golden_") === true) {
+    return 12;
+  }
+  if (toolItemId?.startsWith("minecraft:netherite_") === true) {
+    return 9;
+  }
+  if (toolItemId?.startsWith("minecraft:diamond_") === true) {
+    return 8;
+  }
+  if (toolItemId?.startsWith("minecraft:iron_") === true) {
+    return 6;
+  }
+  if (toolItemId?.startsWith("minecraft:stone_") === true) {
+    return 4;
+  }
+  return 2;
 }
 
 function nearestAirEscapeSurface(
@@ -6092,6 +8052,9 @@ function waitForOpenAirColumn(
       if (observation.player.dead) {
         return Effect.succeed(false);
       }
+      if (hasCriticalAir(observation)) {
+        return Effect.succeed(false);
+      }
       if (
         observation.player.maxAir <= 0
         || observation.player.air >= observation.player.maxAir
@@ -6137,6 +8100,17 @@ function hasCriticalAir(observation: BeatGameObservation): boolean {
       AIR_ESCAPE_CRITICAL_AIR_TICKS,
       observation.player.maxAir / 3,
     );
+}
+
+function hasAirForBreathingPocketPath(
+  observation: BeatGameObservation,
+): boolean {
+  return observation.player.maxAir <= 0
+    || observation.player.air
+      > Math.min(
+        observation.player.maxAir,
+        AIR_ESCAPE_BREATHING_POCKET_PATH_RESERVE_TICKS,
+      );
 }
 
 function overheadEscapeBlocks(
@@ -6273,15 +8247,22 @@ function isPlayerInBlocks(
       radius: 0.25,
       selector: { blockIds },
       maximumResults: 1,
-    })
+    }).pipe(
+      Effect.map((blocks) =>
+        blocks.some(({ position: observed }) =>
+          sameBlockPosition(observed, block)
+        )
+      ),
+    )
   )).pipe(
-    Effect.map((results) => results.some((blocks) => blocks.length > 0)),
+    Effect.map((results) => results.some(Boolean)),
   );
 }
 
 function swimTowardDrySurface(
   state: RunState,
   surface: Readonly<{ x: number; z: number; surfaceY: number }>,
+  maximumApproachAttempts = AIR_ESCAPE_SURFACE_APPROACH_ATTEMPTS,
 ): Effect.Effect<boolean, BeatGameDriverError> {
   return state.driver.observe.pipe(
     Effect.flatMap((observation) => {
@@ -6316,7 +8297,7 @@ function swimTowardDrySurface(
           Effect.zipRight(waitForDrySurfaceApproach(
             state,
             target,
-            AIR_ESCAPE_SURFACE_APPROACH_ATTEMPTS,
+            maximumApproachAttempts,
             rotation.yaw,
           )),
           Effect.ensuring(
@@ -6338,6 +8319,9 @@ function waitForDrySurfaceApproach(
   recoveringAir = false,
   previousDistanceSquared?: number,
   stagnantObservations = 0,
+  highestRecoveryY?: number,
+  highestRecoveryAir?: number,
+  recoveryStagnantObservations = 0,
 ): Effect.Effect<boolean, BeatGameDriverError> {
   return Effect.gen(function* () {
     yield* Effect.sleep(100);
@@ -6351,7 +8335,7 @@ function waitForDrySurfaceApproach(
       return true;
     }
     if (!(yield* isPlayerInFluid(state.driver, position))) {
-      return true;
+      return observation.player.onGround;
     }
     if (reachedSurface) {
       return attemptsRemaining <= 1
@@ -6364,6 +8348,9 @@ function waitForDrySurfaceApproach(
           recoveringAir,
           distanceToTarget,
           0,
+          highestRecoveryY,
+          highestRecoveryAir,
+          recoveryStagnantObservations,
         );
     }
     const hasRecoveredAir = observation.player.maxAir <= 0
@@ -6398,7 +8385,43 @@ function waitForDrySurfaceApproach(
         true,
         distanceToTarget,
         0,
+        position.y,
+        observation.player.air,
       );
+    }
+    if (recoveringAir) {
+      const madeRecoveryProgress = highestRecoveryY === undefined
+        || highestRecoveryAir === undefined
+        || position.y
+          > highestRecoveryY + AIR_ESCAPE_ASCENT_PROGRESS_EPSILON
+        || observation.player.air > highestRecoveryAir;
+      const nextRecoveryStagnantObservations = madeRecoveryProgress
+        ? 0
+        : recoveryStagnantObservations + 1;
+      if (
+        hasCriticalAir(observation)
+        || nextRecoveryStagnantObservations
+          >= AIR_ESCAPE_ASCENT_STAGNATION_OBSERVATIONS
+      ) {
+        return false;
+      }
+      return attemptsRemaining <= 1
+        ? false
+        : yield* waitForDrySurfaceApproach(
+          state,
+          target,
+          attemptsRemaining - 1,
+          targetYaw,
+          true,
+          distanceToTarget,
+          0,
+          Math.max(highestRecoveryY ?? position.y, position.y),
+          Math.max(
+            highestRecoveryAir ?? observation.player.air,
+            observation.player.air,
+          ),
+          nextRecoveryStagnantObservations,
+        );
     }
     const madeProgress = previousDistanceSquared === undefined
       || distanceToTarget < previousDistanceSquared - 0.05;
@@ -6416,6 +8439,9 @@ function waitForDrySurfaceApproach(
         recoveringAir,
         distanceToTarget,
         nextStagnantObservations,
+        highestRecoveryY,
+        highestRecoveryAir,
+        recoveryStagnantObservations,
       );
   });
 }
@@ -6423,7 +8449,28 @@ function waitForDrySurfaceApproach(
 function isAggressiveNeutralMob(
   entity: BeatGameEntityObservation,
 ): boolean {
-  return entity.target !== undefined;
+  return entity.aggressive === true || entity.target !== undefined;
+}
+
+function isCurrentlyHostileMob(
+  entity: BeatGameEntityObservation,
+): boolean {
+  return !CONDITIONALLY_HOSTILE_ENTITY_TYPES.has(entity.entityType)
+    || isAggressiveNeutralMob(entity);
+}
+
+function isActiveConditionalHostile(
+  entity: BeatGameEntityObservation,
+): boolean {
+  return CONDITIONALLY_HOSTILE_ENTITY_TYPES.has(entity.entityType)
+    && isAggressiveNeutralMob(entity);
+}
+
+function isActiveMeleeHostile(
+  entity: BeatGameEntityObservation,
+): boolean {
+  return PROACTIVE_MELEE_HOSTILE_ENTITY_TYPES.has(entity.entityType)
+    || isActiveConditionalHostile(entity);
 }
 
 function isDistantDrownedThreat(
@@ -6475,20 +8522,31 @@ function findNearbyAttackThreat(
     }),
   ]).pipe(
     Effect.map(([hostiles, dangerousNeutralMobs]) => {
+      const nearbyGroupCandidates = deduplicateEntityTargets([
+        ...hostiles,
+        ...dangerousNeutralMobs,
+      ]);
       const threats = new Map(
         [
-          ...hostiles,
+          ...hostiles.filter(isCurrentlyHostileMob),
           ...dangerousNeutralMobs.filter(isAggressiveNeutralMob),
         ].map((entity) => [
           `${entity.connectionEpoch}:${entity.networkId}`,
           entity,
         ]),
       );
-      const candidates = [...threats.values()].sort(
-        (left, right) =>
-          distanceSquared(observation.player.position, left.position)
-          - distanceSquared(observation.player.position, right.position),
-      );
+      const candidates = [...threats.values()].sort((left, right) => {
+        const leftDistanceSquared = distanceSquared(
+          observation.player.position,
+          left.position,
+        );
+        const rightDistanceSquared = distanceSquared(
+          observation.player.position,
+          right.position,
+        );
+        return threatPriorityScore(left, leftDistanceSquared)
+          - threatPriorityScore(right, rightDistanceSquared);
+      });
       const escapeOnlyThreat = candidates.find((candidate) =>
         ESCAPE_ONLY_DEFENSIVE_ENTITY_TYPES.has(candidate.entityType)
         && distanceSquared(
@@ -6540,6 +8598,7 @@ function findNearbyAttackThreat(
       );
       const shouldEscape =
         ESCAPE_ONLY_DEFENSIVE_ENTITY_TYPES.has(nearest.entityType)
+        || hasNearbyGroupAggroMember(nearest, nearbyGroupCandidates)
         || isDistantDrownedThreat(
           observation.player.position,
           nearest,
@@ -6599,7 +8658,6 @@ function defendAgainstTarget(
         : Effect.void;
       const commitThroughWound =
         shouldCommitToUnshieldedRangedFight(observation, target)
-        || shouldCommitToUndergroundRangedFight(observation, target)
         || shouldCommitToBarehandedRangedFight(observation, target)
         || shouldCommitToCaughtMeleePursuerFight(observation, target)
         || shouldCommitToBarehandedCaughtFastPursuerFight(
@@ -6610,8 +8668,8 @@ function defendAgainstTarget(
         (
           canBlockWithShield
           && PROACTIVE_RANGED_HOSTILE_ENTITY_TYPES.has(target.entityType)
+          && shouldCommitToRangedFight(observation, target)
         )
-        || shouldCommitToUndergroundRangedFight(observation, target)
         || shouldCommitToCloseRangedFight(observation, target)
         || shouldCommitToFastMeleePursuerFight(observation, target)
         || shouldCommitToCaughtMeleePursuerFight(observation, target)
@@ -6702,10 +8760,13 @@ function monitorDefenseHealth(
         origin: observation.player.position,
         radius: PROACTIVE_RANGED_ENGAGEMENT_RADIUS,
         selector: { categories: [2], alive: true },
-        maximumResults: SHIELDED_AMBUSH_ESCAPE_THRESHOLD,
+        maximumResults: 32,
       }).pipe(
         Effect.flatMap((nearbyThreats) => {
-          if (isOverwhelmingAmbush(observation, nearbyThreats)) {
+          if (isOverwhelmingAmbush(
+            observation,
+            nearbyThreats.filter(isCurrentlyHostileMob),
+          )) {
             return Effect.succeed("disengage" as const);
           }
           if (
@@ -6837,106 +8898,130 @@ function escapeLava(
   state: RunState,
   observation: BeatGameObservation,
 ): Effect.Effect<void, BeatGameDriverError> {
-  return isPlayerInLava(
-    state.driver,
-    observation.player.position,
-  ).pipe(
-    Effect.flatMap((inLava) => {
-      if (!inLava) {
-        return Effect.void;
-      }
-      const placeWater =
-        (observation.inventory.counts["minecraft:water_bucket"] ?? 0) > 0
-          ? state.driver.withControl(Effect.gen(function* () {
-            yield* state.driver.act({
-              type: "select-item",
-              selector: { itemIds: ["minecraft:water_bucket"] },
-            });
-            yield* state.driver.act({
-              type: "look",
-              yaw: observation.player.rotation.yaw,
-              pitch: 90,
-            });
-            yield* waitForViewRotation(
-              state.driver,
-              observation.player.rotation.yaw,
-              90,
-              20,
-            );
-            yield* state.driver.act({ type: "use-item", hand: "main" });
-            yield* Effect.sleep(100);
-          }).pipe(
-            Effect.ensuring(
-              state.driver.act({ type: "reset-movement" }).pipe(Effect.ignore),
-            ),
-          ))
-          : Effect.void;
-      return placeWater.pipe(
-        Effect.zipRight(state.driver.observe),
-        Effect.flatMap((latest) =>
-          isPlayerInLava(state.driver, latest.player.position).pipe(
-            Effect.flatMap((stillInLava) => {
-              if (!stillInLava || latest.player.dead) {
-                return Effect.void;
-              }
-              return state.driver.queryBlocks({
-                center: latest.player.position,
-                radius: 6,
-                selector: { blockIds: ["minecraft:lava"] },
-                maximumResults: 16,
-              }).pipe(
-                Effect.flatMap((lava) => {
-                  const nearest = [...lava].sort((left, right) =>
-                    distanceSquared(
-                      left.position,
-                      latest.player.position,
-                    ) - distanceSquared(
-                      right.position,
-                      latest.player.position,
-                    )
-                  )[0];
-                  const away = nearest === undefined
-                    ? {
-                      ...latest.player.position,
-                      x: latest.player.position.x + LAVA_RETREAT_DISTANCE,
-                    }
-                    : positionAwayFrom(
-                      latest.player.position,
-                      nearest.position,
-                      LAVA_RETREAT_DISTANCE,
-                    );
-                  const rotation = rotationToward(
-                    latest.player.position,
-                    away,
-                  );
-                  return state.driver.withControl(Effect.gen(function* () {
-                    yield* state.driver.act({
-                      type: "look",
-                      yaw: rotation.yaw,
-                      pitch: 0,
-                    });
-                    yield* state.driver.act({
-                      type: "set-movement",
-                      forward: true,
-                      jump: true,
-                      sprint: true,
-                    });
-                    yield* Effect.sleep(LAVA_EMERGENCY_SPRINT_MS);
-                  }).pipe(
-                    Effect.ensuring(
-                      state.driver.act({ type: "reset-movement" }).pipe(
-                        Effect.ignore,
-                      ),
-                    ),
-                  ));
-                }),
-              );
-            }),
-          )
+  return Effect.gen(function* () {
+    if (!(yield* isPlayerInLava(state.driver, observation.player.position))) {
+      return;
+    }
+
+    if (
+      !isNether(observation.player.position.dimension)
+      && (observation.inventory.counts["minecraft:water_bucket"] ?? 0) > 0
+    ) {
+      yield* state.driver.withControl(Effect.gen(function* () {
+        yield* state.driver.act({
+          type: "select-item",
+          selector: { itemIds: ["minecraft:water_bucket"] },
+        });
+        yield* state.driver.act({
+          type: "look",
+          yaw: observation.player.rotation.yaw,
+          pitch: 90,
+        });
+        yield* waitForViewRotation(
+          state.driver,
+          observation.player.rotation.yaw,
+          90,
+          20,
+        );
+        yield* state.driver.act({ type: "use-item", hand: "main" });
+        yield* Effect.sleep(100);
+      }).pipe(
+        Effect.ensuring(
+          state.driver.act({ type: "reset-movement" }).pipe(Effect.ignore),
         ),
+      )).pipe(
+        // A bucket can be present but unusable when there is no face in
+        // reach. Continue with the same direct lava escape used in ultrawarm
+        // dimensions instead of turning a recoverable hazard into a fatal SDK
+        // error.
+        Effect.catchTag("BeatGameDriverError", () => Effect.void),
       );
-    }),
-  );
+    }
+
+    let latest = yield* state.driver.observe;
+    if (
+      latest.player.dead
+      || !(yield* isPlayerInLava(state.driver, latest.player.position))
+    ) {
+      return;
+    }
+
+    // AltoClef keeps jump and sprint held while its escape goal searches for
+    // a non-lava cell. Do the same toward verified dry local ledges. Ordinary
+    // ARA* deliberately excludes lava states, so asking it to plan from the
+    // middle of a lava column cannot express this emergency movement.
+    const ledges = yield* findNearbyDryEscapeLedges(
+      state,
+      latest.player.position,
+      {
+        radius: LAVA_ESCAPE_LEDGE_SEARCH_RADIUS,
+        maximumResults: AIR_ESCAPE_LOCAL_LEDGE_QUERY_RESULTS,
+        maximumCandidates: AIR_ESCAPE_LOCAL_LEDGE_CANDIDATES,
+        maximumDrop: LAVA_ESCAPE_MAXIMUM_LEDGE_DROP,
+        maximumRise: LAVA_ESCAPE_MAXIMUM_SWIMMABLE_RISE,
+      },
+    );
+    if (ledges.length > 0) {
+      const escaped = yield* swimDirectlyToDrySurfaceCandidates(
+        state,
+        ledges.slice(0, 2),
+        LAVA_ESCAPE_MAXIMUM_APPROACH_ATTEMPTS,
+      );
+      latest = yield* state.driver.observe;
+      if (
+        escaped
+        || latest.player.dead
+        || !(yield* isPlayerInLava(state.driver, latest.player.position))
+      ) {
+        return;
+      }
+    }
+
+    const lava = yield* state.driver.queryBlocks({
+      center: latest.player.position,
+      radius: 6,
+      selector: { blockIds: ["minecraft:lava"] },
+      maximumResults: 16,
+    });
+    const nearest = [...lava].sort((left, right) =>
+      distanceSquared(
+        left.position,
+        latest.player.position,
+      ) - distanceSquared(
+        right.position,
+        latest.player.position,
+      )
+    )[0];
+    const away = nearest === undefined
+      ? {
+        ...latest.player.position,
+        x: latest.player.position.x + LAVA_RETREAT_DISTANCE,
+      }
+      : positionAwayFrom(
+        latest.player.position,
+        nearest.position,
+        LAVA_RETREAT_DISTANCE,
+      );
+    const rotation = rotationToward(latest.player.position, away);
+    yield* state.driver.withControl(Effect.gen(function* () {
+      yield* state.driver.act({
+        type: "look",
+        yaw: rotation.yaw,
+        pitch: -20,
+      });
+      yield* state.driver.act({
+        type: "set-movement",
+        forward: true,
+        jump: true,
+        sprint: true,
+      });
+      yield* Effect.sleep(LAVA_EMERGENCY_SPRINT_MS);
+    }).pipe(
+      Effect.ensuring(
+        state.driver.act({ type: "reset-movement" }).pipe(Effect.ignore),
+      ),
+    ));
+  });
 }
 
 function positionAwayFrom(
@@ -6970,6 +9055,13 @@ function retreatAndRecover(
   const escapePath = {
     ...state.strategy.path,
     sprint: true,
+    allowMining: false,
+    allowPlacing: false,
+    avoidFluids: true,
+    maxFallDistance: Math.min(
+      state.strategy.path.maxFallDistance,
+      MAXIMUM_DAMAGE_FREE_FALL_DISTANCE,
+    ),
     maxSearchTimeMs: Math.min(
       state.strategy.path.maxSearchTimeMs,
       3_000,
@@ -6992,22 +9084,23 @@ function retreatAndRecover(
         },
         maximumResults: 8,
       }).pipe(
-        Effect.map((entities) => entities.find(isAggressiveNeutralMob)),
-        Effect.flatMap((threat) =>
-          threat === undefined
-            ? Effect.void
-            : flee(state.driver, {
-              selector: {
-                networkId: threat.networkId,
-                alive: true,
-              },
+        Effect.flatMap((entities) => {
+          const threat = entities.find(isAggressiveNeutralMob);
+          if (threat === undefined) {
+            return Effect.void;
+          }
+          const selector = hasNearbyGroupAggroMember(threat, entities)
+            ? { categories: [2], alive: true } as const
+            : { networkId: threat.networkId, alive: true } as const;
+          return flee(state.driver, {
+              selector,
               triggerRadius: 24,
               safeDistance: 32,
               completeWhenSafe: true,
               maximumEscapes: 2,
               path: escapePath,
-            })
-        ),
+            });
+        }),
       );
     }),
     Effect.catchTag("BeatGameDriverError", () => Effect.void),
@@ -7083,42 +9176,10 @@ function retreatAndRecover(
                 ),
               );
             }
-            const escaping = threat.response === "flee";
-            const response = escaping
-              ? escapeFromTarget(state, threat.target)
-              : defendAgainstTarget(state, threat.target);
-            return response.pipe(
-              Effect.catchTag(
-                "BeatGameDriverError",
-                (error) => {
-                  if (escaping) {
-                    if (
-                      ESCAPE_ONLY_DEFENSIVE_ENTITY_TYPES.has(
-                        threat.target.entityType,
-                      )
-                    ) {
-                      return Effect.void;
-                    }
-                    return defendAgainstTarget(state, threat.target).pipe(
-                      Effect.catchTag("BeatGameDriverError", () => Effect.void),
-                    );
-                  }
-                  if (
-                    error.operation === "task.attack-entity"
-                    || error.operation === "task.attack-nearest"
-                    || error.code === "not_found"
-                    || error.code === "unreachable"
-                  ) {
-                    return recoverFromFailedDefense(
-                      state,
-                      threat.target,
-                    ).pipe(
-                      Effect.catchTag("BeatGameDriverError", () => Effect.void),
-                    );
-                  }
-                  return Effect.fail(error);
-                },
-              ),
+            return respondToRecoveryThreatWithSupervision(
+              state,
+              threat,
+            ).pipe(
               Effect.zipRight(Effect.sleep(recoveryPollMs)),
               Effect.zipRight(
                 recoverUntilSafe(attemptsRemaining - 1),
@@ -7139,6 +9200,135 @@ function retreatAndRecover(
       recoverUntilSafe(Math.ceil(recoveryDurationMs / recoveryPollMs)),
     ),
   );
+}
+
+function respondToRecoveryThreatWithSupervision(
+  state: RunState,
+  threat: ImmediateThreat,
+): Effect.Effect<void, BeatGameDriverError> {
+  return Effect.raceFirst(
+    respondToRecoveryThreat(state, threat),
+    monitorCompetingRecoveryThreat(state, threat.target).pipe(
+      Effect.flatMap((competingThreat) =>
+        respondToRecoveryThreatWithSupervision(state, competingThreat)
+      ),
+    ),
+  );
+}
+
+function respondToRecoveryThreat(
+  state: RunState,
+  threat: ImmediateThreat,
+): Effect.Effect<void, BeatGameDriverError> {
+  const escaping = threat.response === "flee";
+  const response = escaping
+    ? escapeFromTarget(state, threat.target)
+    : defendAgainstTarget(state, threat.target);
+  return response.pipe(
+    Effect.catchTag(
+      "BeatGameDriverError",
+      (error) => {
+        if (escaping) {
+          if (
+            ESCAPE_ONLY_DEFENSIVE_ENTITY_TYPES.has(
+              threat.target.entityType,
+            )
+            || GROUP_AGGRO_ENTITY_TYPES.has(threat.target.entityType)
+          ) {
+            return Effect.void;
+          }
+          return defendAgainstTarget(state, threat.target).pipe(
+            Effect.catchTag("BeatGameDriverError", () => Effect.void),
+          );
+        }
+        if (
+          error.operation === "task.attack-entity"
+          || error.operation === "task.attack-nearest"
+          || error.code === "not_found"
+          || error.code === "unreachable"
+        ) {
+          return recoverFromFailedDefense(
+            state,
+            threat.target,
+          ).pipe(
+            Effect.catchTag("BeatGameDriverError", () => Effect.void),
+          );
+        }
+        return Effect.fail(error);
+      },
+    ),
+  );
+}
+
+function monitorCompetingRecoveryThreat(
+  state: RunState,
+  activeTarget: BeatGameEntityObservation,
+): Effect.Effect<ImmediateThreat, BeatGameDriverError> {
+  const poll = (): Effect.Effect<ImmediateThreat, BeatGameDriverError> =>
+    Effect.sleep(Math.max(100, state.strategy.observationPollMs)).pipe(
+      Effect.zipRight(state.driver.observe),
+      Effect.flatMap((observation) => {
+        if (observation.player.dead) {
+          return Effect.never;
+        }
+        return findImmediateThreat(state, observation).pipe(
+          Effect.flatMap((threat) => {
+            if (
+              threat === undefined
+              || isSameEntityTarget(threat.target, activeTarget)
+            ) {
+              return Effect.suspend(poll);
+            }
+            return state.driver.queryEntities({
+              origin: observation.player.position,
+              radius: RANGED_THREAT_ESCAPE_SAFE_DISTANCE,
+              selector: {
+                networkId: activeTarget.networkId,
+                alive: true,
+              },
+              maximumResults: 1,
+            }).pipe(
+              Effect.flatMap(([currentActiveTarget]) => {
+                if (currentActiveTarget === undefined) {
+                  return Effect.succeed(threat);
+                }
+                const competingDistanceSquared = distanceSquared(
+                  observation.player.position,
+                  threat.target.position,
+                );
+                const activeDistanceSquared = distanceSquared(
+                  observation.player.position,
+                  currentActiveTarget.position,
+                );
+                const closeMeleeThreat =
+                  PROACTIVE_MELEE_HOSTILE_ENTITY_TYPES.has(
+                    threat.target.entityType,
+                  )
+                  && !PROACTIVE_RANGED_HOSTILE_ENTITY_TYPES.has(
+                    threat.target.entityType,
+                  )
+                  && competingDistanceSquared <= MELEE_ENGAGEMENT_RADIUS ** 2;
+                const shouldPreempt = isFusingCreeper(threat.target)
+                  || (
+                    closeMeleeThreat
+                    && (
+                      PROACTIVE_RANGED_HOSTILE_ENTITY_TYPES.has(
+                        currentActiveTarget.entityType,
+                      )
+                      || competingDistanceSquared + 1
+                        < activeDistanceSquared
+                    )
+                  );
+                return shouldPreempt
+                  ? Effect.succeed(threat)
+                  : Effect.suspend(poll);
+              }),
+            );
+          }),
+        );
+      }),
+    );
+  return Effect.suspend(poll);
 }
 
 function policyContextFor(
@@ -7172,13 +9362,15 @@ function requirementActionResult(
   const moved = before.player.position.dimension
       !== after.player.position.dimension
     || distanceSquared(before.player.position, after.player.position) >= 0.25;
-  if (
-    afterRequirementCount >= requirement.targetCount
-    || requirementProgressed
-    || inventoryChanged
-    || moved
-  ) {
+  if (afterRequirementCount >= requirement.targetCount) {
     return {};
+  }
+  if (requirementProgressed || inventoryChanged || moved) {
+    return {
+      continueReason: requirementProgressed
+        ? `collected ${requirement.key}, but the requirement remains incomplete`
+        : `advanced the search for ${requirement.key}`,
+    };
   }
   return {
     replanReason:
@@ -7396,13 +9588,7 @@ function satisfyRequirementFromWorld(
     case "lava-bucket":
       return fillLiquidBucket(state, observation, "lava");
     case "ignition":
-      return ensureFlint(state, observation).pipe(
-        Effect.zipRight(craftItem(state.driver, {
-          resultItemId: "minecraft:flint_and_steel",
-          count: 1,
-          path: state.strategy.path,
-        })),
-      );
+      return ensureIgnition(state, observation);
     case "shield":
       return craftWithTable(
         state,
@@ -7411,12 +9597,54 @@ function satisfyRequirementFromWorld(
         1,
       );
     case "blaze-rods":
+      if (
+        isNether(observation.player.position.dimension)
+        && !hasMiningPickaxeReserve(
+          observation,
+          MINING_PICKAXE_ITEM_IDS,
+          NETHER_EXPLORATION_PICKAXE_DURABILITY_RESERVE,
+        )
+      ) {
+        return ensureNetherExplorationPickaxe(state, observation);
+      }
+      if (
+        isNether(observation.player.position.dimension)
+        && pathBuildingBlockCount(observation)
+          < NETHER_EXPLORATION_MINIMUM_BUILDING_BLOCKS
+      ) {
+        return collectBlocksOrExplore(state, observation, {
+          blockIds: NETHER_EXPLORATION_BUILDING_BLOCK_IDS,
+          count: NETHER_EXPLORATION_TARGET_BUILDING_BLOCKS
+            - pathBuildingBlockCount(observation),
+          progressItemIds: NETHER_EXPLORATION_BUILDING_BLOCK_IDS,
+          purpose: "replenish-nether-building-blocks",
+          avoidFluids: true,
+          preferSurfaceExploration: false,
+          path: {
+            ...state.strategy.path,
+            allowPlacing: false,
+          },
+        });
+      }
       return huntOrExplore(
         state,
         observation,
         { entityTypes: ["minecraft:blaze"], alive: true },
         bufferedCollectionCount("blaze-rods", missing),
         "find-nether-fortress",
+        {
+          preferredEntityTypes: new Set(["minecraft:blaze"]),
+          preferredRadius: state.strategy.entitySearchRadius,
+          maximumExplorationHops: 64,
+          path: state.strategy.path,
+          structureSearch: {
+            anchorBlockIds: new Set(NETHER_FORTRESS_BLOCK_IDS),
+            stationaryBlockIds: new Set(["minecraft:spawner"]),
+            placeKind: "FORTRESS",
+            scanRadius: Math.min(64, state.strategy.blockSearchRadius),
+            maximumResults: 2_048,
+          },
+        },
       );
     case "ender-pearls":
       return acquireEnderPearls(
@@ -7485,6 +9713,69 @@ function satisfyRequirementFromWorld(
         ),
       );
   }
+}
+
+function pathBuildingBlockCount(
+  observation: BeatGameObservation,
+): number {
+  return observation.inventory.pathBuildingBlockCount
+    ?? [
+      "minecraft:andesite",
+      "minecraft:blackstone",
+      "minecraft:basalt",
+      "minecraft:cobbled_deepslate",
+      "minecraft:cobblestone",
+      "minecraft:coarse_dirt",
+      "minecraft:diorite",
+      "minecraft:dirt",
+      "minecraft:granite",
+      "minecraft:netherrack",
+    ].reduce(
+      (total, itemId) =>
+        total + (observation.inventory.counts[itemId] ?? 0),
+      0,
+    );
+}
+
+function ensureNetherExplorationPickaxe(
+  state: RunState,
+  observation: BeatGameObservation,
+): Effect.Effect<void, BeatGameDriverError> {
+  const ironIngots = observation.inventory.counts["minecraft:iron_ingot"]
+    ?? 0;
+  const stoneToolMaterials = STONE_TOOL_MATERIAL_ITEM_IDS.reduce(
+    (total, itemId) =>
+      total + (observation.inventory.counts[itemId] ?? 0),
+    0,
+  );
+  if (ironIngots >= 3) {
+    return craftWithTable(state, observation, "minecraft:iron_pickaxe", 1);
+  }
+  if (stoneToolMaterials >= 3) {
+    return craftWithTable(state, observation, "minecraft:stone_pickaxe", 1);
+  }
+  const reportedDurability = observation.inventory.remainingDurability;
+  const remainingDurability = reportedDurability === undefined
+    ? 0
+    : MINING_PICKAXE_ITEM_IDS.reduce(
+      (total, itemId) => total + (reportedDurability[itemId] ?? 0),
+      0,
+    );
+  const woodenPickaxes = Math.max(
+    1,
+    Math.ceil(
+      (
+        NETHER_EXPLORATION_PICKAXE_DURABILITY_RESERVE
+        - remainingDurability
+      ) / WOODEN_PICKAXE_MAXIMUM_DURABILITY,
+    ),
+  );
+  return craftWithTable(
+    state,
+    observation,
+    "minecraft:wooden_pickaxe",
+    woodenPickaxes,
+  );
 }
 
 function satisfyFoodSupplyRequirement(
@@ -7768,6 +10059,7 @@ function huntForFoodRequirement(
       requireHealthRecoveryForSafeAquaticTargets: true,
       safeAquaticFallbackAfterExplorationLegs:
         SAFE_AQUATIC_FALLBACK_EXPLORATION_LEGS,
+      maximumLandVerticalRise: FOOD_LAND_HUNT_MAXIMUM_VERTICAL_RISE,
       allowFluidFallback:
         observation.player.health >= state.strategy.minimumHealth,
       path: {
@@ -8854,6 +11146,19 @@ function fillLiquidBucket(
       );
       current = yield* state.driver.observe;
     }
+    if (
+      liquid === "water"
+      && (yield* needsOverworldSurfaceRecovery(
+        state,
+        current.player.position,
+      ))
+    ) {
+      yield* returnToOverworldSurface(
+        state,
+        current.player.position,
+      );
+      return;
+    }
     let liquidSources = yield* state.driver.queryBlocks({
       center: current.player.position,
       radius: state.strategy.blockSearchRadius,
@@ -8861,7 +11166,7 @@ function fillLiquidBucket(
         blockIds: [`minecraft:${liquid}`],
         properties: { level: "0" },
       },
-      maximumResults: liquid === "lava" ? 32 : 1,
+      maximumResults: 32,
     });
     const waterloggedSources = liquid === "water"
       ? yield* state.driver.queryBlocks({
@@ -9104,15 +11409,32 @@ function fillLiquidBucket(
       }
       source = approach.right;
     } else {
-      yield* state.driver.pathfind(
-        source.position,
-        LIQUID_INTERACTION_APPROACH_RADIUS,
-        state.strategy.path,
+      const reachableSource = yield* pathfindToReachableWaterSource(
+        state,
+        current,
+        sources,
       );
+      if (reachableSource === undefined) {
+        yield* explore(state.driver, {
+          origin: current.player.position,
+          radius: discoveryHopRadius(
+            state,
+            state.strategy.blockSearchRadius,
+          ),
+          maximumWaypoints: 1,
+          purpose: explorationPurpose(
+            "find-water",
+            current.player.position,
+          ),
+          path: state.strategy.path,
+        });
+        return;
+      }
+      source = reachableSource;
     }
     current = yield* state.driver.observe;
     yield* ensureApproachPickaxe(current);
-    yield* state.driver.withControl(Effect.gen(function* () {
+    const collection = yield* state.driver.withControl(Effect.gen(function* () {
       for (
         let clearedBlocks = 0;
         clearedBlocks <= MAXIMUM_LIQUID_SIGHT_CLEARING_BLOCKS;
@@ -9261,7 +11583,18 @@ function fillLiquidBucket(
           position: obstruction.position,
         });
       }
-    }));
+    })).pipe(Effect.either);
+    if (collection._tag === "Left") {
+      if (liquid === "water") {
+        yield* rememberUnreachableLiquidSources(
+          state,
+          liquid,
+          [source],
+        );
+        return;
+      }
+      return yield* Effect.fail(collection.left);
+    }
     if (liquid === "lava") {
       yield* retreatAfterLavaCollection(
         state,
@@ -9270,6 +11603,172 @@ function fillLiquidBucket(
       );
     }
   });
+}
+
+function pathfindToReachableWaterSource(
+  state: RunState,
+  observation: BeatGameObservation,
+  sources: readonly BeatGameBlockObservation[],
+): Effect.Effect<BeatGameBlockObservation | undefined, BeatGameDriverError> {
+  return Effect.gen(function* () {
+    const checkpoint = yield* Ref.get(state.checkpoint);
+    const now = Date.now();
+    const rememberedUnreachable = new Set(
+      checkpoint.memory.unreachable
+        .filter(({ expiresAt }) =>
+          expiresAt === undefined || Date.parse(expiresAt) > now
+        )
+        .map(({ key }) => key),
+    );
+    const candidates = [...sources]
+      .filter((candidate) =>
+        candidate.position.dimension
+          === observation.player.position.dimension
+        && !rememberedUnreachable.has(
+          liquidSourceUnreachableKey("water", candidate.position),
+        )
+      )
+      .sort((left, right) =>
+        Math.abs(left.position.y - observation.player.position.y)
+          - Math.abs(right.position.y - observation.player.position.y)
+        || horizontalDistanceSquared(
+          left.position,
+          observation.player.position,
+        ) - horizontalDistanceSquared(
+          right.position,
+          observation.player.position,
+        )
+      )
+      .slice(0, LIQUID_SOURCE_MAXIMUM_PATH_ATTEMPTS);
+    const failedSources: BeatGameBlockObservation[] = [];
+    const startedInFluid = yield* isPlayerInFluid(
+      state.driver,
+      observation.player.position,
+    );
+    for (const candidate of candidates) {
+      if (
+        startedInFluid
+        && isLiquidSourceWithinInteractionReach(
+          observation.player.position,
+          candidate.position,
+        )
+      ) {
+        yield* rememberUnreachableLiquidSources(
+          state,
+          "water",
+          failedSources,
+        );
+        return candidate;
+      }
+      const reached = yield* state.driver.pathfind(
+        candidate.position,
+        LIQUID_INTERACTION_APPROACH_RADIUS,
+        {
+          ...state.strategy.path,
+          avoidFluids: true,
+          maxFallDistance: Math.min(
+            state.strategy.path.maxFallDistance,
+            1,
+          ),
+          maxSearchTimeMs: Math.min(
+            state.strategy.path.maxSearchTimeMs,
+            WORKSTATION_REUSE_MAX_SEARCH_TIME_MS,
+          ),
+        },
+      ).pipe(
+        Effect.as(true),
+        Effect.catchTag("BeatGameDriverError", (error) =>
+          error.operation === "pathfind"
+            ? Effect.succeed(false)
+            : Effect.fail(error)
+        ),
+      );
+      if (reached) {
+        const current = yield* state.driver.observe;
+        const endedInFluid = yield* isPlayerInFluid(
+          state.driver,
+          current.player.position,
+        );
+        if (
+          !endedInFluid
+          && isLiquidSourceWithinInteractionReach(
+            current.player.position,
+            candidate.position,
+          )
+        ) {
+          yield* rememberUnreachableLiquidSources(
+            state,
+            "water",
+            failedSources,
+          );
+          return candidate;
+        }
+        if (endedInFluid) {
+          yield* emergencyAirAscent(
+            state,
+            current.player.position,
+          ).pipe(Effect.either);
+        }
+      }
+      failedSources.push(candidate);
+    }
+    yield* rememberUnreachableLiquidSources(
+      state,
+      "water",
+      failedSources,
+    );
+    return undefined;
+  });
+}
+
+function isLiquidSourceWithinInteractionReach(
+  player: BeatGamePosition,
+  source: BeatGameBlockPosition,
+): boolean {
+  if (player.dimension !== source.dimension) {
+    return false;
+  }
+  return distanceSquared(
+    { ...player, y: player.y + 1.62 },
+    blockCenter(source),
+  ) <= LIQUID_INTERACTION_REACH ** 2;
+}
+
+function rememberUnreachableLiquidSources(
+  state: RunState,
+  liquid: "water" | "lava",
+  sources: readonly BeatGameBlockObservation[],
+): Effect.Effect<void> {
+  if (sources.length === 0) {
+    return Effect.void;
+  }
+  const observedAt = new Date().toISOString();
+  const expiresAt = new Date(
+    Date.now() + LIQUID_SOURCE_UNREACHABLE_TTL_MS,
+  ).toISOString();
+  return persist(state, (checkpoint) => ({
+    ...checkpoint,
+    memory: {
+      ...checkpoint.memory,
+      unreachable: [
+        ...checkpoint.memory.unreachable,
+        ...sources.map((source) => ({
+          key: liquidSourceUnreachableKey(liquid, source.position),
+          value: source.position,
+          observedAt,
+          expiresAt,
+          confidence: 1,
+        })),
+      ].slice(-64),
+    },
+  })).pipe(Effect.ignore);
+}
+
+function liquidSourceUnreachableKey(
+  liquid: "water" | "lava",
+  position: BeatGameBlockPosition,
+): string {
+  return `liquid-source:${liquid}:${positionKey(position)}`;
 }
 
 function satisfyIronRequirement(
@@ -9382,6 +11881,7 @@ interface PortalLavaPoolPreparation {
 function preparePortalCastingLavaPool(
   state: RunState,
   observation: BeatGameObservation,
+  requiredLavaSources = PORTAL_CASTING_ADDITIONAL_LAVA_SOURCE_COUNT,
 ): Effect.Effect<PortalLavaPoolPreparation, BeatGameDriverError> {
   return Effect.gen(function* () {
     const sources = yield* state.driver.queryBlocks({
@@ -9391,9 +11891,15 @@ function preparePortalCastingLavaPool(
         blockIds: ["minecraft:lava"],
         properties: { level: "0" },
       },
-      maximumResults: PORTAL_CASTING_ADDITIONAL_LAVA_SOURCE_COUNT,
+      maximumResults: Math.max(1, requiredLavaSources),
     });
-    if (sources.length >= PORTAL_CASTING_ADDITIONAL_LAVA_SOURCE_COUNT) {
+    if (requiredLavaSources === 0) {
+      return {
+        ready: true,
+        candidateLavaSources: [],
+      };
+    }
+    if (sources.length >= requiredLavaSources) {
       yield* approachLiquidSourceFromSide(
         state.driver,
         observation,
@@ -9512,6 +12018,9 @@ function excavateResourceSearchStaircase(
     }).pipe(Effect.either);
     if (excavation._tag === "Right") {
       return true;
+    }
+    if (excavation.left.code === "unsupported_opening") {
+      return false;
     }
     if (excavation.left.code !== "fluid_exposed") {
       return yield* Effect.fail(excavation.left);
@@ -9677,18 +12186,26 @@ function selectResourceSearchStaircaseDestination(
             z: from.z + direction.z * stepDepth,
           };
           return Effect.all([
+            queryExactBlockAt(driver, { ...tread, y: tread.y + 2 }),
             queryExactBlockAt(driver, { ...tread, y: tread.y + 1 }),
             queryExactBlockAt(driver, tread),
             queryExactBlockAt(driver, { ...tread, y: tread.y - 1 }),
+            queryExactBlockAt(driver, { ...tread, y: tread.y - 2 }),
           ]);
         }),
         { concurrency: "unbounded" },
       );
-      if (corridor.some((section) =>
-        section.some((block) =>
+      if (corridor.some((section) => {
+        const support = section[3];
+        const lowerAnchor = section[4];
+        return section.some((block) =>
           block === undefined || isPlayerFluidBlock(block.blockId)
         )
-      )) {
+          || (
+            !isStableStaircaseAnchor(support)
+            && !isStableStaircaseAnchor(lowerAnchor)
+          );
+      })) {
         continue;
       }
       return {
@@ -9703,7 +12220,7 @@ function selectResourceSearchStaircaseDestination(
       code: "unreachable",
       retryable: true,
       message:
-        "No fully loaded fluid-free corridor is available for a resource-search staircase",
+        "No fully loaded, fluid-free, and supportable corridor is available for a resource-search staircase",
     }));
   });
 }
@@ -9946,6 +12463,33 @@ function ensureFlint(
           );
           continue;
         }
+        if (placementIntersectsPlayer(
+          candidate,
+          approachedObservation.player.position,
+        )) {
+          continue;
+        }
+        yield* state.driver.act({
+          type: "select-item",
+          selector: { itemIds: ["minecraft:gravel"] },
+        });
+        const placement = yield* state.driver.act({
+          type: "place-block",
+          against: { ...candidate, y: candidate.y - 1 },
+          face: "up",
+          hand: "main",
+        }).pipe(Effect.either);
+        if (placement._tag === "Left") {
+          continue;
+        }
+        const placed = yield* waitForExactBlockId(
+          state.driver,
+          candidate,
+          "minecraft:gravel",
+        );
+        if (!placed) {
+          continue;
+        }
         target = candidate;
         break;
       }
@@ -9954,29 +12498,7 @@ function ensureFlint(
           operation: "acquire-flint",
           retryable: true,
           message:
-            "No dry supported position is available for recycling gravel",
-        }));
-      }
-      yield* state.driver.act({
-        type: "select-item",
-        selector: { itemIds: ["minecraft:gravel"] },
-      });
-      yield* state.driver.act({
-        type: "place-block",
-        against: { ...target, y: target.y - 1 },
-        face: "up",
-        hand: "main",
-      });
-      const placed = yield* waitForExactBlockId(
-        state.driver,
-        target,
-        "minecraft:gravel",
-      );
-      if (!placed) {
-        return yield* Effect.fail(new BeatGameDriverError({
-          operation: "acquire-flint",
-          retryable: true,
-          message: "Gravel placement was not confirmed by the server",
+            "No dry collision-free position accepted recycled gravel",
         }));
       }
       yield* state.driver.act({ type: "dig-block", position: target });
@@ -9993,6 +12515,32 @@ function ensureFlint(
       retryable: true,
       message: "Recycling gravel did not produce flint after 64 attempts",
     }));
+  });
+}
+
+function ensureIgnition(
+  state: RunState,
+  observation: BeatGameObservation,
+): Effect.Effect<void, BeatGameDriverError> {
+  return Effect.gen(function* () {
+    let current = observation;
+    if ((current.inventory.counts["minecraft:iron_ingot"] ?? 0) === 0) {
+      yield* satisfyIronRequirement(state, current, 1);
+      current = yield* state.driver.observe;
+      if ((current.inventory.counts["minecraft:iron_ingot"] ?? 0) === 0) {
+        return;
+      }
+    }
+    yield* ensureFlint(state, current);
+    current = yield* state.driver.observe;
+    if ((current.inventory.counts["minecraft:flint"] ?? 0) === 0) {
+      return;
+    }
+    yield* craftItem(state.driver, {
+      resultItemId: "minecraft:flint_and_steel",
+      count: 1,
+      path: state.strategy.path,
+    });
   });
 }
 
@@ -10090,11 +12638,20 @@ interface HuntTargetPreference {
   readonly maximumSafeAquaticFoodLevel?: number;
   readonly requireHealthRecoveryForSafeAquaticTargets?: boolean;
   readonly safeAquaticFallbackAfterExplorationLegs?: number;
+  readonly maximumLandVerticalRise?: number;
+  readonly maximumLandVerticalDrop?: number;
   readonly maximumExplorationHops?: number;
   readonly path?: BeatGameStrategy["path"];
   readonly explorationTarget?: BeatGamePosition;
   readonly allowFluidFallback?: boolean;
   readonly fallbackToLocalExploration?: boolean;
+  readonly structureSearch?: Readonly<{
+    anchorBlockIds: ReadonlySet<string>;
+    stationaryBlockIds: ReadonlySet<string>;
+    placeKind: BeatGameWorldPlace["kind"];
+    scanRadius: number;
+    maximumResults: number;
+  }>;
 }
 
 function huntOrExplore(
@@ -10128,14 +12685,17 @@ function huntOrExplore(
       Math.floor(targetPreference?.maximumExplorationHops ?? 1),
     );
     const attemptedTargets = new Set<string>();
+    const attemptedStructureCells = new Set<string>();
     const aquaticChaseAttempts = new Map<string, number>();
     const locallyUnreachable = new Set<string>();
     let confirmedVisibleTarget: BeatGameEntityObservation | undefined;
     let aquaticRetryTargetId: string | undefined;
     let strandedAquaticFallback = false;
+    let fluidTraversalRequired = false;
     let aquaticPursuitActive = false;
     let attacked = 0;
     let explorationHops = 0;
+    let stationaryStructureTarget: BeatGameBlockObservation | undefined;
     while (true) {
       yield* Effect.sleep(1);
       let current = yield* state.driver.observe;
@@ -10171,27 +12731,65 @@ function huntOrExplore(
         );
       const overworldHunt =
         current.player.position.dimension === "minecraft:overworld";
+      const playerInFluid = overworldHunt
+        && (yield* isPlayerInFluid(
+          state.driver,
+          current.player.position,
+        ));
+      if (!playerInFluid) {
+        fluidTraversalRequired = false;
+      }
       if (
         overworldHunt
         && !aquaticHuntAllowed
+        && !fluidTraversalRequired
         && !aquaticPursuitActive
-        && (yield* isPlayerInFluid(state.driver, current.player.position))
+        && playerInFluid
       ) {
-        yield* emergencyAirAscent(state, current.player.position);
-        return;
+        const recovery = yield* emergencyAirAscent(
+          state,
+          current.player.position,
+        ).pipe(Effect.either);
+        current = yield* state.driver.observe;
+        if (current.player.dead) {
+          return;
+        }
+        if (!(yield* isPlayerInFluid(
+          state.driver,
+          current.player.position,
+        ))) {
+          continue;
+        }
+        const breathingAtSurface = !hasUnsafeAir(current)
+          && (yield* hasBreathableHeadSpace(
+            state.driver,
+            current.player.position,
+          ));
+        if (breathingAtSurface) {
+          fluidTraversalRequired = true;
+          continue;
+        }
+        if (recovery._tag === "Left") {
+          return yield* Effect.fail(recovery.left);
+        }
+        continue;
       }
       const survivalPath = survivalPathPolicy(
         targetPreference?.path ?? state.strategy.path,
         current.player.health,
         state.strategy.minimumHealth,
       );
-      const huntingPath = aquaticHuntAllowed
+      const huntingPath = aquaticHuntAllowed || fluidTraversalRequired
         ? { ...survivalPath, avoidFluids: false }
         : survivalPath;
       const explorationPath = {
         ...huntingPath,
-        allowMining: false,
-        allowPlacing: false,
+        ...(targetPreference?.structureSearch === undefined
+          ? {
+            allowMining: false,
+            allowPlacing: false,
+          }
+          : {}),
         sprint: false,
       };
       if (yield* needsOverworldSurfaceRecovery(state, current.player.position)) {
@@ -10224,6 +12822,55 @@ function huntOrExplore(
         ) {
           return;
         }
+      }
+      let observedStructureBlocks: readonly BeatGameBlockObservation[] = [];
+      if (
+        targetPreference?.structureSearch !== undefined
+        && stationaryStructureTarget === undefined
+      ) {
+        const structureSearch = targetPreference.structureSearch;
+        const anchorBlocks = yield* state.driver.queryBlocks({
+          center: current.player.position,
+          radius: structureSearch.scanRadius,
+          selector: { blockIds: [...structureSearch.anchorBlockIds] },
+          maximumResults: structureSearch.maximumResults,
+        });
+        const structureEvidence = anchorBlocks.find(({ blockId }) =>
+          structureSearch.anchorBlockIds.has(blockId)
+        );
+        const stationaryBlocks = structureEvidence === undefined
+          ? []
+          : yield* state.driver.queryBlocks({
+            center: current.player.position,
+            radius: structureSearch.scanRadius,
+            selector: {
+              blockIds: [...structureSearch.stationaryBlockIds],
+            },
+            maximumResults: 32,
+          });
+        const stationaryEvidence = stationaryBlocks.find(({ position }) =>
+          distanceSquared(position, structureEvidence?.position ?? position)
+            <= 48 ** 2
+        );
+        observedStructureBlocks = [...anchorBlocks, ...stationaryBlocks];
+        const rememberedEvidence = stationaryEvidence ?? structureEvidence;
+        if (rememberedEvidence !== undefined) {
+          const evidenceKey = worldPlaceKey(
+            structureSearch.placeKind,
+            rememberedEvidence.position,
+          );
+          if (!checkpoint.memory.places.some(({ key }) => key === evidenceKey)) {
+            yield* persist(state, (currentCheckpoint) =>
+              rememberWorldPlace(
+                currentCheckpoint,
+                structureSearch.placeKind,
+                rememberedEvidence.position,
+                stationaryEvidence === undefined ? 0.9 : 1,
+              )
+            );
+          }
+        }
+        stationaryStructureTarget = stationaryEvidence;
       }
       const now = Date.now();
       const rememberedUnreachableTargets = new Map(
@@ -10299,11 +12946,20 @@ function huntOrExplore(
         );
       const recoveringHealth =
         current.player.health < state.strategy.minimumHealth;
-      const rankedCandidates = recoveringHealth
-        ? candidates
-        : preferredCandidates.length > 0
-        ? preferredCandidates
+      const landCandidates = candidates.filter((candidate) =>
+        !AQUATIC_FOOD_ENTITY_TYPES.has(candidate.entityType)
+      );
+      const safeCandidates = landCandidates.length > 0
+        ? landCandidates
         : candidates;
+      const safePreferredCandidates = preferredCandidates.filter(
+        (candidate) => safeCandidates.includes(candidate),
+      );
+      const rankedCandidates = recoveringHealth
+        ? safeCandidates
+        : safePreferredCandidates.length > 0
+        ? safePreferredCandidates
+        : safeCandidates;
       const retryTarget = aquaticRetryTargetId === undefined
         ? undefined
         : rankedCandidates.find((candidate) =>
@@ -10337,6 +12993,85 @@ function huntOrExplore(
       aquaticPursuitActive = target !== undefined
         && AQUATIC_FOOD_ENTITY_TYPES.has(target.entityType);
       if (target === undefined) {
+        if (
+          stationaryStructureTarget !== undefined
+          && stationaryStructureTarget.position.dimension
+            === current.player.position.dimension
+        ) {
+          const horizontalDistance = Math.sqrt(horizontalDistanceSquared(
+            current.player.position,
+            stationaryStructureTarget.position,
+          ));
+          const verticalDistance = Math.abs(
+            current.player.position.y - stationaryStructureTarget.position.y,
+          );
+          if (horizontalDistance > 5 || verticalDistance > 5) {
+            const spawnerApproach = {
+              ...stationaryStructureTarget.position,
+              y: stationaryStructureTarget.position.y + 1,
+            };
+            const approached = yield* state.driver.pathfind(
+              spawnerApproach,
+              4,
+              {
+                ...explorationPath,
+                allowMining: false,
+                allowPlacing: false,
+              },
+            ).pipe(
+              Effect.as(true),
+              Effect.catchAll((cause) =>
+                cause.operation === "pathfind"
+                  ? Effect.succeed(false)
+                  : Effect.fail(cause)
+              ),
+            );
+            if (!approached) {
+              stationaryStructureTarget = undefined;
+            }
+            continue;
+          }
+          yield* Effect.sleep(Math.max(
+            250,
+            state.strategy.observationPollMs,
+          ));
+          continue;
+        }
+        const structureSearch = targetPreference?.structureSearch;
+        if (structureSearch !== undefined && observedStructureBlocks.length > 0) {
+          const structureTargets = representativeStructureTargets(
+            observedStructureBlocks.filter(({ blockId }) =>
+              structureSearch.anchorBlockIds.has(blockId)
+            ),
+            attemptedStructureCells,
+            current.player.position,
+          );
+          const structureTarget = structureTargets[0];
+          if (structureTarget !== undefined) {
+            const cell = structureCellKey(structureTarget.position);
+            attemptedStructureCells.add(cell);
+            explorationHops += 1;
+            yield* state.driver.pathfind(
+              {
+                ...structureTarget.position,
+                y: structureTarget.position.y + 1,
+              },
+              3,
+              {
+                ...explorationPath,
+                allowMining: false,
+                allowPlacing: false,
+              },
+            ).pipe(
+              Effect.catchAll((cause) =>
+                cause.operation === "pathfind"
+                  ? Effect.void
+                  : Effect.fail(cause)
+              ),
+            );
+            continue;
+          }
+        }
         if (explorationHops >= maximumExplorationHops) {
           return;
         }
@@ -10753,6 +13488,40 @@ function waitForUnsafeAquaticHunt(
   return Effect.suspend(poll);
 }
 
+function representativeStructureTargets(
+  blocks: readonly BeatGameBlockObservation[],
+  attemptedCells: ReadonlySet<string>,
+  origin: BeatGamePosition,
+): readonly BeatGameBlockObservation[] {
+  const representatives = new Map<string, BeatGameBlockObservation>();
+  for (const block of blocks) {
+    const cell = structureCellKey(block.position);
+    if (attemptedCells.has(cell)) {
+      continue;
+    }
+    const existing = representatives.get(cell);
+    if (
+      existing === undefined
+      || horizontalDistanceSquared(block.position, origin)
+        > horizontalDistanceSquared(existing.position, origin)
+    ) {
+      representatives.set(cell, block);
+    }
+  }
+  return [...representatives.values()].sort((left, right) =>
+    horizontalDistanceSquared(right.position, origin)
+      - horizontalDistanceSquared(left.position, origin)
+      || Math.abs(left.position.y - origin.y)
+        - Math.abs(right.position.y - origin.y)
+  );
+}
+
+function structureCellKey(position: BeatGamePosition): string {
+  return `${position.dimension}:${Math.floor(position.x / 16)}:${
+    Math.floor(position.y / 16)
+  }:${Math.floor(position.z / 16)}`;
+}
+
 function waitForVisibleHuntingTarget(
   state: RunState,
   selector: Parameters<BeatGameDriver["queryEntities"]>[0]["selector"],
@@ -10865,6 +13634,8 @@ function isEligibleHuntingTarget(
     target,
     observation,
     aquaticHuntAllowed,
+    targetPreference?.maximumLandVerticalRise,
+    targetPreference?.maximumLandVerticalDrop,
   )
     && (
       !aquaticTarget
@@ -10884,6 +13655,8 @@ function isHuntingTargetWithinReach(
   target: BeatGameEntityObservation,
   observation: BeatGameObservation,
   aquaticHuntAllowed = false,
+  maximumLandVerticalRise = LAND_HUNT_MAXIMUM_VERTICAL_DISTANCE,
+  maximumLandVerticalDrop = LAND_HUNT_MAXIMUM_VERTICAL_DISTANCE,
 ): boolean {
   if (EMERGENCY_FOOD_ENTITY_TYPE_SET.has(target.entityType)) {
     return Math.abs(target.position.y - observation.player.position.y)
@@ -10902,8 +13675,9 @@ function isHuntingTargetWithinReach(
         observation.player.position,
       ) <= URGENT_AQUATIC_HUNT_MAXIMUM_HORIZONTAL_DISTANCE ** 2;
   }
-  return Math.abs(target.position.y - observation.player.position.y)
-    <= LAND_HUNT_MAXIMUM_VERTICAL_DISTANCE;
+  const verticalDelta = target.position.y - observation.player.position.y;
+  return verticalDelta <= maximumLandVerticalRise
+    && verticalDelta >= -maximumLandVerticalDrop;
 }
 
 function shouldAllowAquaticHunt(
@@ -10930,10 +13704,13 @@ function shouldAllowAquaticHunt(
     const maximumFallbackFoodLevel =
       targetPreference.maximumSafeAquaticFoodLevel
         ?? URGENT_HUNGER_FOOD_LEVEL;
-    return observation.player.health >= minimumHealth
+    return (
+      observation.player.health >= minimumHealth
+      && observation.player.food <= maximumFallbackFoodLevel
+    )
       || (
-        observation.player.food <= maximumFallbackFoodLevel
-        && observation.player.health > LETHAL_MELEE_DISENGAGE_HEALTH
+        observation.player.health > LETHAL_MELEE_DISENGAGE_HEALTH
+        && observation.player.health < minimumHealth
       );
   }
   return observation.player.health >= minimumSafeHealth
@@ -10955,8 +13732,9 @@ function completedExplorationLegs(
   const frontier = checkpoint.memory.explorationFrontiers?.[
     `${dimension}:${purpose}`
   ];
-  return frontier?.totalAdvances
-    ?? Math.max(0, (frontier?.nextIndex ?? 1) - 1);
+  return frontier?.progressVersion === 2
+    ? frontier.totalAdvances ?? 0
+    : 0;
 }
 
 function survivalPathPolicy(
@@ -11002,13 +13780,13 @@ function returnToOverworldSurface(
   position: BeatGamePosition,
 ): Effect.Effect<void, BeatGameDriverError> {
   return Effect.gen(function* () {
-    const columns = yield* state.driver.sampleSurface(
+    let columns = yield* state.driver.sampleSurface(
       position,
       AIR_ESCAPE_SURFACE_SEARCH_RADIUS,
       1,
     );
-    const drySurfaces = selectSurfaceEscapeColumns(columns, position);
-    const surfaces = drySurfaces.length > 0
+    let drySurfaces = selectSurfaceEscapeColumns(columns, position);
+    let surfaces = drySurfaces.length > 0
       ? drySurfaces
       : selectSwimmableSurfaceEscapeColumns(columns, position);
     if (surfaces.length === 0) {
@@ -11019,7 +13797,7 @@ function returnToOverworldSurface(
         message: "No loaded traversable surface is available for recovery",
       }));
     }
-    const targets: readonly BeatGamePosition[] = surfaces.map((surface) => ({
+    let targets: readonly BeatGamePosition[] = surfaces.map((surface) => ({
       x: surface.x + 0.5,
       y: surface.surfaceY + 1,
       z: surface.z + 0.5,
@@ -11052,17 +13830,126 @@ function returnToOverworldSurface(
         return;
       }
     }
-    if (
-      !startingInFluid
-      && (yield* excavateDryShaftRecoveryStaircase(
+    if (!startingInFluid) {
+      yield* prepareSurfaceEscapePickaxe(state, position, targets);
+      const directRoute = yield* pathfindToFirstReachableSurface(
         state,
-        position,
-        targets.map(({ y }) => y),
-      ))
-    ) {
+        targets.slice(0, SURFACE_RECOVERY_DIRECT_PATH_CANDIDATES),
+        0,
+        SURFACE_RECOVERY_DIRECT_PATH_EXECUTION_TIMEOUT_MS,
+        {
+          ...state.strategy.path,
+          allowMining: true,
+          allowPlacing: true,
+          avoidFluids: drySurfaces.length > 0,
+          maxSearchTimeMs: Math.min(
+            state.strategy.path.maxSearchTimeMs,
+            SURFACE_RECOVERY_DIRECT_PATH_SEARCH_TIMEOUT_MS,
+          ),
+        },
+      ).pipe(Effect.either);
+      if (directRoute._tag === "Right") {
+        const reached = yield* state.driver.observe;
+        if (
+          !(yield* isPlayerInFluid(
+            state.driver,
+            reached.player.position,
+          ))
+          && !(yield* needsOverworldSurfaceRecovery(
+            state,
+            reached.player.position,
+          ))
+        ) {
+          return;
+        }
+      }
+    }
+    if (!startingInFluid) {
+      let stairPosition = (yield* state.driver.observe).player.position;
+      for (
+        let segment = 0;
+        segment < SURFACE_RECOVERY_MAXIMUM_STAIR_SEGMENTS;
+        segment += 1
+      ) {
+        if (!(yield* needsOverworldSurfaceRecovery(state, stairPosition))) {
+          return;
+        }
+        const climbed = yield* excavateDryShaftRecoveryStaircase(
+          state,
+          targets.map(({ y }) => y),
+        );
+        if (!climbed) {
+          break;
+        }
+        const latest = yield* state.driver.observe;
+        if (
+          latest.player.dead
+          || latest.player.position.dimension !== position.dimension
+        ) {
+          return;
+        }
+        if (latest.player.position.y < stairPosition.y + 0.5) {
+          break;
+        }
+        stairPosition = latest.player.position;
+        columns = yield* state.driver.sampleSurface(
+          stairPosition,
+          AIR_ESCAPE_SURFACE_SEARCH_RADIUS,
+          1,
+        );
+        drySurfaces = selectSurfaceEscapeColumns(columns, stairPosition);
+        surfaces = drySurfaces.length > 0
+          ? drySurfaces
+          : selectSwimmableSurfaceEscapeColumns(columns, stairPosition);
+        if (surfaces.length === 0) {
+          break;
+        }
+        targets = surfaces.map((surface) => ({
+          x: surface.x + 0.5,
+          y: surface.surfaceY + 1,
+          z: surface.z + 0.5,
+          dimension: position.dimension,
+        }));
+      }
+    }
+    const current = yield* state.driver.observe;
+    if (current.player.dead) {
       return;
     }
-    yield* prepareSurfaceEscapePickaxe(state, position, targets);
+    columns = yield* state.driver.sampleSurface(
+      current.player.position,
+      AIR_ESCAPE_SURFACE_SEARCH_RADIUS,
+      1,
+    );
+    drySurfaces = selectSurfaceEscapeColumns(
+      columns,
+      current.player.position,
+    );
+    surfaces = drySurfaces.length > 0
+      ? drySurfaces
+      : selectSwimmableSurfaceEscapeColumns(
+        columns,
+        current.player.position,
+      );
+    targets = surfaces.map((surface) => ({
+      x: surface.x + 0.5,
+      y: surface.surfaceY + 1,
+      z: surface.z + 0.5,
+      dimension: current.player.position.dimension,
+    }));
+    if (targets.length === 0) {
+      return yield* Effect.fail(new BeatGameDriverError({
+        operation: "pathfind",
+        code: "unreachable",
+        retryable: true,
+        message: "No loaded traversable surface is available for recovery",
+      }));
+    }
+    yield* prepareSurfaceEscapePickaxe(
+      state,
+      current.player.position,
+      targets,
+    );
     yield* pathfindToFirstReachableSurface(
       state,
       targets,
@@ -11298,7 +14185,6 @@ function recoverLocalNavigationTrap(
     }
     return yield* excavateDryShaftRecoveryStaircase(
       state,
-      position,
       targets.map(({ y }) => y),
     );
   });
@@ -11388,56 +14274,90 @@ function isDryWalkingSpace(
 interface DryShaftRecoveryStep {
   readonly feet: BeatGameBlockPosition;
   readonly head: BeatGameBlockPosition;
+  readonly jumpClearance: BeatGameBlockPosition;
+  readonly support: BeatGameBlockPosition;
+  readonly lowerAnchor: BeatGameBlockPosition;
+  readonly previousSupport: BeatGameBlockPosition;
+  readonly placeLowerAnchor: boolean;
+  readonly placeSupport: boolean;
+}
+
+interface DryShaftRecoveryRoute {
+  readonly steps: readonly DryShaftRecoveryStep[];
+  readonly placedBlocks: number;
 }
 
 function excavateDryShaftRecoveryStaircase(
   state: RunState,
-  position: BeatGamePosition,
   candidateSurfaceY: readonly number[],
 ): Effect.Effect<boolean, BeatGameDriverError> {
   return Effect.gen(function* () {
+    const observation = yield* state.driver.observe;
+    const position = observation.player.position;
     const startingY = Math.floor(position.y);
-    const targetY = [...candidateSurfaceY]
-      .filter((y) =>
-        y - startingY >= 2
-        && y - startingY <= DRY_SHAFT_RECOVERY_MAXIMUM_RISE
-      )
+    const surfaceY = [...candidateSurfaceY]
+      .filter((y) => y - startingY >= 2)
       .sort((left, right) => left - right)[0];
-    if (targetY === undefined) {
+    if (surfaceY === undefined) {
       return false;
     }
+    const targetY = Math.min(
+      surfaceY,
+      startingY + DRY_SHAFT_RECOVERY_MAXIMUM_RISE,
+    );
     const directions = [
       { x: 1, z: 0 },
       { x: -1, z: 0 },
       { x: 0, z: 1 },
       { x: 0, z: -1 },
     ] as const;
-    let route: readonly DryShaftRecoveryStep[] | undefined;
+    const supportBlocks = DRY_SHAFT_RECOVERY_SUPPORT_ITEM_IDS.reduce(
+      (count, itemId) => count + (observation.inventory.counts[itemId] ?? 0),
+      0,
+    );
+    let route: DryShaftRecoveryRoute | undefined;
     for (const direction of directions) {
       const candidate = yield* inspectDryShaftRecoveryRoute(
         state.driver,
         position,
         targetY,
         direction,
+        supportBlocks,
       );
-      if (candidate !== undefined) {
+      if (
+        candidate !== undefined
+        && (
+          route === undefined
+          || candidate.steps.length > route.steps.length
+          || (
+            candidate.steps.length === route.steps.length
+            && candidate.placedBlocks < route.placedBlocks
+          )
+        )
+      ) {
         route = candidate;
-        break;
       }
     }
     if (route === undefined) {
       return false;
     }
 
-    const observation = yield* state.driver.observe;
-    if (hasMiningPickaxe(observation)) {
-      yield* state.driver.act({
-        type: "select-item",
-        selector: { itemIds: MINING_PICKAXE_ITEM_IDS },
-      });
-    }
-    for (const step of route) {
-      for (const obstruction of [step.head, step.feet]) {
+    for (const step of route.steps) {
+      yield* ensureDryShaftRecoverySupport(state, step);
+      const beforeExcavation = yield* state.driver.observe;
+      if (hasMiningPickaxe(beforeExcavation)) {
+        yield* state.driver.act({
+          type: "select-item",
+          selector: { itemIds: MINING_PICKAXE_ITEM_IDS },
+        });
+      }
+      for (
+        const obstruction of [
+          step.jumpClearance,
+          step.head,
+          step.feet,
+        ]
+      ) {
         const block = yield* queryExactBlock(state.driver, obstruction);
         if (block !== undefined && !block.replaceable) {
           yield* state.driver.act({
@@ -11504,12 +14424,24 @@ function inspectDryShaftRecoveryRoute(
   position: BeatGamePosition,
   targetY: number,
   direction: Readonly<{ x: number; z: number }>,
-): Effect.Effect<readonly DryShaftRecoveryStep[] | undefined, BeatGameDriverError> {
+  maximumPlacedBlocks: number,
+): Effect.Effect<DryShaftRecoveryRoute | undefined, BeatGameDriverError> {
   return Effect.gen(function* () {
     const originX = Math.floor(position.x);
     const originZ = Math.floor(position.z);
     const startingY = Math.floor(position.y);
     const steps: DryShaftRecoveryStep[] = [];
+    let placedBlocks = 0;
+    let previousSupport: BeatGameBlockPosition = {
+      x: originX,
+      y: startingY - 1,
+      z: originZ,
+      dimension: position.dimension,
+    };
+    const startingSupport = yield* queryExactBlock(driver, previousSupport);
+    if (!isStableDryShaftSupport(startingSupport)) {
+      return undefined;
+    }
     for (let rise = 1; startingY + rise <= targetY; rise += 1) {
       const feet: BeatGameBlockPosition = {
         x: originX + direction.x * rise,
@@ -11519,22 +14451,185 @@ function inspectDryShaftRecoveryRoute(
       };
       const head = { ...feet, y: feet.y + 1 };
       const support = { ...feet, y: feet.y - 1 };
-      const [supportBlock, feetBlock, headBlock] = yield* Effect.all([
+      const lowerAnchor = { ...support, y: support.y - 1 };
+      const previousFeet: BeatGameBlockPosition = {
+        x: originX + direction.x * (rise - 1),
+        y: startingY + rise - 1,
+        z: originZ + direction.z * (rise - 1),
+        dimension: position.dimension,
+      };
+      const jumpClearance = { ...previousFeet, y: previousFeet.y + 2 };
+      const [
+        supportBlock,
+        feetBlock,
+        headBlock,
+        jumpClearanceBlock,
+        lowerAnchorBlock,
+      ] = yield* Effect.all([
         queryExactBlock(driver, support),
         queryExactBlock(driver, feet),
         queryExactBlock(driver, head),
-      ], { concurrency: 3 });
+        queryExactBlock(driver, jumpClearance),
+        queryExactBlock(driver, lowerAnchor),
+      ], { concurrency: 5 });
       if (
-        !isStableDryShaftSupport(supportBlock)
-        || !isSafeDryShaftSpace(feetBlock)
+        !isSafeDryShaftSpace(feetBlock)
         || !isSafeDryShaftSpace(headBlock)
+        || !isSafeDryShaftSpace(jumpClearanceBlock)
       ) {
-        return undefined;
+        break;
       }
-      steps.push({ feet, head });
+
+      const placeSupport = !isStableDryShaftSupport(supportBlock);
+      if (
+        placeSupport
+        && !isReplaceableDryShaftSupportCell(supportBlock)
+      ) {
+        break;
+      }
+      const placeLowerAnchor = placeSupport
+        && !isStableDryShaftSupport(lowerAnchorBlock);
+      if (
+        placeLowerAnchor
+        && !isReplaceableDryShaftSupportCell(lowerAnchorBlock)
+      ) {
+        break;
+      }
+      const requiredBlocks = Number(placeSupport) + Number(placeLowerAnchor);
+      if (placedBlocks + requiredBlocks > maximumPlacedBlocks) {
+        break;
+      }
+      placedBlocks += requiredBlocks;
+      steps.push({
+        feet,
+        head,
+        jumpClearance,
+        support,
+        lowerAnchor,
+        previousSupport,
+        placeLowerAnchor,
+        placeSupport,
+      });
+      previousSupport = support;
     }
-    return steps;
+    return steps.length === 0 ? undefined : { steps, placedBlocks };
   });
+}
+
+function ensureDryShaftRecoverySupport(
+  state: RunState,
+  step: DryShaftRecoveryStep,
+): Effect.Effect<void, BeatGameDriverError> {
+  return Effect.gen(function* () {
+    if (!step.placeSupport) {
+      return;
+    }
+    const observation = yield* state.driver.observe;
+    const material = DRY_SHAFT_RECOVERY_SUPPORT_ITEM_IDS.find((itemId) =>
+      (observation.inventory.counts[itemId] ?? 0) > 0
+    );
+    if (material === undefined) {
+      return yield* Effect.fail(new BeatGameDriverError({
+        operation: "recover-dry-shaft",
+        code: "not-found",
+        retryable: true,
+        message: "No solid block is available to support the recovery stair",
+      }));
+    }
+
+    if (step.placeLowerAnchor) {
+      yield* placeDryShaftRecoveryBlock(
+        state.driver,
+        material,
+        step.previousSupport,
+        horizontalPlacementFace(step.previousSupport, step.lowerAnchor),
+        step.lowerAnchor,
+      );
+    }
+    yield* placeDryShaftRecoveryBlock(
+      state.driver,
+      material,
+      step.lowerAnchor,
+      "up",
+      step.support,
+    );
+  });
+}
+
+function placeDryShaftRecoveryBlock(
+  driver: BeatGameDriver,
+  material: string,
+  against: BeatGameBlockPosition,
+  face: BeatGameBlockFace,
+  expected: BeatGameBlockPosition,
+  attemptsRemaining = 3,
+): Effect.Effect<void, BeatGameDriverError> {
+  return Effect.gen(function* () {
+    const existing = yield* queryExactBlock(driver, expected);
+    if (isStableDryShaftSupport(existing)) {
+      return;
+    }
+    const placement = yield* driver.act({
+      type: "select-item",
+      selector: { itemIds: [material] },
+    }).pipe(
+      Effect.zipRight(driver.act({
+        type: "place-block",
+        against,
+        face,
+        hand: "main",
+      })),
+      Effect.either,
+    );
+    for (let confirmation = 0; confirmation < 10; confirmation += 1) {
+      const placed = yield* queryExactBlock(driver, expected);
+      if (isStableDryShaftSupport(placed)) {
+        return;
+      }
+      yield* Effect.sleep(50);
+    }
+    if (attemptsRemaining > 1) {
+      return yield* placeDryShaftRecoveryBlock(
+        driver,
+        material,
+        against,
+        face,
+        expected,
+        attemptsRemaining - 1,
+      );
+    }
+    if (placement._tag === "Left") {
+      return yield* Effect.fail(placement.left);
+    }
+    return yield* Effect.fail(new BeatGameDriverError({
+      operation: "recover-dry-shaft",
+      code: "no-progress",
+      retryable: true,
+      message: `The recovery support was not placed at ${positionKey(expected)}`,
+    }));
+  });
+}
+
+function horizontalPlacementFace(
+  from: BeatGameBlockPosition,
+  to: BeatGameBlockPosition,
+): BeatGameBlockFace {
+  if (from.dimension !== to.dimension || from.y !== to.y) {
+    throw new RangeError("Recovery support blocks must be horizontal neighbors");
+  }
+  if (to.x === from.x + 1 && to.z === from.z) {
+    return "east";
+  }
+  if (to.x === from.x - 1 && to.z === from.z) {
+    return "west";
+  }
+  if (to.z === from.z + 1 && to.x === from.x) {
+    return "south";
+  }
+  if (to.z === from.z - 1 && to.x === from.x) {
+    return "north";
+  }
+  throw new RangeError("Recovery support blocks must be adjacent");
 }
 
 function isStableDryShaftSupport(
@@ -11546,6 +14641,14 @@ function isStableDryShaftSupport(
     && !isPlayerFluidBlock(block.blockId)
     && block.properties.waterlogged !== "true"
     && !isGravityAffectedBlockId(block.blockId);
+}
+
+function isReplaceableDryShaftSupportCell(
+  block: BeatGameBlockObservation | undefined,
+): boolean {
+  return block !== undefined
+    && block.replaceable
+    && block.blockId !== "minecraft:lava";
 }
 
 function isSafeDryShaftSpace(
@@ -11918,114 +15021,265 @@ function advanceExplorationFrontier(
     ? `${position.dimension}:${purpose}`
     : `${position.dimension}:${purpose}:${normalizedRotation}`;
   const hop = discoveryHopRadius(state, scanRadius);
-  return Ref.get(state.checkpoint).pipe(
-    Effect.flatMap((checkpoint) =>
-      Ref.modify(state.explorationFrontiers, (frontiers) => {
+  const explorationPath = {
+    ...path,
+    maxSearchTimeMs: Math.min(
+      path.maxSearchTimeMs,
+      EXPLORATION_MAXIMUM_SEARCH_TIME_MS,
+    ),
+    maximumExpandedStates: Math.min(
+      path.maximumExpandedStates ?? EXPLORATION_MAXIMUM_EXPANDED_STATES,
+      EXPLORATION_MAXIMUM_EXPANDED_STATES,
+    ),
+  };
+  return Effect.gen(function* () {
+    const checkpoint = yield* Ref.get(state.checkpoint);
+    const attempt = yield* Ref.modify(
+      state.explorationFrontiers,
+      (frontiers) => {
         const existing = frontiers[key];
-        const wasExternallyDisplaced = existing?.lastPosition !== undefined
-          && horizontalDistanceSquared(existing.lastPosition, position)
-            > EXPLORATION_REANCHOR_DISTANCE
-              * EXPLORATION_REANCHOR_DISTANCE;
+        const current = existing?.progressVersion === 2
+          && existing.origin.dimension === position.dimension
+          ? existing
+          : undefined;
+        const wasExternallyDisplaced = current?.lastPosition !== undefined
+          && horizontalDistanceSquared(current.lastPosition, position)
+            > EXPLORATION_REANCHOR_DISTANCE ** 2;
         const shouldReanchor = wasExternallyDisplaced
           && !isRecentDeathDisplacement(
-            existing.lastPosition,
+            current.lastPosition,
             checkpoint.memory.latestDeath,
           );
-        const totalAdvances = existing?.totalAdvances
-          ?? Math.max(0, (existing?.nextIndex ?? 1) - 1);
-        const nextIndex = Math.max(
-          existing?.nextIndex ?? 1,
-          totalAdvances + 1,
-        );
-        const frontier = existing?.origin.dimension === position.dimension
-            && !shouldReanchor
-          ? { ...existing, nextIndex, totalAdvances }
-          : { origin: position, nextIndex, totalAdvances };
+        const frontier: BeatGameExplorationFrontier = current === undefined
+          ? {
+            progressVersion: 2,
+            origin: position,
+            nextIndex: 1,
+            targetAttempts: 0,
+            totalAdvances: 0,
+            lastPosition: position,
+          }
+          : shouldReanchor
+          ? {
+            progressVersion: 2,
+            origin: position,
+            nextIndex: 1,
+            targetAttempts: 0,
+            lastPosition: position,
+            totalAdvances: current.totalAdvances ?? 0,
+          }
+          : current;
         const offset = rotateExplorationOffset(
           squareSpiralOffset(frontier.nextIndex),
           normalizedRotation,
         );
-        const target = {
+        const target = frontier.target ?? {
           x: frontier.origin.x + offset.x * hop,
+          y: position.y,
           z: frontier.origin.z + offset.z * hop,
+          dimension: position.dimension,
         };
-        return [
+        const retained = {
+          ...frontier,
           target,
-          retainExplorationFrontier(frontiers, key, {
+        };
+        return [{
+          key,
+          start: position,
+          target,
+          legTarget: explorationLegTarget(position, target),
+          nextIndex: frontier.nextIndex,
+        }, retainExplorationFrontier(
+          frontiers,
+          key,
+          retained,
+        )] as const;
+      },
+    );
+    yield* pathfindExplorationTarget(
+      state,
+      position,
+      attempt.target,
+      2,
+      explorationPath,
+      preferSurface,
+      allowFluidFallback,
+    ).pipe(
+      Effect.catchAll((cause) =>
+        preferSurface
+          && (
+            cause.operation === "pathfind"
+            || cause.operation === "pathfindXZ"
+          )
+          ? recoverSurfaceAfterExplorationFailure(state, cause).pipe(
+            Effect.zipRight(Effect.fail(cause)),
+          )
+          : Effect.fail(cause)
+      ),
+      Effect.ensuring(
+        persistExplorationAttempt(state, attempt, hop),
+      ),
+    );
+  });
+}
+
+function persistExplorationAttempt(
+  state: RunState,
+  attempt: Readonly<{
+    key: string;
+    start: BeatGamePosition;
+    target: BeatGamePosition;
+    legTarget: Readonly<{ x: number; z: number }>;
+    nextIndex: number;
+  }>,
+  hop: number,
+): Effect.Effect<void, never> {
+  return state.driver.observe.pipe(
+    Effect.flatMap((observation) =>
+      Ref.modify(state.explorationFrontiers, (frontiers) => {
+        const frontier = frontiers[attempt.key];
+        if (
+          frontier?.progressVersion !== 2
+          || frontier.nextIndex !== attempt.nextIndex
+          || frontier.target === undefined
+          || !samePosition(frontier.target, attempt.target)
+        ) {
+          return [{
+            frontiers,
+            position: observation.player.position,
+          }, frontiers] as const;
+        }
+        const end = observation.player.position;
+        const startDistance = horizontalDistanceToTarget(
+          attempt.start,
+          attempt.legTarget,
+        );
+        const endDistance = horizontalDistanceToTarget(
+          end,
+          attempt.legTarget,
+        );
+        const targetReached = horizontalDistanceSquared(
+          end,
+          attempt.target,
+        ) <= EXPLORATION_TARGET_REACHED_RADIUS ** 2;
+        const legReached = endDistance <= EXPLORATION_TARGET_REACHED_RADIUS;
+        const madeMaterialProgress =
+          startDistance - endDistance >= EXPLORATION_MINIMUM_PROGRESS_DISTANCE;
+        const totalAdvances = frontier.totalAdvances ?? 0;
+        const updated: BeatGameExplorationFrontier = targetReached
+          ? {
+            progressVersion: 2,
             origin: frontier.origin,
             nextIndex: frontier.nextIndex + 1,
-            totalAdvances: frontier.totalAdvances + 1,
-          }),
-        ] as const;
+            targetAttempts: 0,
+            lastPosition: end,
+            totalAdvances: totalAdvances + 1,
+          }
+          : legReached
+          ? {
+            ...frontier,
+            lastPosition: end,
+            totalAdvances: totalAdvances + 1,
+          }
+          : madeMaterialProgress
+          ? {
+            ...frontier,
+            lastPosition: end,
+          }
+          : {
+            ...frontier,
+            target: explorationRetryTarget(
+              end,
+              attempt.target,
+              hop,
+              (frontier.targetAttempts ?? 0) + 1,
+            ),
+            targetAttempts: (frontier.targetAttempts ?? 0) + 1,
+            lastPosition: end,
+          };
+        const retained = retainExplorationFrontier(
+          frontiers,
+          attempt.key,
+          updated,
+        );
+        return [{ frontiers: retained, position: end }, retained] as const;
       })
     ),
-    Effect.flatMap((target) =>
-      pathfindExplorationTarget(
-        state,
-        position,
-        target,
-        2,
-        path,
-        preferSurface,
-        allowFluidFallback,
-      ).pipe(
-        Effect.catchAll((cause) =>
-          preferSurface
-            && (
-              cause.operation === "pathfind"
-              || cause.operation === "pathfindXZ"
-            )
-            ? recoverSurfaceAfterExplorationFailure(state, cause)
-            : Effect.fail(cause)
-        ),
-        Effect.ensuring(
-          state.driver.observe.pipe(
-            Effect.flatMap((observation) =>
-              Ref.modify(state.explorationFrontiers, (frontiers) => {
-                const frontier = frontiers[key];
-                return frontier === undefined
-                  ? [frontiers, frontiers] as const
-                  : (() => {
-                    const updated = retainExplorationFrontier(
-                      frontiers,
-                      key,
-                      {
-                        ...frontier,
-                        lastPosition: observation.player.position,
-                      },
-                    );
-                    return [updated, updated] as const;
-                  })();
-              }).pipe(Effect.map((frontiers) => ({
-                frontiers,
-                position: observation.player.position,
-              })))
-            ),
-            Effect.flatMap(({ frontiers, position }) =>
-              persist(state, (checkpoint) => {
-                const remembered = isNether(position.dimension)
-                  ? rememberWorldPlace(
-                    checkpoint,
-                    "SAFE_CORRIDOR",
-                    position,
-                    0.75,
-                  )
-                  : checkpoint;
-                return {
-                  ...remembered,
-                  memory: {
-                    ...remembered.memory,
-                    explorationFrontiers: frontiers,
-                  },
-                };
-              })
-            ),
-            Effect.ignore,
-          ),
-        ),
-      )
+    Effect.flatMap(({ frontiers, position }) =>
+      persist(state, (checkpoint) => {
+        const remembered = isNether(position.dimension)
+          ? rememberWorldPlace(
+            checkpoint,
+            "SAFE_CORRIDOR",
+            position,
+            0.75,
+          )
+          : checkpoint;
+        return {
+          ...remembered,
+          memory: {
+            ...remembered.memory,
+            explorationFrontiers: frontiers,
+          },
+        };
+      })
     ),
+    Effect.ignore,
   );
+}
+
+function explorationRetryTarget(
+  position: BeatGamePosition,
+  previousTarget: BeatGamePosition,
+  hop: number,
+  targetAttempts: number,
+): BeatGamePosition {
+  const deltaX = previousTarget.x - position.x;
+  const deltaZ = previousTarget.z - position.z;
+  const length = Math.hypot(deltaX, deltaZ);
+  const unitX = length > 0.001 ? deltaX / length : 1;
+  const unitZ = length > 0.001 ? deltaZ / length : 0;
+  const attemptIndex = Math.max(0, targetAttempts - 1);
+  const scaleIndex = Math.floor(
+    attemptIndex / EXPLORATION_RETRY_DIRECTIONS,
+  ) % EXPLORATION_RETRY_DISTANCE_SCALES.length;
+  const rotated = rotateExplorationOffset(
+    { x: unitX, z: unitZ },
+    1,
+  );
+  const distance = Math.max(
+    8,
+    hop * (EXPLORATION_RETRY_DISTANCE_SCALES[scaleIndex] ?? 1),
+  );
+  return {
+    x: position.x + rotated.x * distance,
+    y: position.y,
+    z: position.z + rotated.z * distance,
+    dimension: position.dimension,
+  };
+}
+
+function explorationLegTarget(
+  position: BeatGamePosition,
+  target: Pick<BeatGamePosition, "x" | "z">,
+): { readonly x: number; readonly z: number } {
+  const deltaX = target.x - position.x;
+  const deltaZ = target.z - position.z;
+  const targetDistance = Math.hypot(deltaX, deltaZ);
+  const legRatio = targetDistance <= EXPLORATION_MAXIMUM_LEG_DISTANCE
+    ? 1
+    : EXPLORATION_MAXIMUM_LEG_DISTANCE / targetDistance;
+  return {
+    x: position.x + deltaX * legRatio,
+    z: position.z + deltaZ * legRatio,
+  };
+}
+
+function horizontalDistanceToTarget(
+  position: BeatGamePosition,
+  target: Readonly<{ x: number; z: number }>,
+): number {
+  return Math.hypot(target.x - position.x, target.z - position.z);
 }
 
 function explorationDetourRotation(
@@ -12091,16 +15345,7 @@ function pathfindExplorationTarget(
   preferSurface: boolean,
   allowFluidFallback = true,
 ): Effect.Effect<void, BeatGameDriverError> {
-  const deltaX = target.x - position.x;
-  const deltaZ = target.z - position.z;
-  const targetDistance = Math.hypot(deltaX, deltaZ);
-  const legRatio = targetDistance <= EXPLORATION_MAXIMUM_LEG_DISTANCE
-    ? 1
-    : EXPLORATION_MAXIMUM_LEG_DISTANCE / targetDistance;
-  const legTarget = {
-    x: position.x + deltaX * legRatio,
-    z: position.z + deltaZ * legRatio,
-  };
+  const legTarget = explorationLegTarget(position, target);
   const navigate = (
     policy: BeatGameStrategy["path"],
   ): Effect.Effect<void, BeatGameDriverError> => {
@@ -12433,32 +15678,14 @@ function ensureWorkstation(
   BeatGameDriverError
 > {
   return Effect.gen(function* () {
-    if (
-      yield* isPlayerInFluid(
-        state.driver,
-        observation.player.position,
-      )
-    ) {
-      yield* emergencyAirAscent(state, observation.player.position);
-      const recovered = yield* state.driver.observe;
-      if (
-        yield* isPlayerInFluid(
-          state.driver,
-          recovered.player.position,
-        )
-      ) {
-        return yield* Effect.fail(new BeatGameDriverError({
-          operation: "ensure-workstation",
-          code: "unreachable",
-          retryable: true,
-          message: `The bot is still in fluid and cannot safely use a ${blockId}`,
-        }));
-      }
-      return yield* ensureWorkstation(state, recovered, blockId);
-    }
+    const preparedObservation = yield* prepareDryWorkstationSite(
+      state,
+      observation,
+      blockId,
+    );
     const existing = yield* findReusableWorkstations(
       state.driver,
-      observation,
+      preparedObservation,
       blockId,
     );
     for (const candidate of existing) {
@@ -12582,6 +15809,82 @@ function ensureWorkstation(
       operation: "ensure-workstation",
       retryable: true,
       message: `${blockId} could not be placed on any nearby support`,
+    }));
+  });
+}
+
+function prepareDryWorkstationSite(
+  state: RunState,
+  observation: BeatGameObservation,
+  blockId: "minecraft:crafting_table" | "minecraft:furnace",
+): Effect.Effect<BeatGameObservation, BeatGameDriverError> {
+  return Effect.gen(function* () {
+    let current = observation;
+    for (
+      let attempt = 0;
+      attempt < AIR_ESCAPE_MAXIMUM_RECOVERY_ATTEMPTS;
+      attempt += 1
+    ) {
+      const inFluid = yield* isPlayerInFluid(
+        state.driver,
+        current.player.position,
+      );
+      if (!inFluid && current.player.onGround) {
+        return current;
+      }
+      if (current.player.dead) {
+        return current;
+      }
+      if (inFluid) {
+        yield* emergencyAirAscent(
+          state,
+          current.player.position,
+        ).pipe(Effect.either);
+        current = yield* state.driver.observe;
+        if (
+          current.player.onGround
+          && !(yield* isPlayerInFluid(
+            state.driver,
+            current.player.position,
+          ))
+        ) {
+          return current;
+        }
+        yield* swimToNearbyDrySurface(state, true).pipe(Effect.either);
+        current = yield* state.driver.observe;
+        if (
+          current.player.onGround
+          && !(yield* isPlayerInFluid(
+            state.driver,
+            current.player.position,
+          ))
+        ) {
+          return current;
+        }
+      }
+      if (current.player.position.dimension === "minecraft:overworld") {
+        yield* returnToOverworldSurface(
+          state,
+          current.player.position,
+        ).pipe(Effect.either);
+        current = yield* state.driver.observe;
+        if (
+          current.player.onGround
+          && !(yield* isPlayerInFluid(
+            state.driver,
+            current.player.position,
+          ))
+        ) {
+          return current;
+        }
+      }
+    }
+    return yield* Effect.fail(new BeatGameDriverError({
+      operation: "ensure-workstation",
+      code: "unreachable",
+      retryable: true,
+      message:
+        `The bot could not reach dry, supported ground for a ${blockId}`,
     }));
   });
 }
@@ -12741,8 +16044,11 @@ function ensureInventorySpace(
         });
         break;
       }
-      const discardItemId = INVENTORY_DISCARD_PRIORITY.find((itemId) =>
-        (current.inventory.counts[itemId] ?? 0) > 0
+      const priorityDiscardItemId = INVENTORY_DISCARD_PRIORITY.find(
+        (itemId) => (current.inventory.counts[itemId] ?? 0) > 0,
+      );
+      const redundantEquipment = selectRedundantEquipmentDiscard(
+        current.inventory.counts,
       );
       const cobbledDeepslateCount =
         current.inventory.counts["minecraft:cobbled_deepslate"] ?? 0;
@@ -12750,12 +16056,12 @@ function ensureInventorySpace(
         cobbledDeepslateCount - INVENTORY_BUILDING_BLOCK_RESERVE;
       const cobblestoneCount =
         current.inventory.counts["minecraft:cobblestone"] ?? 0;
-      const itemId = discardItemId
+      const itemId = priorityDiscardItemId
         ?? (excessCobbledDeepslate >= 64
           ? "minecraft:cobbled_deepslate"
           : cobblestoneCount > 0
           ? "minecraft:cobblestone"
-          : undefined);
+          : redundantEquipment?.itemId);
       if (itemId === undefined) {
         if (current.inventory.emptyPlayerSlots >= minimumEmptySlots) {
           break;
@@ -12769,11 +16075,13 @@ function ensureInventorySpace(
         });
         break;
       }
-      const count = itemId === "minecraft:cobbled_deepslate"
+      const count = priorityDiscardItemId !== undefined
+        ? current.inventory.counts[priorityDiscardItemId] ?? 0
+        : itemId === "minecraft:cobbled_deepslate"
         ? excessCobbledDeepslate
         : itemId === "minecraft:cobblestone"
         ? Math.min(64, cobblestoneCount)
-        : current.inventory.counts[itemId] ?? 0;
+        : redundantEquipment?.count ?? 0;
       const itemCountBefore = current.inventory.counts[itemId] ?? 0;
       const emptySlotsBefore = current.inventory.emptyPlayerSlots;
       if (!discardViewConfirmed) {
@@ -12876,6 +16184,52 @@ function ensureInventorySpace(
       return yield* Effect.fail(cleanupFailure);
     }
   });
+}
+
+export function selectRedundantEquipmentDiscard(
+  counts: Readonly<Record<string, number>>,
+): { readonly itemId: string; readonly count: number } | undefined {
+  for (const family of REDUNDANT_EQUIPMENT_FAMILIES) {
+    let bestTier = -1;
+    for (let tier = family.length - 1; tier >= 0; tier -= 1) {
+      const itemId = family[tier];
+      if (itemId !== undefined && (counts[itemId] ?? 0) > 0) {
+        bestTier = tier;
+        break;
+      }
+    }
+    if (bestTier < 0) {
+      continue;
+    }
+    for (let tier = 0; tier < bestTier; tier += 1) {
+      const itemId = family[tier];
+      if (itemId === undefined) {
+        continue;
+      }
+      const available = counts[itemId] ?? 0;
+      const retainedBackup = tier === bestTier - 1 ? 1 : 0;
+      if (available > retainedBackup) {
+        return {
+          itemId,
+          count: available - retainedBackup,
+        };
+      }
+    }
+    const bestItemId = family[bestTier];
+    if (bestItemId !== undefined && (counts[bestItemId] ?? 0) > 1) {
+      return {
+        itemId: bestItemId,
+        count: (counts[bestItemId] ?? 0) - 1,
+      };
+    }
+  }
+  for (const itemId of SINGLETON_EQUIPMENT_ITEM_IDS) {
+    const available = counts[itemId] ?? 0;
+    if (available > 1) {
+      return { itemId, count: available - 1 };
+    }
+  }
+  return undefined;
 }
 
 function placeWorkstationDirectly(
@@ -12992,11 +16346,6 @@ function findWorkstationTargets(
   position: BeatGamePosition,
 ): Effect.Effect<readonly BeatGameBlockPosition[], BeatGameDriverError> {
   return Effect.gen(function* () {
-    const playerBlock = {
-      x: Math.floor(position.x),
-      y: Math.floor(position.y),
-      z: Math.floor(position.z),
-    };
     const supports = yield* driver.queryBlocks({
       center: position,
       radius: 4,
@@ -13012,15 +16361,7 @@ function findWorkstationTargets(
       }))
       .filter((candidate) =>
         candidate.dimension === position.dimension
-        && !(
-          candidate.x === playerBlock.x
-          && candidate.z === playerBlock.z
-          && (
-            candidate.y === playerBlock.y
-            || candidate.y === playerBlock.y - 1
-            || candidate.y === playerBlock.y + 1
-          )
-        )
+        && !placementIntersectsPlayer(candidate, position)
       )
       .sort((left, right) =>
         workstationDistanceSquared(left, position)
@@ -13090,6 +16431,20 @@ function findWorkstationTargets(
           "No supported open or diggable block is available for a workstation",
       }));
   });
+}
+
+function placementIntersectsPlayer(
+  block: BeatGameBlockPosition,
+  player: BeatGamePosition,
+): boolean {
+  const playerHalfWidth = 0.31;
+  const playerHeight = 1.8;
+  return player.x + playerHalfWidth > block.x
+    && player.x - playerHalfWidth < block.x + 1
+    && player.y + playerHeight > block.y
+    && player.y < block.y + 1
+    && player.z + playerHalfWidth > block.z
+    && player.z - playerHalfWidth < block.z + 1;
 }
 
 function hasFluidAt(
@@ -13183,12 +16538,27 @@ function buildAndEnterDurablePortal(
       if (plan === undefined) {
         return Effect.succeed({} satisfies ActionResult);
       }
-      const path = portalPrecisionPathPolicy(state.strategy.path);
+      const path = portalCarefulPathPolicy(state.strategy.path);
+      const remainingFrameBlocks = plan.workspace.targetFrame.filter(
+        (target) => !plan.workspace.observedFrame.some((observed) =>
+          samePosition(target, observed)
+        ),
+      ).length;
+      const filledLavaBuckets =
+        observation.inventory.counts["minecraft:lava_bucket"] ?? 0;
+      const remainingLavaSources = Math.max(
+        0,
+        remainingFrameBlocks - Math.min(1, filledLavaBuckets),
+      );
       const prepare = plan.workspace.method === "CAST" && plan.resumed
         ? updatePortalSkill(state, plan.workspace, "prepare-liquid", {
           status: "BUILDING",
         }).pipe(
-          Effect.zipRight(preparePortalCastingLavaPool(state, observation)),
+          Effect.zipRight(preparePortalCastingLavaPool(
+            state,
+            observation,
+            remainingLavaSources,
+          )),
           Effect.flatMap((preparation) =>
             preparation.ready
               ? updatePortalSkill(state, plan.workspace, "prepare-liquid", {
@@ -13560,13 +16930,13 @@ function rememberPortal(
   };
 }
 
-function portalPrecisionPathPolicy(
+function portalCarefulPathPolicy(
   path: BeatGameStrategy["path"],
 ): BeatGameStrategy["path"] {
   return {
     ...path,
-    searchMode: "PRECISION",
-    maximumQualityBound: 1,
+    searchMode: "NORMAL",
+    maximumQualityBound: PORTAL_CAREFUL_QUALITY_BOUND,
     maxParkourGap: 0,
     smoothCamera: false,
     sprint: false,
@@ -13579,6 +16949,7 @@ function enterKnownPortal(
   observation: BeatGameObservation,
 ): Effect.Effect<boolean, BeatGameError | BeatGameDriverError> {
   return Effect.gen(function* () {
+    const attemptedPortalAreas: BeatGamePosition[] = [];
     const resumableWorkspace = latestResumablePortalWorkspace(
       yield* Ref.get(state.checkpoint),
     );
@@ -13588,12 +16959,19 @@ function enterKnownPortal(
       selector: { blockIds: ["minecraft:nether_portal"] },
       maximumResults: 16,
     });
-    const immediate = nearby[0];
+    const immediate = nearby.find(({ position }) =>
+      !isPortalRouteOnCooldown(checkpoint, position)
+    );
     if (immediate !== undefined) {
-      yield* enterPortal(state.driver, {
-        portal: immediate.position,
-        path: state.strategy.path,
-      });
+      const entered = yield* tryEnterKnownPortal(
+        state,
+        checkpoint,
+        immediate.position,
+        state.strategy.path,
+      );
+      if (!entered) {
+        return false;
+      }
       if (
         resumableWorkspace !== undefined
         && distanceSquared(immediate.position, resumableWorkspace.origin)
@@ -13608,11 +16986,19 @@ function enterKnownPortal(
       resumableWorkspace !== undefined
       && resumableWorkspace.origin.dimension
         === observation.player.position.dimension
+      && !isPortalRouteOnCooldown(checkpoint, resumableWorkspace.origin)
     ) {
-      const approached = yield* state.driver.pathfind(
+      attemptedPortalAreas.push(resumableWorkspace.origin);
+      const workspaceHadPortalEvidence =
+        resumableWorkspace.interiorState === "PORTAL"
+        || checkpoint.memory.portals.some(({ confidence, value }) =>
+          confidence > 0
+          && distanceSquared(value.position, resumableWorkspace.origin)
+            <= 8 ** 2
+        );
+      const approached = yield* approachRememberedPortal(
+        state,
         resumableWorkspace.origin,
-        8,
-        portalPrecisionPathPolicy(state.strategy.path),
       ).pipe(Effect.either);
       if (approached._tag === "Right") {
         const revalidated = yield* state.driver.queryBlocks({
@@ -13623,18 +17009,44 @@ function enterKnownPortal(
         });
         const portal = revalidated[0];
         if (portal !== undefined) {
-          yield* enterPortal(state.driver, {
-            portal: portal.position,
-            path: portalPrecisionPathPolicy(state.strategy.path),
-          });
+          const entered = yield* tryEnterKnownPortal(
+            state,
+            checkpoint,
+            portal.position,
+            portalCarefulPathPolicy(state.strategy.path),
+          );
+          if (!entered) {
+            return false;
+          }
           yield* markPortalWorkspaceEntered(state, resumableWorkspace);
           return true;
+        }
+      }
+      if (workspaceHadPortalEvidence) {
+        if (approached._tag === "Left") {
+          yield* markPortalRouteUnavailable(
+            state,
+            resumableWorkspace.origin,
+            `remembered portal route failed: ${approached.left.message}`,
+          );
+        } else {
+          yield* invalidatePortalEvidence(
+            state,
+            resumableWorkspace.origin,
+            "remembered portal was absent after revalidation",
+          );
         }
       }
     }
 
     const remembered = checkpoint.memory.portals
-      .filter(({ value }) =>
+      .filter(({ confidence, value }) =>
+        confidence > 0
+        && !attemptedPortalAreas.some((attempted) =>
+          distanceSquared(attempted, value.position) <= 8 ** 2
+        )
+        && !isPortalRouteOnCooldown(checkpoint, value.position)
+        &&
         value.position.dimension
           === observation.player.position.dimension
       )
@@ -13643,12 +17055,16 @@ function enterKnownPortal(
         || Date.parse(right.observedAt) - Date.parse(left.observedAt)
       );
     for (const memory of remembered) {
-      const approached = yield* state.driver.pathfind(
+      const approached = yield* approachRememberedPortal(
+        state,
         memory.value.position,
-        8,
-        state.strategy.path,
       ).pipe(Effect.either);
       if (approached._tag === "Left") {
+        yield* markPortalRouteUnavailable(
+          state,
+          memory.value.position,
+          `remembered portal route failed: ${approached.left.message}`,
+        );
         continue;
       }
       const revalidated = yield* state.driver.queryBlocks({
@@ -13659,15 +17075,361 @@ function enterKnownPortal(
       });
       const portal = revalidated[0];
       if (portal === undefined) {
+        yield* invalidatePortalEvidence(
+          state,
+          memory.value.position,
+          "remembered portal was absent after revalidation",
+        );
         continue;
       }
-      yield* enterPortal(state.driver, {
-        portal: portal.position,
-        path: state.strategy.path,
-      });
-      return true;
+      const entered = yield* tryEnterKnownPortal(
+        state,
+        checkpoint,
+        portal.position,
+        state.strategy.path,
+      );
+      if (entered) {
+        return true;
+      }
     }
     return false;
+  });
+}
+
+function tryEnterKnownPortal(
+  state: RunState,
+  checkpoint: BeatGameCheckpoint,
+  portal: BeatGameBlockPosition,
+  path: BeatGameStrategy["path"],
+): Effect.Effect<boolean, BeatGameError | BeatGameDriverError> {
+  if (isPortalRouteOnCooldown(checkpoint, portal)) {
+    return Effect.succeed(false);
+  }
+  return Effect.gen(function* () {
+    const entry = yield* enterPortal(state.driver, {
+      portal,
+      path,
+    }).pipe(Effect.either);
+    if (entry._tag === "Right") {
+      return true;
+    }
+    if (!entry.left.retryable) {
+      return yield* Effect.fail(entry.left);
+    }
+    yield* markPortalRouteUnavailable(
+      state,
+      portal,
+      `verified portal entry failed: ${entry.left.message}`,
+    );
+    return false;
+  });
+}
+
+function hasReusablePortalEvidence(
+  checkpoint: BeatGameCheckpoint,
+  dimension: string,
+): boolean {
+  if (checkpoint.memory.portals.some(({ confidence, value }) =>
+    confidence > 0
+    && value.position.dimension === dimension
+  )) {
+    return true;
+  }
+  const activeWorkspace = checkpoint.activeSkill?.portalWorkspace;
+  if (
+    activeWorkspace !== undefined
+    && activeWorkspace.origin.dimension === dimension
+    && activeWorkspace.status !== "ABANDONED"
+    && activeWorkspace.interiorState === "PORTAL"
+  ) {
+    return true;
+  }
+  return checkpoint.memory.portalWorkspaces.some((workspace) =>
+    workspace.origin.dimension === dimension
+    && workspace.status !== "ABANDONED"
+    && workspace.interiorState === "PORTAL"
+  );
+}
+
+function approachRememberedPortal(
+  state: RunState,
+  portal: BeatGamePosition,
+): Effect.Effect<void, BeatGameDriverError> {
+  return Effect.gen(function* () {
+    const routePolicy = {
+      ...state.strategy.path,
+      avoidFluids: true,
+      maximumExpandedStates: Math.max(
+        state.strategy.path.maximumExpandedStates ?? 0,
+        REMEMBERED_PORTAL_MAXIMUM_EXPANDED_STATES,
+      ),
+    };
+    let current = yield* state.driver.observe;
+    if (
+      current.player.position.dimension === "minecraft:overworld"
+      && portal.dimension === "minecraft:overworld"
+      && Math.sqrt(
+        horizontalDistanceSquared(
+          current.player.position,
+          portal,
+        ),
+      ) > REMEMBERED_PORTAL_FINAL_APPROACH_DISTANCE
+      && (yield* needsOverworldSurfaceRecovery(
+        state,
+        current.player.position,
+      ))
+    ) {
+      yield* returnToOverworldSurface(state, current.player.position);
+      current = yield* state.driver.observe;
+    }
+    for (
+      let leg = 0;
+      leg < REMEMBERED_PORTAL_MAXIMUM_APPROACH_LEGS;
+      leg += 1
+    ) {
+      if (current.player.position.dimension !== portal.dimension) {
+        return yield* Effect.fail(new BeatGameDriverError({
+          operation: "pathfindXZ",
+          code: "dimension_changed",
+          retryable: true,
+          message: "Changed dimensions while approaching a remembered portal",
+        }));
+      }
+      const distance = Math.sqrt(horizontalDistanceSquared(
+        current.player.position,
+        portal,
+      ));
+      if (distance <= REMEMBERED_PORTAL_FINAL_APPROACH_DISTANCE) {
+        break;
+      }
+      const ratio = Math.min(
+        1,
+        REMEMBERED_PORTAL_MAXIMUM_LEG_DISTANCE / distance,
+      );
+      const targetX = current.player.position.x
+        + (portal.x - current.player.position.x) * ratio;
+      const targetZ = current.player.position.z
+        + (portal.z - current.player.position.z) * ratio;
+      yield* pathfindRememberedPortalLeg(
+        state,
+        targetX,
+        targetZ,
+        portal.dimension,
+        REMEMBERED_PORTAL_LEG_RADIUS,
+        routePolicy,
+      );
+      const previousDistance = distance;
+      current = yield* state.driver.observe;
+      const remainingDistance = Math.sqrt(horizontalDistanceSquared(
+        current.player.position,
+        portal,
+      ));
+      if (
+        previousDistance - remainingDistance
+          < REMEMBERED_PORTAL_MINIMUM_LEG_PROGRESS
+      ) {
+        return yield* Effect.fail(new BeatGameDriverError({
+          operation: "pathfindXZ",
+          code: "no_progress",
+          retryable: true,
+          message:
+            "Segmented navigation made no useful progress toward the remembered portal",
+        }));
+      }
+    }
+    current = yield* state.driver.observe;
+    if (
+      Math.sqrt(horizontalDistanceSquared(current.player.position, portal))
+        > REMEMBERED_PORTAL_FINAL_APPROACH_DISTANCE
+    ) {
+      return yield* Effect.fail(new BeatGameDriverError({
+        operation: "pathfindXZ",
+        code: "search_limit",
+        retryable: true,
+        message: "Remembered portal navigation exceeded its bounded leg count",
+      }));
+    }
+    yield* state.driver.pathfind(
+      portal,
+      8,
+      {
+        ...portalCarefulPathPolicy(state.strategy.path),
+        maximumExpandedStates: Math.max(
+          state.strategy.path.maximumExpandedStates ?? 0,
+          REMEMBERED_PORTAL_MAXIMUM_EXPANDED_STATES,
+        ),
+      },
+    );
+  });
+}
+
+function pathfindRememberedPortalLeg(
+  state: RunState,
+  x: number,
+  z: number,
+  dimension: string,
+  radius: number,
+  basePolicy: BeatGameStrategy["path"],
+): Effect.Effect<void, BeatGameDriverError> {
+  const preferredPolicy = {
+    ...basePolicy,
+    searchMode: BeatGamePathSearchMode.NORMAL,
+    maximumQualityBound: REMEMBERED_PORTAL_PREFERRED_QUALITY_BOUND,
+  };
+  return state.driver.pathfindXZ(
+    x,
+    z,
+    dimension,
+    radius,
+    preferredPolicy,
+  ).pipe(
+    Effect.catchTag("BeatGameDriverError", (error) =>
+      error.code === "path_quality_bound_not_met"
+          || error.code === "search_limit"
+        ? state.driver.pathfindXZ(
+          x,
+          z,
+          dimension,
+          radius,
+          {
+            ...basePolicy,
+            searchMode: BeatGamePathSearchMode.URGENT,
+            maximumQualityBound: REMEMBERED_PORTAL_FALLBACK_QUALITY_BOUND,
+          },
+        )
+        : Effect.fail(error)
+    ),
+  );
+}
+
+function invalidatePortalEvidence(
+  state: RunState,
+  portal: BeatGamePosition,
+  reason: string,
+): Effect.Effect<void, BeatGameError> {
+  return persist(state, (checkpoint) => {
+    const now = new Date().toISOString();
+    const matchesPortal = (position: BeatGamePosition) =>
+      position.dimension === portal.dimension
+      && distanceSquared(position, portal) <= 8 ** 2;
+    const downgradeWorkspace = (
+      workspace: BeatGamePortalWorkspace,
+    ): BeatGamePortalWorkspace =>
+      matchesPortal(workspace.origin) && workspace.interiorState === "PORTAL"
+        ? {
+          ...workspace,
+          status: "BUILDING",
+          interiorState: "UNKNOWN",
+          ignitionState: "NOT_ATTEMPTED",
+          updatedAt: now,
+        }
+        : workspace;
+    const activeWorkspace = checkpoint.activeSkill?.portalWorkspace;
+    return {
+      ...checkpoint,
+      ...(checkpoint.activeSkill === undefined
+        || activeWorkspace === undefined
+        ? {}
+        : {
+          activeSkill: {
+            ...checkpoint.activeSkill,
+            portalWorkspace: downgradeWorkspace(activeWorkspace),
+            updatedAt: now,
+          },
+        }),
+      memory: {
+        ...checkpoint.memory,
+        portals: checkpoint.memory.portals.map((entry) =>
+          matchesPortal(entry.value.position)
+            ? { ...entry, confidence: 0 }
+            : entry
+        ),
+        portalWorkspaces: checkpoint.memory.portalWorkspaces.map(
+          downgradeWorkspace,
+        ),
+        unreachable: checkpoint.memory.unreachable.filter(({ key, value }) =>
+          !key.startsWith("portal-route:") || !matchesPortal(value)
+        ),
+      },
+    };
+  }).pipe(
+    Effect.zipRight(emit(state, {
+      type: "diagnostic",
+      message: "Invalidated reusable portal evidence after revalidation",
+      data: {
+        portal: positionKey(portal),
+        reason,
+      },
+    })),
+    Effect.asVoid,
+  );
+}
+
+function markPortalRouteUnavailable(
+  state: RunState,
+  portal: BeatGamePosition,
+  reason: string,
+): Effect.Effect<void, BeatGameError> {
+  return persist(state, (checkpoint) => {
+    const observedAt = new Date().toISOString();
+    const matchesPortal = (position: BeatGamePosition) =>
+      position.dimension === portal.dimension
+      && distanceSquared(position, portal) <= 8 ** 2;
+    return {
+      ...checkpoint,
+      memory: {
+        ...checkpoint.memory,
+        unreachable: [
+          ...checkpoint.memory.unreachable.filter(({ key, value }) =>
+            !key.startsWith("portal-route:") || !matchesPortal(value)
+          ),
+          {
+            key: `portal-route:${positionKey(portal)}`,
+            value: portal,
+            observedAt,
+            expiresAt: new Date(
+              Date.now() + REMEMBERED_PORTAL_ROUTE_COOLDOWN_MS,
+            ).toISOString(),
+            confidence: 1,
+          },
+        ].slice(-64),
+      },
+    };
+  }).pipe(
+    Effect.zipRight(emit(state, {
+      type: "diagnostic",
+      message: "Remembered portal route is temporarily unavailable",
+      data: {
+        portal: positionKey(portal),
+        reason,
+      },
+    })),
+    Effect.asVoid,
+  );
+}
+
+function isPortalRouteOnCooldown(
+  checkpoint: BeatGameCheckpoint,
+  portal: BeatGamePosition,
+  now = Date.now(),
+): boolean {
+  return checkpoint.memory.unreachable.some(({
+    key,
+    value,
+    observedAt,
+    expiresAt,
+  }) => {
+    const recordedExpiry = expiresAt === undefined
+      ? Number.NEGATIVE_INFINITY
+      : Date.parse(expiresAt);
+    const boundedExpiry = Math.min(
+      recordedExpiry,
+      Date.parse(observedAt) + REMEMBERED_PORTAL_ROUTE_COOLDOWN_MS,
+    );
+    return key.startsWith("portal-route:")
+      && boundedExpiry > now
+      && value.dimension === portal.dimension
+      && distanceSquared(value, portal) <= 8 ** 2;
   });
 }
 
@@ -13792,42 +17554,6 @@ function approachStrongholdPortalRoom(
     path: state.strategy.path,
     openSpaceHandoffRadius: 1,
   });
-}
-
-function staircaseStartPosition(
-  destination: BeatGameBlockPosition,
-  current: BeatGameBlockPosition,
-): BeatGameBlockPosition {
-  const depth = current.y - destination.y;
-  let x = current.x;
-  let z = current.z;
-  let xDistance = Math.abs(destination.x - x);
-  let zDistance = Math.abs(destination.z - z);
-  let excessDistance = xDistance + zDistance - depth;
-  if (excessDistance > 0) {
-    const xReduction = Math.min(xDistance, excessDistance);
-    x += Math.sign(destination.x - x) * xReduction;
-    xDistance -= xReduction;
-    excessDistance -= xReduction;
-    const zReduction = Math.min(zDistance, excessDistance);
-    z += Math.sign(destination.z - z) * zReduction;
-    zDistance -= zReduction;
-  }
-  if ((depth - xDistance - zDistance) % 2 !== 0) {
-    if (xDistance > 0) {
-      x += Math.sign(destination.x - x);
-    } else if (zDistance > 0) {
-      z += Math.sign(destination.z - z);
-    } else {
-      x += 1;
-    }
-  }
-  return {
-    x,
-    y: current.y,
-    z,
-    dimension: destination.dimension,
-  };
 }
 
 function floorBlockPosition(
@@ -13969,7 +17695,7 @@ function fightDragon(
       searchRadius: 320,
       path: state.strategy.path,
     });
-    return { phase: BeatGamePhase.COLLECT_DRAGON_EGG };
+    return { phase: BeatGamePhase.EXIT_END };
   });
 }
 
@@ -14167,18 +17893,47 @@ function resetAfterCatastrophicInventoryLoss(
   ) {
     return checkpoint;
   }
+  const repairedCheckpoint = checkpoint.memory.latestDeath === undefined
+    ? checkpoint
+    : forgetDeathPosition(
+      checkpoint,
+      checkpoint.memory.latestDeath.observedAt,
+    );
+  const resetAt = new Date().toISOString();
+  const resetCheckpoint = abandonActiveDurableSkill(
+    repairedCheckpoint,
+    "catastrophic inventory loss restarted Overworld preparation",
+    resetAt,
+  );
   return {
-    ...checkpoint,
+    ...resetCheckpoint,
     planner: {
-      ...checkpoint.planner,
+      ...withoutCurrentAction(resetCheckpoint.planner),
       phase: BeatGamePhase.PREPARE_OVERWORLD,
       objective: objectiveForPhase(BeatGamePhase.PREPARE_OVERWORLD),
       requirements: [],
       retryCount: 0,
       completedActions: [],
-      updatedAt: new Date().toISOString(),
+      updatedAt: resetAt,
     },
   };
+}
+
+function shouldRepairCatastrophicInventoryLoss(
+  checkpoint: BeatGameCheckpoint,
+  observation: BeatGameObservation,
+): boolean {
+  const latestDeath = checkpoint.memory.latestDeath;
+  const recoverableCorpse = latestDeath !== undefined
+    && checkpoint.memory.deathPositions.some((entry) =>
+      entry.observedAt === latestDeath.observedAt
+      && isDeathRecoveryTimestampRecoverable(entry.observedAt)
+    );
+  const justCompletedRecovery =
+    checkpoint.lastStableAction?.action === "recover-death";
+  return !observation.player.dead
+    && !recoverableCorpse
+    && (latestDeath !== undefined || justCompletedRecovery);
 }
 
 function waitForDeathRecoveryInventory(
@@ -14573,8 +18328,36 @@ function chainedDeathRespawnCooldown(pendingDeathCount: number): number {
   );
 }
 
+function deathRecoverySafetyInterruptionCount(
+  checkpoint: BeatGameCheckpoint,
+): number {
+  if (
+    checkpoint.activeSkill?.kind
+      !== BeatGameDurableSkillKind.DEATH_RECOVERY
+  ) {
+    return 0;
+  }
+  return Object.entries(checkpoint.activeSkill.retries)
+    .filter(([reason]) => isDeathRecoverySafetyInterruption(reason))
+    .reduce((total, [, count]) => total + count, 0);
+}
+
+function isDeathRecoverySafetyInterruption(reason: string): boolean {
+  return reason.startsWith("interrupted item recovery to ")
+    || reason.startsWith("paused item recovery to ")
+    || reason === "air fell below the safety threshold"
+    || reason === "bot died again during recovery"
+    || reason === "environmental damage was observed without a nearby attacker"
+    || reason === "hunger became urgent without available food"
+    || reason === "interrupted an action to clutch a dangerous fall";
+}
+
 function isPendingDeathRecoverable(pendingDeath: PendingDeath): boolean {
-  const ageMs = Date.now() - Date.parse(pendingDeath.observedAt);
+  return isDeathRecoveryTimestampRecoverable(pendingDeath.observedAt);
+}
+
+function isDeathRecoveryTimestampRecoverable(observedAt: string): boolean {
+  const ageMs = Date.now() - Date.parse(observedAt);
   return Number.isFinite(ageMs)
     && ageMs >= 0
     && ageMs <= DURABLE_DEATH_RECOVERY_WINDOW_MS;
@@ -14604,6 +18387,16 @@ function recordDeathRecoveryFailure(
     });
     return nextFailureCount;
   });
+}
+
+function deathRecoveryFailureCount(
+  checkpoint: BeatGameCheckpoint,
+  observedAt: string,
+  stage: "pickup" | "preparation",
+): number {
+  return checkpoint.memory.deathRecoveryFailures?.[
+    `${observedAt}:${stage}`
+  ] ?? 0;
 }
 
 function clearDeathRecoveryFailure(
@@ -14755,15 +18548,19 @@ function forgetDeathPosition(
   observedAt: string,
 ): BeatGameCheckpoint {
   const failureKeyPrefix = `${observedAt}:`;
+  const { latestDeath, ...memoryWithoutLatestDeath } = checkpoint.memory;
+  const memory = latestDeath?.observedAt === observedAt
+    ? memoryWithoutLatestDeath
+    : checkpoint.memory;
   return {
     ...checkpoint,
     memory: {
-      ...checkpoint.memory,
-      deathPositions: checkpoint.memory.deathPositions.filter(
+      ...memory,
+      deathPositions: memory.deathPositions.filter(
         (entry) => entry.observedAt !== observedAt,
       ),
       deathRecoveryFailures: Object.fromEntries(
-        Object.entries(checkpoint.memory.deathRecoveryFailures ?? {})
+        Object.entries(memory.deathRecoveryFailures ?? {})
           .filter(([key]) => !key.startsWith(failureKeyPrefix)),
       ),
     },
@@ -14798,10 +18595,244 @@ function shouldAttemptDeathRecovery(
     <= maximumDistance ** 2;
 }
 
+function shouldAttemptCrossDimensionDeathRecovery(
+  pendingDeath: PendingDeath,
+  currentPosition: BeatGamePosition,
+): boolean {
+  if (
+    pendingDeath.position.dimension === currentPosition.dimension
+    || !isNetherPortalDimensionPair(
+      currentPosition.dimension,
+      pendingDeath.position.dimension,
+    )
+  ) {
+    return false;
+  }
+  const recoveryClass = classifyDeathRecoveryInventory(
+    pendingDeath.inventoryCounts,
+  );
+  return recoveryClass === "valuable" || recoveryClass === "substantial";
+}
+
+function isNetherPortalDimensionPair(
+  left: string,
+  right: string,
+): boolean {
+  return left === "minecraft:overworld"
+      && right === "minecraft:the_nether"
+    || left === "minecraft:the_nether"
+      && right === "minecraft:overworld";
+}
+
+function enterDeathRecoveryDimension(
+  state: RunState,
+  pendingDeath: PendingDeath,
+  observation: BeatGameObservation,
+): Effect.Effect<
+  CrossDimensionDeathRecoveryResult,
+  BeatGameError | BeatGameDriverError
+> {
+  return Effect.gen(function* () {
+    const currentCheckpoint = yield* Ref.get(state.checkpoint);
+    const portalTarget = yield* findDeathRecoveryPortalTarget(
+      state,
+      currentCheckpoint,
+      observation,
+    );
+    if (portalTarget === undefined) {
+      return {
+        status: "pending",
+        observation,
+        reason:
+          "no reachable Nether portal is known in the respawn dimension",
+      } satisfies CrossDimensionDeathRecoveryResult;
+    }
+    const preparationPending = yield* prepareForDistantDeathRecovery(
+      state,
+      { ...pendingDeath, position: portalTarget },
+      observation,
+      {
+        requireFullRecoveryKit: true,
+        travelFoodTargetCount:
+          observation.player.health >= state.strategy.minimumHealth
+            && observation.player.food >= 18
+            && deathRecoveryTravelFoodCount(observation)
+              >= DEATH_RECOVERY_MINIMUM_STAGING_FOOD_COUNT
+            ? DEATH_RECOVERY_MINIMUM_STAGING_FOOD_COUNT
+            : DEATH_RECOVERY_FOOD_RESERVE_COUNT,
+      },
+    );
+    if (preparationPending !== undefined) {
+      return {
+        status: "pending",
+        observation: yield* state.driver.observe,
+        portalTarget,
+        reason: preparationPending,
+      } satisfies CrossDimensionDeathRecoveryResult;
+    }
+    yield* emit(state, {
+      type: "diagnostic",
+      message: "Returning through a remembered portal for a valuable corpse",
+      data: {
+        deathPosition: pendingDeath.position,
+        portalTarget,
+      },
+    });
+    const refreshedCheckpoint = yield* Ref.get(state.checkpoint);
+    const entry = yield* enterKnownPortal(
+      state,
+      refreshedCheckpoint,
+      yield* state.driver.observe,
+    ).pipe(
+      Effect.map((entered) =>
+        entered
+          ? { type: "entered" as const }
+          : { type: "missing" as const }
+      ),
+      Effect.catchTag("BeatGameDriverError", (error) =>
+        Effect.succeed({ type: "failed" as const, error })
+      ),
+    );
+    if (entry.type !== "entered") {
+      return {
+        status: "pending",
+        observation: yield* state.driver.observe,
+        portalTarget,
+        reason: entry.type === "failed"
+          ? `remembered portal entry failed: ${entry.error.message}`
+          : "remembered portal evidence could not be revalidated",
+      } satisfies CrossDimensionDeathRecoveryResult;
+    }
+    const enteredObservation = yield* observeDriverFresh(state);
+    if (
+      enteredObservation.player.position.dimension
+        !== pendingDeath.position.dimension
+    ) {
+      return {
+        status: "pending",
+        observation: enteredObservation,
+        portalTarget,
+        reason:
+          `portal entered ${enteredObservation.player.position.dimension} instead of ${pendingDeath.position.dimension}`,
+      } satisfies CrossDimensionDeathRecoveryResult;
+    }
+    return {
+      status: "entered",
+      observation: enteredObservation,
+      portalTarget,
+    } satisfies CrossDimensionDeathRecoveryResult;
+  });
+}
+
+function findDeathRecoveryPortalTarget(
+  state: RunState,
+  checkpoint: BeatGameCheckpoint,
+  observation: BeatGameObservation,
+): Effect.Effect<BeatGamePosition | undefined, BeatGameDriverError> {
+  return Effect.gen(function* () {
+    const nearby = yield* state.driver.queryBlocks({
+      center: observation.player.position,
+      radius: 48,
+      selector: { blockIds: ["minecraft:nether_portal"] },
+      maximumResults: 16,
+    });
+    const immediate = nearby
+      .filter(({ position }) =>
+        position.dimension === observation.player.position.dimension
+        && !isPortalRouteOnCooldown(checkpoint, position)
+      )
+      .sort((left, right) =>
+        distanceSquared(left.position, observation.player.position)
+          - distanceSquared(right.position, observation.player.position)
+      )[0];
+    if (immediate !== undefined) {
+      return immediate.position;
+    }
+    const activeWorkspace = checkpoint.activeSkill?.portalWorkspace;
+    const candidates = [
+      ...checkpoint.memory.portals
+        .filter(({ confidence }) => confidence > 0)
+        .map(({ value }) => value.position),
+      ...checkpoint.memory.portalWorkspaces
+        .filter((workspace) =>
+          workspace.status !== "ABANDONED"
+          && workspace.interiorState === "PORTAL"
+        )
+        .map((workspace) => workspace.origin),
+      ...(activeWorkspace === undefined
+          || activeWorkspace.status === "ABANDONED"
+          || activeWorkspace.interiorState !== "PORTAL"
+        ? []
+        : [activeWorkspace.origin]),
+    ].filter((position) =>
+      position.dimension === observation.player.position.dimension
+      && !isPortalRouteOnCooldown(checkpoint, position)
+    );
+    const unique = [...new Map(
+      candidates.map((position) => [positionKey(position), position]),
+    ).values()];
+    return unique.sort((left, right) =>
+      distanceSquared(left, observation.player.position)
+        - distanceSquared(right, observation.player.position)
+    )[0];
+  });
+}
+
+function madeCrossDimensionDeathRecoveryProgress(
+  before: BeatGameObservation,
+  after: BeatGameObservation,
+  portalTarget: BeatGamePosition | undefined,
+): boolean {
+  if (
+    before.player.position.dimension
+      !== after.player.position.dimension
+  ) {
+    return true;
+  }
+  if (
+    portalTarget !== undefined
+    && before.player.position.dimension === portalTarget.dimension
+    && after.player.position.dimension === portalTarget.dimension
+    && Math.sqrt(horizontalDistanceSquared(
+        before.player.position,
+        portalTarget,
+      )) - Math.sqrt(horizontalDistanceSquared(
+        after.player.position,
+        portalTarget,
+      )) >= DEATH_RECOVERY_PREPARATION_PROGRESS_DISTANCE
+  ) {
+    return true;
+  }
+  return deathRecoveryPreparationScore(after)
+    > deathRecoveryPreparationScore(before);
+}
+
+function deathRecoveryPreparationScore(
+  observation: BeatGameObservation,
+): number {
+  const buildingMaterials = pathBuildingBlockCount(observation);
+  const logs = LOG_ITEM_IDS.reduce(
+    (total, itemId) => total + (observation.inventory.counts[itemId] ?? 0),
+    0,
+  );
+  return Math.min(
+    DEATH_RECOVERY_FOOD_RESERVE_COUNT,
+    deathRecoveryTravelFoodCount(observation),
+  )
+    + Math.min(DEATH_RECOVERY_BOOTSTRAP_BLOCK_COUNT, buildingMaterials)
+    + Math.min(DEATH_RECOVERY_BOOTSTRAP_LOG_COUNT, logs)
+    + Number(hasMeleeWeapon(observation)) * 32
+    + Number(hasMiningPickaxe(observation)) * 32;
+}
+
 function prepareForDistantDeathRecovery(
   state: RunState,
   pendingDeath: PendingDeath,
   observation: BeatGameObservation,
+  options: Readonly<{
+    readonly requireFullRecoveryKit?: boolean;
+    readonly travelFoodTargetCount?: number;
+  }> = {},
 ): Effect.Effect<
   string | undefined,
   BeatGameError | BeatGameDriverError
@@ -14829,13 +18860,15 @@ function prepareForDistantDeathRecovery(
         value.player.position,
         pendingDeath.position,
       );
-    const buildingMaterialCount = (value: BeatGameObservation): number =>
-      DEATH_RECOVERY_BUILDING_ITEM_IDS.reduce(
-        (total, itemId) =>
-          total + (value.inventory.counts[itemId] ?? 0),
-        0,
-      );
+    const buildingMaterialCount = pathBuildingBlockCount;
     const travelFoodCount = deathRecoveryTravelFoodCount;
+    const travelFoodTargetCount = Math.max(
+      DEATH_RECOVERY_MINIMUM_STAGING_FOOD_COUNT,
+      Math.min(
+        DEATH_RECOVERY_FOOD_RESERVE_COUNT,
+        options.travelFoodTargetCount ?? DEATH_RECOVERY_FOOD_RESERVE_COUNT,
+      ),
+    );
     const logCount = (value: BeatGameObservation): number =>
       LOG_ITEM_IDS.reduce(
         (total, itemId) =>
@@ -14872,7 +18905,7 @@ function prepareForDistantDeathRecovery(
       BeatGameError | BeatGameDriverError
     > => {
       const food = travelFoodCount(value);
-      if (food >= DEATH_RECOVERY_FOOD_RESERVE_COUNT) {
+      if (food >= travelFoodTargetCount) {
         return Effect.succeed(value);
       }
       const needsUrgentAquaticFood =
@@ -14890,7 +18923,7 @@ function prepareForDistantDeathRecovery(
           ),
           alive: true,
         },
-        DEATH_RECOVERY_FOOD_RESERVE_COUNT - food,
+        travelFoodTargetCount - food,
         "prepare-corpse-recovery-food",
         {
           preferredEntityTypes: HIGH_YIELD_FOOD_ANIMAL_TYPES,
@@ -14985,11 +19018,14 @@ function prepareForDistantDeathRecovery(
         || !hasMeaningfulRecoveryInventory(current)
       );
     if (
-      recoveryDistanceSquared
-        <= IMMEDIATE_CORPSE_RECOVERY_DISTANCE ** 2
-      || (
-        recoveryDistanceSquared <= ACTIVE_CORPSE_RECOVERY_DISTANCE ** 2
-        && canRaceActiveCorpse
+      options.requireFullRecoveryKit !== true
+      && (
+        recoveryDistanceSquared
+          <= IMMEDIATE_CORPSE_RECOVERY_DISTANCE ** 2
+        || (
+          recoveryDistanceSquared <= ACTIVE_CORPSE_RECOVERY_DISTANCE ** 2
+          && canRaceActiveCorpse
+        )
       )
     ) {
       return undefined;
@@ -15156,7 +19192,8 @@ function prepareForDistantDeathRecovery(
       }
     }
     if (
-      recoveryDistanceSquared
+      options.requireFullRecoveryKit !== true
+      && recoveryDistanceSquared
         <= DISTANT_DEATH_RECOVERY_BOOTSTRAP_DISTANCE ** 2
     ) {
       return !recoveryRequiresPreparedExcavation
@@ -15197,10 +19234,10 @@ function prepareForDistantDeathRecovery(
     }
 
     const food = travelFoodCount(current);
-    if (food < DEATH_RECOVERY_FOOD_RESERVE_COUNT) {
+    if (food < travelFoodTargetCount) {
       current = yield* ensureTravelFood(current);
     }
-    if (travelFoodCount(current) < DEATH_RECOVERY_FOOD_RESERVE_COUNT) {
+    if (travelFoodCount(current) < travelFoodTargetCount) {
       return DEATH_RECOVERY_FOOD_SEARCH_PENDING;
     }
     current = yield* ensureBuildingMaterials(current);
@@ -15971,8 +20008,6 @@ function actionObservedComplete(
       return !isNether(observation.player.position.dimension);
     case "activate-end-portal":
       return isEnd(observation.player.position.dimension);
-    case "collect-dragon-egg":
-      return (observation.inventory.counts["minecraft:dragon_egg"] ?? 0) > 0;
     case "exit-end":
       return !isEnd(observation.player.position.dimension);
     case "prepare-equipment":

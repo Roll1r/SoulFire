@@ -15,6 +15,10 @@ export const LIQUID_INTERACTION_REACH = 4.5;
 export const LIQUID_INTERACTION_STAND_RADIUS = 0.75;
 
 const LIQUID_INTERACTION_FALLBACK_STAND_RADIUS = 1.1;
+const LIQUID_INTERACTION_APPROACH_SEGMENT_LENGTH = 12;
+const LIQUID_INTERACTION_APPROACH_SEGMENT_RADIUS = 2;
+const LIQUID_INTERACTION_APPROACH_MINIMUM_PROGRESS = 2;
+const LIQUID_INTERACTION_APPROACH_MAXIMUM_SEGMENTS = 8;
 const LIQUID_SOURCE_CLUSTER_RADIUS = 8;
 const PREFERRED_LIQUID_SOURCE_CLUSTER_SIZE = 9;
 const LIQUID_INTERACTION_VOLUME_RADIUS = 4.9;
@@ -278,10 +282,42 @@ function targetableLiquidSourceFromCurrentPosition(
     if (obstruction === undefined) {
       return undefined;
     }
-    return acceptableSources.find((source) =>
+    const targetedSource = acceptableSources.find((source) =>
       sameBlockPosition(obstruction.position, source.position)
     );
+    if (targetedSource !== undefined) {
+      return targetedSource;
+    }
+    return isFlowingFluid(obstruction)
+        && (yield* hasNoSolidLiquidSightlineObstruction(
+          driver,
+          direction,
+          Math.min(
+            LIQUID_INTERACTION_REACH,
+            sourceDistance + 0.05,
+          ),
+          aimedSource.position,
+        ))
+      ? aimedSource
+      : undefined;
   });
+}
+
+function hasNoSolidLiquidSightlineObstruction(
+  driver: BeatGameDriver,
+  direction: Readonly<{ x: number; y: number; z: number }>,
+  maximumDistance: number,
+  source: BeatGameBlockPosition,
+): Effect.Effect<boolean, BeatGameDriverError> {
+  return driver.raycast({
+    direction,
+    maximumDistance,
+    includeFluids: false,
+  }).pipe(
+    Effect.map(({ block }) =>
+      block === undefined || sameBlockPosition(block.position, source)
+    ),
+  );
 }
 
 function exposeLiquidSourceThroughRoof(
@@ -464,13 +500,64 @@ function pathfindToLiquidInteractionStand(
   };
   const attempt = (radius: number) =>
     driver.pathfind(candidate, radius, policy).pipe(Effect.as(true));
-  return attempt(LIQUID_INTERACTION_STAND_RADIUS).pipe(
-    Effect.catchTag(
-      "BeatGameDriverError",
-      () => attempt(LIQUID_INTERACTION_FALLBACK_STAND_RADIUS),
-    ),
-    Effect.catchTag("BeatGameDriverError", () => Effect.succeed(false)),
-  );
+  return Effect.gen(function* () {
+    let current = (yield* driver.observe).player.position;
+    for (
+      let segment = 0;
+      segment < LIQUID_INTERACTION_APPROACH_MAXIMUM_SEGMENTS;
+      segment += 1
+    ) {
+      const remainingDistance = Math.sqrt(distanceSquared(current, candidate));
+      if (remainingDistance <= LIQUID_INTERACTION_APPROACH_SEGMENT_LENGTH) {
+        break;
+      }
+      const progress = LIQUID_INTERACTION_APPROACH_SEGMENT_LENGTH
+        / remainingDistance;
+      const waypoint = {
+        x: current.x + (candidate.x - current.x) * progress,
+        y: current.y + (candidate.y - current.y) * progress,
+        z: current.z + (candidate.z - current.z) * progress,
+        dimension: candidate.dimension,
+      } satisfies BeatGamePosition;
+      const reachedWaypoint = yield* driver.pathfind(
+        waypoint,
+        LIQUID_INTERACTION_APPROACH_SEGMENT_RADIUS,
+        {
+          ...policy,
+          allowMining: path.allowMining,
+        },
+      ).pipe(
+        Effect.as(true),
+        Effect.catchTag("BeatGameDriverError", () => Effect.succeed(false)),
+      );
+      if (!reachedWaypoint) {
+        return false;
+      }
+      const latest = (yield* driver.observe).player.position;
+      const latestDistance = Math.sqrt(distanceSquared(latest, candidate));
+      if (
+        latest.dimension !== candidate.dimension
+        || remainingDistance - latestDistance
+          < LIQUID_INTERACTION_APPROACH_MINIMUM_PROGRESS
+      ) {
+        return false;
+      }
+      current = latest;
+    }
+    if (
+      Math.sqrt(distanceSquared(current, candidate))
+        > LIQUID_INTERACTION_APPROACH_SEGMENT_LENGTH
+    ) {
+      return false;
+    }
+    return yield* attempt(LIQUID_INTERACTION_STAND_RADIUS).pipe(
+      Effect.catchTag(
+        "BeatGameDriverError",
+        () => attempt(LIQUID_INTERACTION_FALLBACK_STAND_RADIUS),
+      ),
+      Effect.catchTag("BeatGameDriverError", () => Effect.succeed(false)),
+    );
+  });
 }
 
 function liquidInteractionStandCandidates(
@@ -646,6 +733,12 @@ function isGravityAffectedBlockId(blockId: string): boolean {
 
 function isFluidBlock(blockId: string): boolean {
   return FLUID_BLOCK_IDS.has(blockId);
+}
+
+function isFlowingFluid(block: BeatGameBlockObservation): boolean {
+  return isFluidBlock(block.blockId)
+    && block.properties.level !== undefined
+    && block.properties.level !== "0";
 }
 
 function blockCenter(position: BeatGameBlockPosition): BeatGamePosition {

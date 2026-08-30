@@ -33,7 +33,6 @@ export function durableSkillKindForDecision(
       return BeatGameDurableSkillKind.DRAGON_COMBAT;
     case "satisfy-requirement":
       return durableRequirementSkill(decision.requirement.key);
-    case "collect-dragon-egg":
     case "eat":
     case "exit-end":
     case "prepare-equipment":
@@ -218,6 +217,40 @@ export function completeDurableSkill(
         : upsertPortalWorkspace(
           checkpoint.memory.portalWorkspaces,
           completed.portalWorkspace,
+        ),
+    },
+  };
+}
+
+export function abandonActiveDurableSkill(
+  checkpoint: BeatGameCheckpoint,
+  evidence: string,
+  now: string,
+): BeatGameCheckpoint {
+  const skill = checkpoint.activeSkill;
+  if (skill === undefined) {
+    return checkpoint;
+  }
+  const abandoned = {
+    ...skill,
+    status: BeatGameDurableSkillStatus.ABANDONED,
+    completionEvidence: evidence,
+    updatedAt: now,
+  } satisfies BeatGameDurableSkillState;
+  const { activeSkill: _, ...withoutActiveSkill } = checkpoint;
+  return {
+    ...withoutActiveSkill,
+    memory: {
+      ...checkpoint.memory,
+      skillHistory: appendSkillHistory(
+        checkpoint.memory.skillHistory,
+        abandoned,
+      ),
+      portalWorkspaces: abandoned.portalWorkspace === undefined
+        ? checkpoint.memory.portalWorkspaces
+        : upsertPortalWorkspace(
+          checkpoint.memory.portalWorkspaces,
+          abandoned.portalWorkspace,
         ),
     },
   };

@@ -22,6 +22,7 @@ import com.soulfiremc.server.util.structs.IDMap;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.tags.BlockTags;
+import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.EmptyBlockGetter;
 import net.minecraft.world.level.block.AirBlock;
 import net.minecraft.world.level.block.Block;
@@ -119,6 +120,36 @@ public final class SFBlockHelpers {
 
   public static boolean isWalkableFloorBlock(BlockState state) {
     return WALKABLE_FLOOR_BLOCK.get(state);
+  }
+
+  /// Returns whether a floor is safe to use after gravity updates settle.
+  ///
+  /// World generation can leave gravel, sand, and other falling blocks
+  /// suspended over air or fluid until a nearby player loads or updates the
+  /// chunk. Treating that temporary state as a landing surface can turn an
+  /// otherwise safe descent into an unbounded fall.
+  public static boolean isStableWalkableFloorBlock(
+    BlockGetter level,
+    BlockPos position,
+    BlockState state
+  ) {
+    if (!isWalkableFloorBlock(state)) {
+      return false;
+    }
+    if (!isGravityAffected(state)) {
+      return true;
+    }
+
+    var supportPosition = position.below();
+    var support = level.getBlockState(supportPosition);
+    while (isGravityAffected(support)) {
+      supportPosition = supportPosition.below();
+      if (supportPosition.getY() < level.getMinY()) {
+        return false;
+      }
+      support = level.getBlockState(supportPosition);
+    }
+    return !FallingBlock.isFree(support);
   }
 
   public static boolean canSupportFeetInBlock(BlockState state) {

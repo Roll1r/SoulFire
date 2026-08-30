@@ -34,6 +34,7 @@ import com.soulfiremc.server.pathfinding.goals.XZGoal;
 import com.soulfiremc.server.pathfinding.goals.YGoal;
 import com.soulfiremc.server.pathfinding.graph.constraint.AdditionalPlacementConstraint;
 import com.soulfiremc.server.pathfinding.graph.constraint.AvoidFluidConstraint;
+import com.soulfiremc.server.pathfinding.graph.constraint.BlockBreakBlacklistConstraint;
 import com.soulfiremc.server.pathfinding.graph.constraint.ConfiguredPathConstraint;
 import com.soulfiremc.server.pathfinding.graph.constraint.NoBlockBreakingConstraint;
 import com.soulfiremc.server.pathfinding.graph.constraint.NoBlockPlacingConstraint;
@@ -320,6 +321,27 @@ public final class PathfindingSupport {
       constraint = new AdditionalPlacementConstraint(
         constraint,
         Set.copyOf(additionalItems)
+      );
+    }
+    if (options.getProtectedBlocksCount() > 0) {
+      if (options.getProtectedBlocksCount() > 4_096) {
+        throw Status.INVALID_ARGUMENT
+          .withDescription("At most 4096 protected blocks may be supplied")
+          .asRuntimeException();
+      }
+      var currentDimension = currentDimension(bot);
+      var protectedBlocks = new LinkedHashSet<SFVec3i>();
+      for (var position : options.getProtectedBlocksList()) {
+        validateDimension(currentDimension, position.getDimension());
+        protectedBlocks.add(SFVec3i.from(
+          position.getX(),
+          position.getY(),
+          position.getZ()
+        ));
+      }
+      constraint = new BlockBreakBlacklistConstraint(
+        constraint,
+        Set.copyOf(protectedBlocks)
       );
     }
     if (!options.getAllowMining()) {

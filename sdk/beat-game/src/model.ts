@@ -1,4 +1,4 @@
-export const BEAT_GAME_CHECKPOINT_SCHEMA_VERSION = 2 as const;
+export const BEAT_GAME_CHECKPOINT_SCHEMA_VERSION = 3 as const;
 
 export const BeatGamePhase = {
   PREPARE_OVERWORLD: "PREPARE_OVERWORLD",
@@ -8,7 +8,6 @@ export const BeatGamePhase = {
   LOCATE_STRONGHOLD: "LOCATE_STRONGHOLD",
   ACTIVATE_END_PORTAL: "ACTIVATE_END_PORTAL",
   FIGHT_ENDER_DRAGON: "FIGHT_ENDER_DRAGON",
-  COLLECT_DRAGON_EGG: "COLLECT_DRAGON_EGG",
   EXIT_END: "EXIT_END",
   COMPLETE: "COMPLETE",
 } as const;
@@ -123,6 +122,7 @@ export interface BeatGamePathPolicy {
   readonly maxSearchTimeMs: number;
   readonly avoidFluids?: boolean;
   readonly additionalPlaceItemIds?: readonly string[];
+  readonly protectedBlocks?: readonly BeatGameBlockPosition[];
   readonly sprint?: boolean;
   readonly minimumY?: number;
   readonly maximumY?: number;
@@ -209,6 +209,7 @@ export interface BeatGameInventory {
   readonly revision: bigint;
   readonly selectedHotbarSlot: number;
   readonly emptyPlayerSlots?: number;
+  readonly pathBuildingBlockCount?: number;
   readonly counts: Readonly<Record<string, number>>;
   readonly remainingDurability?: Readonly<Record<string, number>>;
   readonly hotbar: Readonly<Record<number, string>>;
@@ -244,7 +245,16 @@ export interface BeatGameEntityObservation {
   readonly health?: number;
   readonly itemId?: string;
   readonly target?: BeatGameEntityReference;
+  readonly aggressive?: boolean;
+  readonly creeper?: BeatGameCreeperObservation;
   readonly observedAt: string;
+}
+
+export interface BeatGameCreeperObservation {
+  readonly fuseProgress: number;
+  readonly swellDirection: number;
+  readonly powered: boolean;
+  readonly ignited: boolean;
 }
 
 export interface BeatGameEntityReference {
@@ -257,10 +267,12 @@ export interface BeatGameBlockObservation {
   readonly blockId: string;
   readonly position: BeatGameBlockPosition;
   readonly properties: Readonly<Record<string, string>>;
+  readonly hardness?: number;
   readonly diggable: boolean;
   readonly replaceable: boolean;
   readonly solid?: boolean;
   readonly interactive: boolean;
+  readonly effectiveToolTags?: readonly string[];
   readonly observedAt: string;
 }
 
@@ -291,8 +303,11 @@ export interface BeatGameDeathPosition extends BeatGamePosition {
 }
 
 export interface BeatGameExplorationFrontier {
+  readonly progressVersion?: 2;
   readonly origin: BeatGamePosition;
   readonly nextIndex: number;
+  readonly target?: BeatGamePosition;
+  readonly targetAttempts?: number;
   readonly lastPosition?: BeatGamePosition;
   readonly totalAdvances?: number;
 }
@@ -534,7 +549,7 @@ export type BeatGameEvent =
   }
   | BeatGameEventBase & {
     readonly type: "action-started" | "action-retried"
-      | "action-succeeded" | "action-failed";
+      | "action-progressed" | "action-succeeded" | "action-failed";
     readonly action: string;
     readonly attempt: number;
     readonly detail?: string;

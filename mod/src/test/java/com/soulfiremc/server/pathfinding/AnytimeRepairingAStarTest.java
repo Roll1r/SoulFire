@@ -179,6 +179,59 @@ final class AnytimeRepairingAStarTest {
   }
 
   @Test
+  void returnsADeclaredSearchBudgetFrontierAsAPartialRoute() {
+    var graph = Map.of(
+      "S", List.of(new Edge("A", 1)),
+      "A", List.of(new Edge("B", 1)),
+      "B", List.<Edge>of()
+    );
+    var outcome = new AnytimeRepairingAStar<>(
+      "S",
+      new ProgressDomain(
+        graph,
+        Map.of("S", 10D, "A", 5D, "B", 1D),
+        "G",
+        Set.of("A", "B")
+      ),
+      configuration(2.5, 1, 2)
+    ).search();
+
+    assertEquals(AnytimeRepairingAStar.Status.PARTIAL, outcome.status());
+    assertEquals(
+      AnytimeRepairingAStar.StopReason.EXPANSION_BUDGET,
+      outcome.stopReason()
+    );
+    assertEquals("A", outcome.endpoint());
+    assertEquals(List.of(new Edge("A", 1)), outcome.path());
+  }
+
+  @Test
+  void searchBudgetFrontierDoesNotForceCloserProgressAtAnyCost() {
+    var graph = Map.of(
+      "S",
+      List.of(new Edge("EFFICIENT", 1), new Edge("EXPENSIVE", 100)),
+      "EFFICIENT",
+      List.<Edge>of(),
+      "EXPENSIVE",
+      List.<Edge>of()
+    );
+    var outcome = new AnytimeRepairingAStar<>(
+      "S",
+      new ProgressDomain(
+        graph,
+        Map.of("S", 10D, "EFFICIENT", 6D, "EXPENSIVE", 1D),
+        "G",
+        Set.of("EFFICIENT", "EXPENSIVE")
+      ),
+      configuration(2.5, 1, 3)
+    ).search();
+
+    assertEquals(AnytimeRepairingAStar.Status.PARTIAL, outcome.status());
+    assertEquals("EFFICIENT", outcome.endpoint());
+    assertEquals(List.of(new Edge("EFFICIENT", 1)), outcome.path());
+  }
+
+  @Test
   void returnsOnlyADeclaredWorldFrontierAsAPartialRoute() {
     var graph = Map.of(
       "S", List.of(new Edge("A", 1)),
@@ -406,6 +459,58 @@ final class AnytimeRepairingAStarTest {
     @Override
     public boolean dominates(String left, String right) {
       return left.equals(right);
+    }
+  }
+
+  private record ProgressDomain(
+    Map<String, List<Edge>> graph,
+    Map<String, Double> heuristic,
+    String goal,
+    Set<String> progressFrontiers
+  ) implements AnytimeRepairingAStar.Domain<String, Edge> {
+    @Override
+    public double heuristic(String state) {
+      return heuristic.getOrDefault(state, 0D);
+    }
+
+    @Override
+    public boolean isGoal(String state, @Nullable Edge incomingEdge) {
+      return state.equals(goal);
+    }
+
+    @Override
+    public boolean expand(
+      String state,
+      Consumer<AnytimeRepairingAStar.Transition<String, Edge>> output
+    ) {
+      for (var edge : graph.getOrDefault(state, List.of())) {
+        output.accept(new AnytimeRepairingAStar.Transition<>(
+          edge.target(),
+          edge.cost(),
+          edge
+        ));
+      }
+      return false;
+    }
+
+    @Override
+    public Object dominanceKey(String state) {
+      return state;
+    }
+
+    @Override
+    public boolean dominates(String left, String right) {
+      return left.equals(right);
+    }
+
+    @Override
+    public boolean isValidSearchBudgetFrontier(
+      String state,
+      @Nullable Edge incomingEdge,
+      double startHeuristic,
+      double stateHeuristic
+    ) {
+      return incomingEdge != null && progressFrontiers.contains(state);
     }
   }
 

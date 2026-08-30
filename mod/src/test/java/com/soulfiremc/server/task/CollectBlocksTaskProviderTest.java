@@ -145,7 +145,7 @@ final class CollectBlocksTaskProviderTest {
   }
 
   @Test
-  void onlyUsesReachGoalsForCurrentlyVisibleTargets() {
+  void onlyUsesAReachGoalForACurrentlyVisibleTarget() {
     var blocks = new TestBlockAccessorBuilder();
     var eyePosition = new Vec3(0.5D, 65.62D, 0.5D);
     var visibleTarget = new SFVec3i(4, 64, 0);
@@ -159,25 +159,34 @@ final class CollectBlocksTaskProviderTest {
     blocks.setBlockAt(0, 63, 1, Blocks.DIRT);
     blocks.setBlockAt(0, 63, 3, Blocks.DIRT);
 
-    var goals = CollectBlocksTaskProvider.collectionGoals(
+    var visibleGoals = CollectBlocksTaskProvider.collectionGoals(
       blocks.build(),
       eyePosition,
-      List.of(visibleTarget, buriedTarget),
+      visibleTarget,
+      false,
+      Map.of()
+    );
+    var buriedGoals = CollectBlocksTaskProvider.collectionGoals(
+      blocks.build(),
+      eyePosition,
+      buriedTarget,
       false,
       Map.of()
     );
 
-    assertEquals(2, goals.stream()
+    assertEquals(1, visibleGoals.stream()
       .filter(BreakBlockPosGoal.class::isInstance)
       .count());
     assertEquals(
       Set.of(visibleTarget),
-      goals.stream()
+      visibleGoals.stream()
         .filter(WithinBlockReachGoal.class::isInstance)
         .map(WithinBlockReachGoal.class::cast)
         .map(WithinBlockReachGoal::block)
         .collect(Collectors.toSet())
     );
+    assertEquals(1, buriedGoals.size());
+    assertTrue(buriedGoals.iterator().next() instanceof BreakBlockPosGoal);
   }
 
   @Test
@@ -191,7 +200,7 @@ final class CollectBlocksTaskProviderTest {
     var goals = CollectBlocksTaskProvider.collectionGoals(
       blocks.build(),
       eyePosition,
-      List.of(target),
+      target,
       true,
       Map.of()
     );
@@ -214,26 +223,13 @@ final class CollectBlocksTaskProviderTest {
     var goals = CollectBlocksTaskProvider.collectionGoals(
       blocks.build(),
       eyePosition,
-      List.of(target),
+      target,
       true,
       Map.of(target, Set.of(failedPosition))
     );
 
     assertEquals(1, goals.size());
     assertTrue(goals.iterator().next() instanceof BreakBlockPosGoal);
-  }
-
-  @Test
-  void forcesAllOccludedTargetsToUseBreakGoalsAfterAStalledRoute() {
-    assertTrue(
-      CollectBlocksTaskProvider.shouldIncludeOccludedReachGoals(false, 0)
-    );
-    assertFalse(
-      CollectBlocksTaskProvider.shouldIncludeOccludedReachGoals(false, 1)
-    );
-    assertFalse(
-      CollectBlocksTaskProvider.shouldIncludeOccludedReachGoals(true, 0)
-    );
   }
 
   @Test
@@ -381,5 +377,20 @@ final class CollectBlocksTaskProviderTest {
       false,
       () -> false
     ));
+  }
+
+  @Test
+  void ranksOneNearestMiningTargetDeterministically() {
+    var origin = new BlockPos(10, 64, -5);
+    var nearestLower = new SFVec3i(9, 64, -5);
+    var nearestUpper = new SFVec3i(11, 64, -5);
+    var farther = new SFVec3i(10, 64, -8);
+
+    assertEquals(
+      List.of(nearestLower, nearestUpper, farther),
+      List.of(farther, nearestUpper, nearestLower).stream()
+        .sorted(CollectBlocksTaskProvider.candidateComparator(origin))
+        .toList()
+    );
   }
 }

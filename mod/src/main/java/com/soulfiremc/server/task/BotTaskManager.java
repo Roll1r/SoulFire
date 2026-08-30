@@ -36,6 +36,7 @@ import com.soulfiremc.server.bot.ControlPriority;
 import com.soulfiremc.server.bot.ControlResource;
 import com.soulfiremc.server.bot.ControlStopReason;
 import com.soulfiremc.server.bot.ControlTask;
+import com.soulfiremc.server.pathfinding.execution.UnreachableGoalException;
 import com.soulfiremc.server.user.PermissionContext;
 import com.soulfiremc.server.user.SoulFireUser;
 import io.grpc.Status;
@@ -748,15 +749,18 @@ public final class BotTaskManager implements AutoCloseable {
         throwable.getMessage(),
         throwable.getClass().getSimpleName()
       ))
-      .setRetryable(retryable)
+      .setRetryable(retryable || throwable instanceof UnreachableGoalException)
       .build();
   }
 
   static String failureCode(String fallback, Throwable throwable) {
     var status = Status.fromThrowable(throwable);
-    return status.getCode() == Status.Code.UNKNOWN
-      ? fallback
-      : status.getCode().name().toLowerCase(Locale.ROOT);
+    if (status.getCode() != Status.Code.UNKNOWN) {
+      return status.getCode().name().toLowerCase(Locale.ROOT);
+    }
+    return throwable instanceof UnreachableGoalException unreachable
+      ? unreachable.code()
+      : fallback;
   }
 
   private static UUID parseUuid(String value, String field) {

@@ -15,55 +15,41 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-package com.soulfiremc.server.pathfinding.execution;
+package com.soulfiremc.server.pathfinding.graph.constraint;
 
+import com.soulfiremc.server.pathfinding.SFVec3i;
 import com.soulfiremc.test.utils.TestBootstrap;
+import com.soulfiremc.test.utils.TestPathConstraint;
 import net.minecraft.world.level.block.Blocks;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
+import java.util.Set;
+
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-final class BlockPlaceActionTest {
+final class BlockBreakBlacklistConstraintTest {
   @BeforeAll
-  static void setup() {
+  static void bootstrapMinecraft() {
     TestBootstrap.bootstrapForTest();
   }
 
   @Test
-  void retriesAnInteractionMinecraftRefusedOnce() {
-    assertFalse(BlockPlaceAction.placementWasRejected(1, false, 0));
-  }
+  void onlyPreventsBreakingExplicitlyProtectedPositions() {
+    var protectedPosition = SFVec3i.from(4, 65, -2);
+    var constraint = new BlockBreakBlacklistConstraint(
+      TestPathConstraint.INSTANCE,
+      Set.of(protectedPosition)
+    );
 
-  @Test
-  void rejectsRepeatedInteractionFailures() {
-    assertTrue(BlockPlaceAction.placementWasRejected(4, false, 0));
-  }
-
-  @Test
-  void waitsForARecentPredictionToBeConfirmed() {
-    assertFalse(BlockPlaceAction.placementWasRejected(0, true, 20));
-  }
-
-  @Test
-  void rejectsAPlacementWhosePredictionNeverSettles() {
-    assertTrue(BlockPlaceAction.placementWasRejected(0, true, 40));
-  }
-
-  @Test
-  void requiresReplaceableTargetAndStablePlacementSupport() {
-    assertTrue(BlockPlaceAction.hasPlacementSupport(
-      Blocks.AIR.defaultBlockState(),
+    assertFalse(constraint.canBreakBlock(
+      protectedPosition,
       Blocks.STONE.defaultBlockState()
     ));
-    assertFalse(BlockPlaceAction.hasPlacementSupport(
-      Blocks.AIR.defaultBlockState(),
-      Blocks.AIR.defaultBlockState()
-    ));
-    assertTrue(BlockPlaceAction.hasPlacementSupport(
-      Blocks.STONE.defaultBlockState(),
-      Blocks.AIR.defaultBlockState()
+    assertTrue(constraint.canBreakBlock(
+      SFVec3i.from(5, 65, -2),
+      Blocks.STONE.defaultBlockState()
     ));
   }
 }

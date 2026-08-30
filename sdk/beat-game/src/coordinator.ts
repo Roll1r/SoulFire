@@ -108,9 +108,8 @@ const PHASE_ORDER: Readonly<Record<BeatGamePhase, number>> = {
   [BeatGamePhase.LOCATE_STRONGHOLD]: 4,
   [BeatGamePhase.ACTIVATE_END_PORTAL]: 5,
   [BeatGamePhase.FIGHT_ENDER_DRAGON]: 6,
-  [BeatGamePhase.COLLECT_DRAGON_EGG]: 7,
-  [BeatGamePhase.EXIT_END]: 8,
-  [BeatGamePhase.COMPLETE]: 9,
+  [BeatGamePhase.EXIT_END]: 7,
+  [BeatGamePhase.COMPLETE]: 8,
 };
 
 export class InMemoryBeatGameCoordinator implements BeatGameCoordinator {

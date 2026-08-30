@@ -126,4 +126,33 @@ describe("beat-game checkpoint stores", () => {
       expect(result.left).toBeInstanceOf(BeatGameCheckpointError);
     }
   });
+
+  it("rejects corrupt pending exploration attempt state", async () => {
+    const store = new InMemoryBeatGameCheckpointStore();
+    const initial = checkpoint(BeatGamePhase.PREPARE_OVERWORLD);
+    const result = await Effect.runPromise(store.save({
+      ...initial,
+      memory: {
+        ...initial.memory,
+        explorationFrontiers: {
+          "minecraft:overworld:find-logs": {
+            progressVersion: 2,
+            origin: {
+              x: 0,
+              y: 64,
+              z: 0,
+              dimension: "minecraft:overworld",
+            },
+            nextIndex: 1,
+            targetAttempts: -1,
+          },
+        },
+      },
+    }, undefined).pipe(Effect.either));
+
+    expect(Either.isLeft(result)).toBe(true);
+    if (Either.isLeft(result)) {
+      expect(result.left).toBeInstanceOf(BeatGameCheckpointError);
+    }
+  });
 });

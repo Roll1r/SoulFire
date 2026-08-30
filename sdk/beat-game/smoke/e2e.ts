@@ -669,23 +669,45 @@ const program = Effect.scoped(Effect.gen(function* () {
   const checkpointStore = new JsonFileBeatGameCheckpointStore(
     path.join(artifactDirectory, "checkpoints"),
   );
-  const baseDriver = makeSoulFireBeatGameDriver(bot);
-  yield* baseDriver.waitForChunks(4, 60_000);
-  const debugSession = debugApiEnabled
-    ? yield* Effect.acquireRelease(
-      bot.observe({ filter: { includeEnvironment: true } }),
-      (session) => session.close().pipe(Effect.ignore),
-    )
-    : undefined;
-  if (debugSession !== undefined) {
-    yield* debugSession.waitFor(
+  const environmentSession = yield* Effect.acquireRelease(
+    bot.observe({ filter: { includeEnvironment: true } }),
+    (session) => session.close().pipe(Effect.ignore),
+  );
+  if (joinedPlayer.dead) {
+    yield* record("startup-readiness-deferred", {
+      reason: "The planner must respawn a bot that attached while dead",
+      position: joinedPlayer.position,
+    });
+  } else {
+    yield* environmentSession.waitFor(
       (_event, state) => state.environment.gameTime !== undefined,
       { timeoutMs: 5_000 },
-    ).pipe(Effect.ignore);
+    );
+    yield* record("environment-observed", {
+      gameTime: environmentSession.state.environment.gameTime,
+      raining: environmentSession.state.environment.raining,
+    });
+  }
+  const debugSession = debugApiEnabled ? environmentSession : undefined;
+  const environment = Effect.sync(() => {
+    const state = environmentSession.state.environment;
+    return {
+      ...(state.gameTime === undefined ? {} : { gameTime: state.gameTime }),
+      ...(state.raining === undefined ? {} : { raining: state.raining }),
+    };
+  });
+  const baseDriver = makeSoulFireBeatGameDriver(bot, { environment });
+  if (joinedPlayer.dead) {
+    yield* record("bot-chunks-deferred", {
+      radiusChunks: 4,
+      reason: "Chunk readiness will be confirmed after respawn",
+    });
+  } else {
+    yield* baseDriver.waitForChunks(4, 60_000);
+    yield* record("bot-chunks-ready", { radiusChunks: 4 });
   }
   yield* Fiber.interrupt(startupAirGuard);
   yield* bot.resetMovement().pipe(Effect.ignore);
-  yield* record("bot-chunks-ready", { radiusChunks: 4 });
   if (fixture.mode === "controlled") {
     const corridorSample = yield* Effect.forEach(
       [-1, 0, 1, 8, 15, 16, 31, 32, 47, 48, 63, 64].map((offset) => ({
@@ -867,18 +889,7 @@ const program = Effect.scoped(Effect.gen(function* () {
   });
   const driver = {
     ...baseDriver,
-    ...(debugSession === undefined
-      ? {}
-      : {
-        environment: Effect.sync(() => ({
-          ...(debugSession.state.environment.gameTime === undefined
-            ? {}
-            : { gameTime: debugSession.state.environment.gameTime }),
-          ...(debugSession.state.environment.raining === undefined
-            ? {}
-            : { raining: debugSession.state.environment.raining }),
-        })),
-      }),
+    environment,
     observe: baseDriver.observe.pipe(
       Effect.tap((observation) => {
         const effects = [];
@@ -1661,17 +1672,6 @@ const program = Effect.scoped(Effect.gen(function* () {
     Effect.timeout(Duration.millis(timeoutMs)),
   );
   const finalPlayer = yield* bot.world.player();
-  const finalInventory = yield* bot.inventory.snapshot();
-  const eggCount = finalInventory.slots.reduce(
-    (count, slot) =>
-      count
-      + (
-        slot.item?.itemId === "minecraft:dragon_egg"
-          ? slot.item.count
-          : 0
-      ),
-    0,
-  );
   if (
     result.finalCheckpoint.planner.phase !== BeatGamePhase.COMPLETE
     || result.finalCheckpoint.planner.status !== BeatGameRunStatus.COMPLETED
@@ -1680,11 +1680,6 @@ const program = Effect.scoped(Effect.gen(function* () {
       `Beat-game run ended in ${result.finalCheckpoint.planner.phase}/${
         result.finalCheckpoint.planner.status
       }`,
-    ));
-  }
-  if (eggCount < 1) {
-    return yield* Effect.fail(new Error(
-      "Beat-game run completed without the dragon egg in inventory",
     ));
   }
   if (isEnd(finalPlayer.position?.dimension ?? "")) {
@@ -1736,7 +1731,7 @@ const program = Effect.scoped(Effect.gen(function* () {
   yield* record("beat-game-completed", {
     result,
     finalPlayer,
-    eggCount,
+    exitedEnd: !isEnd(finalPlayer.position?.dimension ?? ""),
   });
 }).pipe(
   Effect.timeout(Duration.millis(timeoutMs + 5 * 60_000)),

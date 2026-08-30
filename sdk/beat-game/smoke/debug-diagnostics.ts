@@ -871,10 +871,8 @@ function explainDecision(
       return "The End portal requirements are satisfied and the player has not entered the End";
     case "fight-ender-dragon":
       return "The dragon-fight requirements are satisfied and the fight remains incomplete";
-    case "collect-dragon-egg":
-      return "The dragon egg is not in inventory and all collection tools are available";
     case "exit-end":
-      return "The dragon egg has been collected and the player remains in the End";
+      return "The dragon is defeated and the player remains in the End";
   }
 }
 

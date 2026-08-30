@@ -5,7 +5,7 @@ import {
   decideBeatGameAction,
   defaultBeatGameStrategy,
 } from "../src/index.js";
-import { checkpoint, observation } from "./fixtures.js";
+import { blockObservation, checkpoint, observation } from "./fixtures.js";
 
 describe("beat-game planner", () => {
   it("recovers a death before considering phase requirements", () => {
@@ -27,6 +27,41 @@ describe("beat-game planner", () => {
       observation: observation({
         food: 17,
         health: 12,
+      }),
+      strategy: defaultBeatGameStrategy,
+    });
+
+    expect(decision).toMatchObject({
+      type: "satisfy-requirement",
+      action: "satisfy:food",
+      requirement: { key: "food" },
+    });
+  });
+
+  it("acquires emergency food after a Nether death leaves it wounded", () => {
+    const decision = decideBeatGameAction({
+      checkpoint: checkpoint(BeatGamePhase.COLLECT_NETHER_RESOURCES),
+      observation: observation({
+        food: 11,
+        health: 13.5,
+      }),
+      strategy: defaultBeatGameStrategy,
+    });
+
+    expect(decision).toMatchObject({
+      type: "satisfy-requirement",
+      action: "satisfy:food-supply",
+      requirement: { key: "food-supply" },
+    });
+  });
+
+  it("prepares retained raw food after a Nether death", () => {
+    const decision = decideBeatGameAction({
+      checkpoint: checkpoint(BeatGamePhase.COLLECT_NETHER_RESOURCES),
+      observation: observation({
+        counts: { "minecraft:porkchop": 3 },
+        food: 11,
+        health: 13.5,
       }),
       strategy: defaultBeatGameStrategy,
     });
@@ -133,6 +168,27 @@ describe("beat-game planner", () => {
     });
   });
 
+  it("prepares urgent raw food once the usable wood reserve is ready", () => {
+    const decision = decideBeatGameAction({
+      checkpoint: checkpoint(BeatGamePhase.PREPARE_OVERWORLD),
+      observation: observation({
+        counts: {
+          "minecraft:oak_log": 4,
+          "minecraft:mutton": 4,
+          "minecraft:wooden_sword": 1,
+        },
+        food: 9,
+      }),
+      strategy: defaultBeatGameStrategy,
+    });
+
+    expect(decision).toMatchObject({
+      type: "satisfy-requirement",
+      action: "satisfy:food",
+      requirement: { key: "food" },
+    });
+  });
+
   it("eats raw food when hunger becomes critical", () => {
     const decision = decideBeatGameAction({
       checkpoint: checkpoint(BeatGamePhase.PREPARE_OVERWORLD),
@@ -225,7 +281,7 @@ describe("beat-game planner", () => {
     });
   });
 
-  it("tops up a deferred food reserve before entering the Nether", () => {
+  it("does not abandon portal travel after consuming one reserve meal", () => {
     const decision = decideBeatGameAction({
       checkpoint: checkpoint(BeatGamePhase.ENTER_NETHER),
       observation: observation({
@@ -247,9 +303,57 @@ describe("beat-game planner", () => {
     });
 
     expect(decision).toMatchObject({
-      type: "satisfy-requirement",
-      action: "satisfy:food-supply",
-      requirement: { key: "food-supply" },
+      type: "build-and-enter-nether",
+      action: "build-and-enter-nether",
+    });
+  });
+
+  it("does not abandon a reusable portal route to top up logs", () => {
+    const base = checkpoint(BeatGamePhase.ENTER_NETHER);
+    const observedAt = "2026-01-01T00:00:00.000Z";
+    const decision = decideBeatGameAction({
+      checkpoint: {
+        ...base,
+        memory: {
+          ...base.memory,
+          portals: [{
+            key: "portal:minecraft:overworld:0:64:0",
+            value: blockObservation({
+              x: 0,
+              y: 64,
+              z: 0,
+              dimension: "minecraft:overworld",
+            }, {
+              blockId: "minecraft:nether_portal",
+              diggable: false,
+              solid: false,
+              observedAt,
+            }),
+            observedAt,
+            confidence: 0.25,
+          }],
+        },
+      },
+      observation: observation({
+        counts: {
+          "minecraft:cooked_cod": 8,
+          "minecraft:oak_log": 2,
+          "minecraft:cobblestone": 89,
+          "minecraft:stone_sword": 1,
+          "minecraft:iron_ingot": 2,
+          "minecraft:shield": 1,
+          "minecraft:iron_pickaxe": 1,
+          "minecraft:water_bucket": 1,
+          "minecraft:flint_and_steel": 1,
+        },
+        food: 20,
+      }),
+      strategy: defaultBeatGameStrategy,
+    });
+
+    expect(decision).toMatchObject({
+      type: "build-and-enter-nether",
+      action: "build-and-enter-nether",
     });
   });
 
@@ -432,6 +536,112 @@ describe("beat-game planner", () => {
     });
   });
 
+  it("tries a remembered portal before collecting construction supplies", () => {
+    const base = checkpoint(BeatGamePhase.ENTER_NETHER);
+    const observedAt = "2026-01-01T00:00:00.000Z";
+    const portal = blockObservation({
+      x: 0,
+      y: 64,
+      z: 0,
+      dimension: "minecraft:overworld",
+    }, {
+      blockId: "minecraft:nether_portal",
+      diggable: false,
+      solid: false,
+      observedAt,
+    });
+    const decision = decideBeatGameAction({
+      checkpoint: {
+        ...base,
+        memory: {
+          ...base.memory,
+          portals: [{
+            key: "portal:minecraft:overworld:0:64:0",
+            value: portal,
+            observedAt,
+            confidence: 0.25,
+          }],
+        },
+      },
+      observation: observation({
+        counts: {
+          "minecraft:cooked_beef": 8,
+          "minecraft:oak_log": 4,
+          "minecraft:cobblestone": 20,
+          "minecraft:stone_sword": 1,
+          "minecraft:stone_pickaxe": 1,
+          "minecraft:shield": 1,
+        },
+      }),
+      strategy: defaultBeatGameStrategy,
+    });
+
+    expect(decision).toEqual({
+      type: "build-and-enter-nether",
+      action: "build-and-enter-nether",
+    });
+  });
+
+  it("rebuilds survival supplies before returning to the Nether", () => {
+    const decision = decideBeatGameAction({
+      checkpoint: checkpoint(BeatGamePhase.COLLECT_NETHER_RESOURCES),
+      observation: observation({ dimension: "minecraft:overworld" }),
+      strategy: defaultBeatGameStrategy,
+    });
+
+    expect(decision).toMatchObject({
+      type: "satisfy-requirement",
+      action: "satisfy:logs",
+      requirement: { key: "logs" },
+    });
+  });
+
+  it("returns to a remembered Nether portal after restoring survival gear", () => {
+    const base = checkpoint(BeatGamePhase.COLLECT_NETHER_RESOURCES);
+    const observedAt = "2026-01-01T00:00:00.000Z";
+    const portal = blockObservation({
+      x: 0,
+      y: 64,
+      z: 0,
+      dimension: "minecraft:overworld",
+    }, {
+      blockId: "minecraft:nether_portal",
+      diggable: false,
+      solid: false,
+      observedAt,
+    });
+    const decision = decideBeatGameAction({
+      checkpoint: {
+        ...base,
+        memory: {
+          ...base.memory,
+          portals: [{
+            key: "portal:minecraft:overworld:0:64:0",
+            value: portal,
+            observedAt,
+            confidence: 0.25,
+          }],
+        },
+      },
+      observation: observation({
+        counts: {
+          "minecraft:cooked_beef": 8,
+          "minecraft:oak_log": 4,
+          "minecraft:cobblestone": 20,
+          "minecraft:stone_sword": 1,
+          "minecraft:stone_pickaxe": 1,
+          "minecraft:shield": 1,
+        },
+      }),
+      strategy: defaultBeatGameStrategy,
+    });
+
+    expect(decision).toMatchObject({
+      type: "build-and-enter-nether",
+      action: "build-and-enter-nether",
+    });
+  });
+
   it("uses a shared stronghold estimate without making every bot throw eyes", () => {
     const base = checkpoint(BeatGamePhase.LOCATE_STRONGHOLD);
     const decision = decideBeatGameAction({
@@ -454,38 +664,11 @@ describe("beat-game planner", () => {
     expect(decision).toMatchObject({ type: "search-stronghold" });
   });
 
-  it("requires the egg and an observed End exit before completion", () => {
-    const collect = decideBeatGameAction({
-      checkpoint: checkpoint(BeatGamePhase.COLLECT_DRAGON_EGG),
-      observation: observation({
-        dimension: "minecraft:the_end",
-        counts: { "minecraft:torch": 1 },
-      }),
-      strategy: defaultBeatGameStrategy,
-    });
-    expect(collect).toMatchObject({ type: "collect-dragon-egg" });
-
-    const advanceToExit = decideBeatGameAction({
-      checkpoint: checkpoint(BeatGamePhase.COLLECT_DRAGON_EGG),
-      observation: observation({
-        dimension: "minecraft:the_end",
-        counts: {
-          "minecraft:torch": 1,
-          "minecraft:dragon_egg": 1,
-        },
-      }),
-      strategy: defaultBeatGameStrategy,
-    });
-    expect(advanceToExit).toMatchObject({
-      type: "advance-phase",
-      to: BeatGamePhase.EXIT_END,
-    });
-
+  it("requires an observed End exit before completion", () => {
     const exit = decideBeatGameAction({
       checkpoint: checkpoint(BeatGamePhase.EXIT_END),
       observation: observation({
         dimension: "minecraft:the_end",
-        counts: { "minecraft:dragon_egg": 1 },
       }),
       strategy: defaultBeatGameStrategy,
     });
@@ -495,7 +678,6 @@ describe("beat-game planner", () => {
       checkpoint: checkpoint(BeatGamePhase.EXIT_END),
       observation: observation({
         dimension: "minecraft:overworld",
-        counts: { "minecraft:dragon_egg": 1 },
       }),
       strategy: defaultBeatGameStrategy,
     });

@@ -5,15 +5,23 @@ import {
   BeatGamePhase,
   BeatGameCancelled,
   BeatGameDriverError,
+  BeatGameDurableSkillKind,
+  BeatGameDurableSkillStatus,
+  BeatGamePathSearchMode,
   BeatGameRunStatus,
   InMemoryBeatGameCheckpointStore,
   beatGameTeamWithDrivers,
   beatGameWithDriver,
+  createNetherPortalFrame,
   defaultBeatGameStrategy,
   type BeatGameBlockPosition,
   type BeatGameDriverEvent,
   type BeatGameEntityObservation,
 } from "../src/index.js";
+import {
+  hasNonRegressingThreatEscapeCorridor,
+  selectRedundantEquipmentDiscard,
+} from "../src/run.js";
 import {
   blockObservation,
   checkpoint,
@@ -22,6 +30,88 @@ import {
   observation,
   postDragonHooks,
 } from "./fixtures.js";
+
+describe("direct threat escape corridors", () => {
+  const player = {
+    x: -254,
+    y: 64,
+    z: 16,
+    dimension: "minecraft:overworld",
+  } as const;
+  const skeleton = {
+    connectionEpoch: "epoch-1",
+    networkId: 29_286,
+    entityType: "minecraft:skeleton",
+    position: {
+      x: -253,
+      y: 64,
+      z: 23,
+      dimension: "minecraft:overworld",
+    },
+    velocity: { x: 0, y: 0, z: 0 },
+    alive: true,
+    health: 20,
+    observedAt: "2026-08-30T06:12:49.162Z",
+  } as const satisfies BeatGameEntityObservation;
+
+  it("rejects the live sprint direction that initially approached a skeleton", () => {
+    expect(hasNonRegressingThreatEscapeCorridor(
+      player,
+      { x: 1, z: 1 },
+      [skeleton],
+      18,
+    )).toBe(false);
+  });
+
+  it("accepts a corridor that continuously opens distance from the skeleton", () => {
+    expect(hasNonRegressingThreatEscapeCorridor(
+      player,
+      {
+        x: player.x - skeleton.position.x,
+        z: player.z - skeleton.position.z,
+      },
+      [skeleton],
+      18,
+    )).toBe(true);
+  });
+});
+
+describe("inventory equipment retention", () => {
+  it("discards obsolete tool tiers before the retained backup", () => {
+    expect(selectRedundantEquipmentDiscard({
+      "minecraft:wooden_pickaxe": 1,
+      "minecraft:stone_pickaxe": 1,
+      "minecraft:iron_pickaxe": 1,
+    })).toEqual({
+      itemId: "minecraft:wooden_pickaxe",
+      count: 1,
+    });
+  });
+
+  it("retains one best tool and one immediate-tier backup", () => {
+    expect(selectRedundantEquipmentDiscard({
+      "minecraft:stone_pickaxe": 1,
+      "minecraft:iron_pickaxe": 1,
+    })).toBeUndefined();
+    expect(selectRedundantEquipmentDiscard({
+      "minecraft:stone_pickaxe": 2,
+      "minecraft:iron_pickaxe": 1,
+    })).toEqual({
+      itemId: "minecraft:stone_pickaxe",
+      count: 1,
+    });
+  });
+
+  it("retains one copy of singleton combat equipment", () => {
+    expect(selectRedundantEquipmentDiscard({
+      "minecraft:shield": 3,
+      "minecraft:flint_and_steel": 2,
+    })).toEqual({
+      itemId: "minecraft:shield",
+      count: 2,
+    });
+  });
+});
 
 async function runUntilExplorationStarts(options: {
   readonly driver: FakeBeatGameDriver;
@@ -59,7 +149,435 @@ async function runUntilExplorationStarts(options: {
   return path;
 }
 
+function installNightBedTestWorld(
+  driver: FakeBeatGameDriver,
+): () => boolean {
+  let bedPlaced = false;
+  const air = (x: number, y: number, z: number) =>
+    blockObservation({
+      x,
+      y,
+      z,
+      dimension: "minecraft:overworld",
+    }, {
+      blockId: "minecraft:air",
+      diggable: false,
+      replaceable: true,
+      solid: false,
+    });
+  const stone = (x: number, y: number, z: number) =>
+    blockObservation({
+      x,
+      y,
+      z,
+      dimension: "minecraft:overworld",
+    });
+  driver.blockQueryResolver = ({ center, radius, selector }) => {
+    if (selector.blockIds?.includes("minecraft:water") === true) {
+      return [];
+    }
+    if (selector.blockIds?.includes("minecraft:crafting_table") === true) {
+      return [blockObservation({
+        x: 2,
+        y: 64,
+        z: 0,
+        dimension: "minecraft:overworld",
+      }, { blockId: "minecraft:crafting_table" })];
+    }
+    if (selector.blockIds?.includes("minecraft:white_bed") === true) {
+      return bedPlaced
+        ? [blockObservation({
+          x: 0,
+          y: 64,
+          z: 1,
+          dimension: "minecraft:overworld",
+        }, {
+          blockId: "minecraft:white_bed",
+          diggable: true,
+          replaceable: false,
+          solid: false,
+        })]
+        : [];
+    }
+    if (radius > 1) {
+      return [
+        air(0, 64, 0),
+        air(0, 65, 0),
+        air(0, 64, 1),
+        air(0, 65, 1),
+        air(0, 64, 2),
+        air(0, 65, 2),
+        stone(0, 63, 0),
+        stone(0, 63, 1),
+        stone(0, 63, 2),
+      ];
+    }
+    if (
+      bedPlaced
+      && Math.floor(center.x) === 0
+      && Math.floor(center.y) === 64
+      && Math.floor(center.z) === 1
+    ) {
+      return [blockObservation({
+        x: 0,
+        y: 64,
+        z: 1,
+        dimension: "minecraft:overworld",
+      }, {
+        blockId: "minecraft:white_bed",
+        diggable: true,
+        replaceable: false,
+        solid: false,
+      })];
+    }
+    return [];
+  };
+  driver.actionObserver = (action) => {
+    if (action.type === "place-block") {
+      bedPlaced = true;
+    }
+  };
+  return () => bedPlaced;
+}
+
 describe("beat-game run lifecycle", () => {
+  it("reports incomplete resource movement as progress, not success", async () => {
+    const driver = new FakeBeatGameDriver();
+    let movement = 0;
+
+    const [progressed, snapshot] = await Effect.runPromise(Effect.scoped(
+      Effect.gen(function* () {
+        const run = yield* beatGameWithDriver(driver, {
+          strategy: { observationPollMs: 1 },
+          hooks: {
+            satisfyRequirement: () =>
+              Effect.sync(() => {
+                movement += 1;
+                driver.currentObservation = observation({
+                  position: {
+                    x: movement,
+                    y: 64,
+                    z: 0,
+                    dimension: "minecraft:overworld",
+                  },
+                });
+              }),
+          },
+        });
+        const progressed = yield* run.events.pipe(
+          Stream.filter((event) => event.type === "action-progressed"),
+          Stream.runHead,
+          Effect.timeout("2 seconds"),
+        );
+        const snapshot = yield* run.snapshot;
+        yield* run.stop;
+        return [progressed, snapshot] as const;
+      }),
+    ));
+
+    expect(Option.isSome(progressed)).toBe(true);
+    if (Option.isSome(progressed)) {
+      expect(progressed.value).toMatchObject({
+        type: "action-progressed",
+        action: "satisfy:logs",
+      });
+    }
+    expect(snapshot.checkpoint.planner.completedActions)
+      .not.toContain("satisfy:logs");
+  });
+
+  it("approaches a detected fortress blaze spawner and waits there", async () => {
+    const driver = new FakeBeatGameDriver();
+    const position = {
+      x: 0,
+      y: 64,
+      z: 0,
+      dimension: "minecraft:the_nether",
+    } as const;
+    const fortress = blockObservation({ ...position, x: 20 }, {
+      blockId: "minecraft:nether_bricks",
+      replaceable: false,
+      solid: true,
+    });
+    const spawner = blockObservation({ ...position, x: 24 }, {
+      blockId: "minecraft:spawner",
+      replaceable: false,
+      solid: true,
+    });
+    driver.currentObservation = observation({
+      dimension: position.dimension,
+      position,
+      counts: {
+        "minecraft:cooked_beef": 16,
+        "minecraft:oak_log": 8,
+        "minecraft:cobblestone": 64,
+        "minecraft:stone_sword": 1,
+        "minecraft:iron_pickaxe": 1,
+        "minecraft:shield": 1,
+        "minecraft:ender_pearl": 14,
+      },
+    });
+    driver.blockQueryResolver = ({ selector }) =>
+      selector.blockIds?.includes("minecraft:spawner") === true
+        ? [spawner]
+        : selector.blockIds?.includes("minecraft:nether_bricks") === true
+        ? [fortress]
+        : [];
+    driver.pathResolver = (target, radius, policy) =>
+      Effect.sync(() => {
+        driver.paths.push({ position: target, radius, policy });
+        driver.currentObservation = observation({
+          dimension: target.dimension,
+          position: target,
+          counts: driver.currentObservation.inventory.counts,
+        });
+      });
+    const store = new InMemoryBeatGameCheckpointStore();
+    await Effect.runPromise(store.save(checkpoint(
+      BeatGamePhase.COLLECT_NETHER_RESOURCES,
+      {
+        runId: "fortress-spawner-run",
+        teamId: "fortress-spawner-team",
+      },
+    ), undefined));
+
+    const snapshot = await Effect.runPromise(Effect.scoped(
+      Effect.gen(function* () {
+        const run = yield* beatGameWithDriver(driver, {
+          runId: "fortress-spawner-run",
+          team: { teamId: "fortress-spawner-team" },
+          checkpointStore: store,
+          strategy: {
+            observationPollMs: 1,
+            blockSearchRadius: 48,
+          },
+        });
+        while (driver.paths.length === 0) {
+          yield* Effect.sleep(1);
+        }
+        yield* Effect.sleep(10);
+        const snapshot = yield* run.snapshot;
+        yield* run.stop;
+        return snapshot;
+      }),
+    ));
+
+    expect(driver.blockQueries).toContainEqual(expect.objectContaining({
+      selector: {
+        blockIds: expect.arrayContaining([
+          "minecraft:nether_bricks",
+        ]),
+      },
+    }));
+    expect(driver.blockQueries).toContainEqual(expect.objectContaining({
+      selector: { blockIds: ["minecraft:spawner"] },
+    }));
+    expect(driver.paths[0]).toMatchObject({
+      position: { ...spawner.position, y: spawner.position.y + 1 },
+      radius: 4,
+      policy: {
+        allowMining: false,
+        allowPlacing: false,
+      },
+    });
+    expect(driver.xzPaths).toHaveLength(0);
+    expect(snapshot.checkpoint.memory.places).toContainEqual(
+      expect.objectContaining({
+        kind: "FORTRESS",
+        confidence: 1,
+      }),
+    );
+  });
+
+  it("allows terrain changes while exploring enclosed Nether terrain", async () => {
+    const driver = new FakeBeatGameDriver();
+    const store = new InMemoryBeatGameCheckpointStore();
+    const runId = "fortress-terrain-exploration-run";
+    const teamId = "fortress-terrain-exploration-team";
+    driver.currentObservation = observation({
+      dimension: "minecraft:the_nether",
+      counts: {
+        "minecraft:cooked_beef": 16,
+        "minecraft:oak_log": 8,
+        "minecraft:cobblestone": 64,
+        "minecraft:stone_sword": 1,
+        "minecraft:iron_pickaxe": 1,
+        "minecraft:shield": 1,
+        "minecraft:ender_pearl": 14,
+      },
+    });
+    await Effect.runPromise(store.save(checkpoint(
+      BeatGamePhase.COLLECT_NETHER_RESOURCES,
+      { runId, teamId },
+    ), undefined));
+    driver.xzPathResolver = (x, z, dimension, radius, policy) =>
+      Effect.sync(() => {
+        driver.xzPaths.push({ x, z, dimension, radius, policy });
+      }).pipe(Effect.zipRight(Effect.never));
+
+    await Effect.runPromise(Effect.scoped(
+      Effect.gen(function* () {
+        const run = yield* beatGameWithDriver(driver, {
+          runId,
+          team: { teamId },
+          checkpointStore: store,
+          strategy: { observationPollMs: 1 },
+        });
+        while (driver.xzPaths.length === 0) {
+          yield* Effect.sleep(1);
+        }
+        yield* run.stop;
+      }),
+    ));
+
+    expect(driver.xzPaths[0]?.policy).toMatchObject({
+      allowMining: true,
+      allowPlacing: true,
+      sprint: false,
+    });
+  });
+
+  it("replenishes a depleted Nether building-block reserve before exploring", async () => {
+    const driver = new FakeBeatGameDriver();
+    const store = new InMemoryBeatGameCheckpointStore();
+    const runId = "fortress-building-block-reserve-run";
+    const teamId = "fortress-building-block-reserve-team";
+    driver.currentObservation = observation({
+      dimension: "minecraft:the_nether",
+      pathBuildingBlockCount: 2,
+      counts: {
+        "minecraft:cooked_beef": 16,
+        "minecraft:oak_log": 8,
+        "minecraft:cobblestone": 2,
+        "minecraft:stone_sword": 1,
+        "minecraft:iron_pickaxe": 1,
+        "minecraft:shield": 1,
+        "minecraft:ender_pearl": 14,
+      },
+    });
+    await Effect.runPromise(store.save(checkpoint(
+      BeatGamePhase.COLLECT_NETHER_RESOURCES,
+      { runId, teamId },
+    ), undefined));
+
+    await Effect.runPromise(Effect.scoped(
+      beatGameWithDriver(driver, {
+        runId,
+        team: { teamId },
+        checkpointStore: store,
+        strategy: { observationPollMs: 1 },
+      }).pipe(
+        Effect.flatMap((run) =>
+          Effect.gen(function* () {
+            while (!driver.tasks.some((task) =>
+              task.type === "collect-blocks"
+            )) {
+              yield* Effect.sleep(1);
+            }
+            yield* run.stop;
+            yield* run.awaitCompletion.pipe(Effect.either);
+          })
+        ),
+      ),
+    ));
+
+    const collectionIndex = driver.tasks.findIndex((task) =>
+      task.type === "collect-blocks"
+    );
+    expect(driver.tasks[collectionIndex]).toMatchObject({
+      type: "collect-blocks",
+      blockIds: ["minecraft:netherrack"],
+      count: 62,
+    });
+    expect(driver.taskPolicies[collectionIndex]).toMatchObject({
+      allowMining: true,
+      allowPlacing: false,
+      avoidFluids: true,
+    });
+    expect(driver.xzPaths).toHaveLength(0);
+  });
+
+  it("replaces a depleted Nether exploration pickaxe before moving", async () => {
+    const driver = new FakeBeatGameDriver();
+    const store = new InMemoryBeatGameCheckpointStore();
+    const runId = "fortress-pickaxe-reserve-run";
+    const teamId = "fortress-pickaxe-reserve-team";
+    driver.currentObservation = observation({
+      dimension: "minecraft:the_nether",
+      pathBuildingBlockCount: 64,
+      counts: {
+        "minecraft:cooked_beef": 16,
+        "minecraft:crafting_table": 1,
+        "minecraft:ender_pearl": 14,
+        "minecraft:netherrack": 64,
+        "minecraft:oak_log": 8,
+        "minecraft:shield": 1,
+        "minecraft:stone_sword": 1,
+      },
+    });
+    driver.recipeResolver = (resultItemId) =>
+      resultItemId === "minecraft:wooden_pickaxe"
+        ? [{
+          recipeId: "wooden-pickaxe",
+          recipeType: "minecraft:crafting_shaped",
+          resultItemId,
+          resultCount: 1,
+          ingredients: [],
+        }]
+        : [];
+    driver.craftabilityResolver = () => ({
+      canCraft: true,
+      maximumCraftCount: 2,
+      requiredStation: "minecraft:crafting_table",
+      missing: [],
+    });
+    driver.blockQueryResolver = (query) =>
+      query.selector.blockIds?.includes("minecraft:crafting_table") === true
+        ? [blockObservation({
+          x: 1,
+          y: 64,
+          z: 0,
+          dimension: "minecraft:the_nether",
+        }, { blockId: "minecraft:crafting_table" })]
+        : [];
+    driver.taskResolver = (task) =>
+      Effect.sync(() => {
+        driver.tasks.push(task);
+      }).pipe(
+        Effect.zipRight(task.type === "craft" ? Effect.never : Effect.void),
+      );
+    await Effect.runPromise(store.save(checkpoint(
+      BeatGamePhase.COLLECT_NETHER_RESOURCES,
+      { runId, teamId },
+    ), undefined));
+
+    await Effect.runPromise(Effect.scoped(
+      beatGameWithDriver(driver, {
+        runId,
+        team: { teamId },
+        checkpointStore: store,
+        strategy: { observationPollMs: 1 },
+      }).pipe(
+        Effect.flatMap((run) =>
+          Effect.gen(function* () {
+            while (!driver.tasks.some((task) => task.type === "craft")) {
+              yield* Effect.sleep(1);
+            }
+            yield* run.stop;
+            yield* run.awaitCompletion.pipe(Effect.either);
+          })
+        ),
+      ),
+    ));
+
+    expect(driver.tasks).toContainEqual(expect.objectContaining({
+      type: "craft",
+      recipeId: "wooden-pickaxe",
+      count: 2,
+    }));
+    expect(driver.xzPaths).toHaveLength(0);
+  });
+
   it("ignores one transient under-equipped observation at night", async () => {
     const driver = new FakeBeatGameDriver();
     const protectedObservation = observation({
@@ -251,6 +769,71 @@ describe("beat-game run lifecycle", () => {
     ]));
   });
 
+  it("keeps traveling at night beneath a shallow solid roof", async () => {
+    const driver = new FakeBeatGameDriver();
+    driver.currentEnvironment = { gameTime: 14_000n };
+    driver.currentObservation = observation({
+      position: {
+        x: 0.5,
+        y: 64,
+        z: 0.5,
+        dimension: "minecraft:overworld",
+      },
+      counts: { "minecraft:wooden_sword": 1 },
+    });
+    driver.surfaceColumns = [{
+      x: 0,
+      z: 0,
+      loaded: true,
+      surfaceY: 66,
+      blockId: "minecraft:stone",
+      biomeId: "minecraft:plains",
+      skyLight: 0,
+      blockLight: 0,
+    }];
+    driver.blockResults = [blockObservation({
+      x: 0,
+      y: 66,
+      z: 0,
+      dimension: "minecraft:overworld",
+    }, { blockId: "minecraft:stone" })];
+    let actionStarted = false;
+    const failures: string[] = [];
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+        hooks: {
+          satisfyRequirement: () =>
+            Effect.sync(() => {
+              actionStarted = true;
+            }).pipe(Effect.zipRight(Effect.never)),
+        },
+      });
+      yield* run.events.pipe(
+        Stream.runForEach((event) =>
+          event.type === "action-failed"
+            ? Effect.sync(() => {
+              failures.push(event.detail ?? "");
+            })
+            : Effect.void
+        ),
+        Effect.forkScoped,
+      );
+      while (!actionStarted || driver.blockQueries.length < 3) {
+        yield* Effect.sleep(1);
+      }
+      yield* Effect.sleep(5);
+      yield* run.stop;
+      yield* run.awaitCompletion.pipe(Effect.either);
+    }).pipe(Effect.timeoutFail({
+      duration: "2 seconds",
+      onTimeout: () => new Error("Timed out waiting for covered travel"),
+    }))));
+
+    expect(failures).toEqual([]);
+  });
+
   it("keeps working in a deep cave below a tree canopy", async () => {
     const driver = new FakeBeatGameDriver();
     driver.currentEnvironment = { gameTime: 14_000n };
@@ -335,6 +918,12 @@ describe("beat-game run lifecycle", () => {
       skyLight: 15,
       blockLight: 0,
     }];
+    driver.blockResults = [blockObservation({
+      x: 0,
+      y: 66,
+      z: 0,
+      dimension: "minecraft:overworld",
+    }, { blockId: "minecraft:oak_leaves" })];
     let actionStarted = false;
     const failures: string[] = [];
     driver.environmentResolver = () =>
@@ -375,6 +964,235 @@ describe("beat-game run lifecycle", () => {
 
     expect(actionStarted).toBe(true);
     expect(failures).toHaveLength(1);
+  });
+
+  it("places a carried bed and skips the hostile night", async () => {
+    const driver = new FakeBeatGameDriver();
+    driver.currentEnvironment = { gameTime: 14_000n };
+    driver.currentObservation = observation({
+      counts: { "minecraft:white_bed": 1 },
+      position: {
+        x: 0.5,
+        y: 64,
+        z: 0.5,
+        dimension: "minecraft:overworld",
+      },
+    });
+    installNightBedTestWorld(driver);
+    driver.taskResolver = (task) =>
+      Effect.sync(() => {
+        driver.tasks.push(task);
+        if (task.type === "sleep") {
+          driver.currentEnvironment = { gameTime: 1_000n };
+        }
+      });
+    const succeeded: string[] = [];
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+        hooks: { satisfyRequirement: () => Effect.never },
+      });
+      yield* run.events.pipe(
+        Stream.runForEach((event) =>
+          event.type === "action-succeeded"
+            ? Effect.sync(() => {
+              succeeded.push(event.action);
+            })
+            : Effect.void
+        ),
+        Effect.forkScoped,
+      );
+      while (!succeeded.includes("survive:night-shelter")) {
+        yield* Effect.sleep(1);
+      }
+      yield* run.stop;
+      yield* run.awaitCompletion.pipe(Effect.either);
+    }).pipe(Effect.timeoutFail({
+      duration: "3 seconds",
+      onTimeout: () => new Error("Timed out waiting for bed sleep"),
+    }))));
+
+    expect(driver.actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "select-item",
+        selector: { itemIds: ["minecraft:white_bed"] },
+      }),
+      expect.objectContaining({
+        type: "place-block",
+        against: expect.objectContaining({ x: 0, y: 63, z: 1 }),
+        face: "up",
+      }),
+    ]));
+    expect(driver.tasks).toContainEqual(expect.objectContaining({
+      type: "sleep",
+      bed: expect.objectContaining({ x: 0, y: 64, z: 1 }),
+      waitUntilPossible: false,
+    }));
+    expect(driver.actions).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "dig-block" }),
+    ]));
+  });
+
+  it("crafts bed planks from a carried log before sheltering", async () => {
+    const driver = new FakeBeatGameDriver();
+    driver.currentEnvironment = { gameTime: 14_000n };
+    let logs = 1;
+    let planks = 0;
+    let wool = 3;
+    let beds = 0;
+    const updateInventory = () => {
+      const current = driver.currentObservation;
+      driver.currentObservation = observation({
+        counts: {
+          ...(logs === 0 ? {} : { "minecraft:oak_log": logs }),
+          ...(planks === 0 ? {} : { "minecraft:oak_planks": planks }),
+          ...(wool === 0 ? {} : { "minecraft:white_wool": wool }),
+          ...(beds === 0 ? {} : { "minecraft:white_bed": beds }),
+        },
+        position: current.player.position,
+        connectionEpoch: current.player.connectionEpoch,
+      });
+    };
+    driver.currentObservation = observation({
+      counts: {
+        "minecraft:oak_log": logs,
+        "minecraft:white_wool": wool,
+      },
+      position: {
+        x: 0.5,
+        y: 64,
+        z: 0.5,
+        dimension: "minecraft:overworld",
+      },
+    });
+    installNightBedTestWorld(driver);
+    driver.recipeResolver = (resultItemId) => {
+      if (resultItemId === "minecraft:white_bed") {
+        return [{
+          recipeId: "white-bed",
+          recipeType: "minecraft:crafting_shaped",
+          resultItemId,
+          resultCount: 1,
+          ingredients: [{
+            itemIds: ["minecraft:oak_planks"],
+            tags: ["minecraft:planks"],
+            count: 3,
+          }, {
+            itemIds: ["minecraft:white_wool"],
+            tags: [],
+            count: 3,
+          }],
+        }];
+      }
+      if (resultItemId === "minecraft:oak_planks") {
+        return [{
+          recipeId: "oak-planks",
+          recipeType: "minecraft:crafting_shapeless",
+          resultItemId,
+          resultCount: 4,
+          ingredients: [{
+            itemIds: ["minecraft:oak_log"],
+            tags: [],
+            count: 1,
+          }],
+        }];
+      }
+      return [];
+    };
+    driver.craftabilityResolver = (recipeId) => {
+      if (recipeId === "oak-planks") {
+        return logs >= 1
+          ? { canCraft: true, maximumCraftCount: logs, missing: [] }
+          : {
+            canCraft: false,
+            maximumCraftCount: 0,
+            missing: [{
+              itemIds: ["minecraft:oak_log"],
+              tags: [],
+              available: logs,
+              missing: 1,
+            }],
+          };
+      }
+      return planks >= 3 && wool >= 3
+        ? {
+          canCraft: true,
+          maximumCraftCount: 1,
+          requiredStation: "minecraft:crafting_table",
+          missing: [],
+        }
+        : {
+          canCraft: false,
+          maximumCraftCount: 0,
+          requiredStation: "minecraft:crafting_table",
+          missing: [{
+            itemIds: ["minecraft:oak_planks"],
+            tags: ["minecraft:planks"],
+            available: planks,
+            missing: 3 - planks,
+          }],
+        };
+    };
+    driver.taskResolver = (task) =>
+      Effect.sync(() => {
+        driver.tasks.push(task);
+        if (task.type === "craft" && task.recipeId === "oak-planks") {
+          logs -= 1;
+          planks += 4;
+          updateInventory();
+        } else if (task.type === "craft" && task.recipeId === "white-bed") {
+          planks -= 3;
+          wool -= 3;
+          beds += 1;
+          updateInventory();
+        } else if (task.type === "sleep") {
+          driver.currentEnvironment = { gameTime: 1_000n };
+        }
+      });
+    const succeeded: string[] = [];
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+        hooks: { satisfyRequirement: () => Effect.never },
+      });
+      yield* run.events.pipe(
+        Stream.runForEach((event) =>
+          event.type === "action-succeeded"
+            ? Effect.sync(() => {
+              succeeded.push(event.action);
+            })
+            : Effect.void
+        ),
+        Effect.forkScoped,
+      );
+      while (!succeeded.includes("survive:night-shelter")) {
+        yield* Effect.sleep(1);
+      }
+      yield* run.stop;
+      yield* run.awaitCompletion.pipe(Effect.either);
+    }).pipe(Effect.timeoutFail({
+      duration: "3 seconds",
+      onTimeout: () => new Error("Timed out waiting for crafted bed sleep"),
+    }))));
+
+    expect(driver.tasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "craft",
+        recipeId: "oak-planks",
+        count: 1,
+      }),
+      expect.objectContaining({
+        type: "craft",
+        recipeId: "white-bed",
+        count: 1,
+      }),
+      expect.objectContaining({ type: "sleep" }),
+    ]));
+    expect(driver.actions).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "dig-block" }),
+    ]));
   });
 
   it("keeps a night shelter sealed until daylight is confirmed", async () => {
@@ -815,6 +1633,148 @@ describe("beat-game run lifecycle", () => {
     ]));
   }, 10_000);
 
+  it("advances to a new shelter frontier when every nearby shaft is rejected", async () => {
+    const driver = new FakeBeatGameDriver();
+    driver.currentEnvironment = { gameTime: 14_000n };
+    driver.currentObservation = observation({
+      counts: {
+        "minecraft:dirt": 1,
+        "minecraft:wooden_sword": 1,
+      },
+      position: { x: 0.5, y: 64, z: 0.5 },
+    });
+    driver.surfaceQueryResolver = (center) => {
+      if (center.x < 8) {
+        return [{
+          x: 0,
+          z: 0,
+          loaded: true,
+          surfaceY: 63,
+          blockId: "minecraft:water",
+          biomeId: "minecraft:river",
+          skyLight: 15,
+          blockLight: 0,
+        }];
+      }
+      return [-1, 0, 1].flatMap((deltaX) =>
+        [-1, 0, 1].map((deltaZ) => ({
+          x: 16 + deltaX,
+          z: deltaZ,
+          loaded: true,
+          surfaceY: 63,
+          blockId: "minecraft:grass_block",
+          biomeId: "minecraft:plains",
+          skyLight: 15,
+          blockLight: 0,
+        }))
+      );
+    };
+    const removedBlocks = new Set<string>();
+    const key = (x: number, y: number, z: number) => `${x}:${y}:${z}`;
+    let sealPlaced = false;
+    driver.blockQueryResolver = ({ center, selector }) => {
+      if (selector.blockIds?.includes("minecraft:water") === true) {
+        return [];
+      }
+      const position = {
+        x: Math.floor(center.x),
+        y: Math.floor(center.y),
+        z: Math.floor(center.z),
+        dimension: center.dimension,
+      };
+      const blockKey = key(position.x, position.y, position.z);
+      const stableShaft = position.x === 16 && position.z === 0;
+      const stableSeal = stableShaft && position.y === 63;
+      const stableSupport = position.x === 17
+        && position.y === 63
+        && position.z === 0;
+      const stableFloor = stableShaft
+        && position.y >= 61
+        && position.y <= 63
+        && !removedBlocks.has(blockKey);
+      if (stableSeal && sealPlaced || stableSupport || stableFloor) {
+        return [blockObservation(position, {
+          blockId: stableSeal && sealPlaced
+            ? "minecraft:dirt"
+            : "minecraft:stone",
+        })];
+      }
+      return [blockObservation(position, {
+        blockId: "minecraft:air",
+        diggable: false,
+        replaceable: true,
+        solid: false,
+      })];
+    };
+    driver.pathResolver = (position, radius, policy) =>
+      Effect.sync(() => {
+        driver.paths.push({ position, radius, policy });
+        driver.currentObservation = observation({
+          counts: driver.currentObservation.inventory.counts,
+          position,
+        });
+      });
+    driver.actionObserver = (action) => {
+      if (action.type === "dig-block") {
+        removedBlocks.add(key(
+          action.position.x,
+          action.position.y,
+          action.position.z,
+        ));
+        driver.currentObservation = observation({
+          counts: driver.currentObservation.inventory.counts,
+          position: {
+            ...driver.currentObservation.player.position,
+            y: driver.currentObservation.player.position.y - 1,
+          },
+        });
+      }
+      if (action.type === "place-block") {
+        sealPlaced = true;
+        removedBlocks.delete(key(16, 63, 0));
+        driver.currentEnvironment = { gameTime: 1_000n };
+      }
+    };
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+      });
+      while (
+        !driver.actions.some((action) =>
+          action.type === "dig-block" && action.position.x === 16
+        )
+      ) {
+        yield* Effect.sleep(1);
+      }
+      yield* run.stop;
+      yield* run.awaitCompletion.pipe(Effect.either);
+    }).pipe(Effect.timeoutFail({
+      duration: "5 seconds",
+      onTimeout: () => new Error("Timed out waiting for shelter relocation"),
+    }))));
+
+    expect(driver.paths[0]).toMatchObject({
+      position: {
+        x: 16.5,
+        y: 64,
+        z: 0.5,
+        dimension: "minecraft:overworld",
+      },
+      policy: {
+        allowMining: false,
+        allowPlacing: false,
+        avoidFluids: true,
+      },
+    });
+    expect(driver.actions).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "dig-block",
+        position: expect.objectContaining({ x: 0, z: 0 }),
+      }),
+    ]));
+  }, 10_000);
+
   it("interrupts night shelter relocation to defend against a hostile", async () => {
     const driver = new FakeBeatGameDriver();
     driver.currentEnvironment = { gameTime: 14_000n };
@@ -983,14 +1943,98 @@ describe("beat-game run lifecycle", () => {
       selector: {
         categories: [2],
         alive: true,
-        requireLineOfSight: true,
       },
-      triggerRadius: 24,
-      safeDistance: 32,
+      triggerRadius: 12,
+      safeDistance: 24,
       completeWhenSafe: true,
     });
     expect(driver.tasks).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "collect-blocks" }),
+    ]));
+  }, 10_000);
+
+  it("ignores a hostile that is vertically separated from the shelter", async () => {
+    const driver = new FakeBeatGameDriver();
+    driver.currentEnvironment = { gameTime: 14_000n };
+    driver.currentObservation = observation({
+      counts: {
+        "minecraft:dirt": 1,
+        "minecraft:wooden_sword": 1,
+      },
+      position: { x: 0.5, y: 64, z: 0.5 },
+    });
+    driver.entityResults = [{
+      connectionEpoch: "epoch",
+      networkId: 42,
+      entityType: "minecraft:zombie",
+      position: {
+        x: 1,
+        y: 48,
+        z: 1,
+        dimension: "minecraft:overworld",
+      },
+      velocity: { x: 0, y: 0, z: 0 },
+      alive: true,
+      health: 20,
+      aggressive: true,
+      observedAt: "2026-08-03T10:00:00.000Z",
+    }];
+    driver.blockQueryResolver = ({ center, selector }) => {
+      if (selector.blockIds?.includes("minecraft:water") === true) {
+        return [];
+      }
+      const position = {
+        x: Math.floor(center.x),
+        y: Math.floor(center.y),
+        z: Math.floor(center.z),
+        dimension: center.dimension,
+      };
+      const shaft = position.x === 0
+        && position.z === 0
+        && position.y >= 61
+        && position.y <= 63;
+      const support = position.x === 1
+        && position.z === 0
+        && position.y === 63;
+      return [blockObservation(position, shaft || support
+        ? { blockId: "minecraft:stone" }
+        : {
+          blockId: "minecraft:air",
+          diggable: false,
+          replaceable: true,
+          solid: false,
+        })];
+    };
+    driver.actionObserver = (action) => {
+      if (action.type !== "dig-block") {
+        return;
+      }
+      driver.currentObservation = observation({
+        counts: driver.currentObservation.inventory.counts,
+        position: {
+          ...driver.currentObservation.player.position,
+          y: driver.currentObservation.player.position.y - 1,
+        },
+      });
+    };
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+      });
+      while (!driver.actions.some(({ type }) => type === "dig-block")) {
+        yield* Effect.sleep(1);
+      }
+      yield* run.stop;
+      yield* run.awaitCompletion.pipe(Effect.either);
+    }).pipe(Effect.timeoutFail({
+      duration: "5 seconds",
+      onTimeout: () => new Error("Timed out waiting for shelter digging"),
+    }))));
+
+    expect(driver.tasks).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "flee" }),
+      expect.objectContaining({ type: "attack-entity" }),
     ]));
   }, 10_000);
 
@@ -3130,6 +4174,456 @@ describe("beat-game run lifecycle", () => {
     }));
   });
 
+  it("resumes a remembered portal recovery with its post-meal staging reserve", async () => {
+    const driver = new FakeBeatGameDriver();
+    const store = new InMemoryBeatGameCheckpointStore();
+    const observedAt = new Date().toISOString();
+    const portalPosition = {
+      x: 4,
+      y: 64,
+      z: 0,
+      dimension: "minecraft:overworld",
+    };
+    const deathPosition = {
+      x: 12,
+      y: 64,
+      z: 72,
+      dimension: "minecraft:the_nether",
+    };
+    const initial = checkpoint(BeatGamePhase.COLLECT_NETHER_RESOURCES, {
+      runId: "cross-dimension-death-run",
+      teamId: "cross-dimension-death-team",
+    });
+    await Effect.runPromise(store.save({
+      ...initial,
+      memory: {
+        ...initial.memory,
+        portals: [{
+          key: `portal:${portalPosition.dimension}:${portalPosition.x}:${portalPosition.y}:${portalPosition.z}`,
+          value: blockObservation(portalPosition, {
+            blockId: "minecraft:nether_portal",
+            properties: { axis: "x" },
+            diggable: false,
+          }),
+          observedAt,
+          confidence: 1,
+        }],
+        deathPositions: [{
+          key: `death:${observedAt}`,
+          value: {
+            ...deathPosition,
+            inventoryCounts: {
+              "minecraft:iron_pickaxe": 1,
+              "minecraft:shield": 1,
+            },
+          },
+          observedAt,
+          confidence: 1,
+        }],
+      },
+    }, undefined));
+    driver.currentObservation = observation({
+      observedAt,
+      dead: true,
+      health: 0,
+      position: deathPosition,
+    });
+    driver.taskObserver = (task) => {
+      if (task.type === "auto-respawn") {
+        driver.currentObservation = observation({
+          dimension: "minecraft:overworld",
+          food: 18,
+          counts: {
+            "minecraft:cobblestone": 16,
+            "minecraft:cooked_beef": 7,
+            "minecraft:oak_log": 12,
+            "minecraft:wooden_pickaxe": 1,
+            "minecraft:wooden_sword": 1,
+          },
+          remainingDurability: { "minecraft:wooden_pickaxe": 59 },
+        });
+      }
+    };
+    driver.blockQueryResolver = ({ center, selector }) =>
+      selector.blockIds?.includes("minecraft:nether_portal") === true
+          && center.dimension === "minecraft:overworld"
+        ? [blockObservation(portalPosition, {
+          blockId: "minecraft:nether_portal",
+          properties: { axis: "x" },
+          diggable: false,
+        })]
+        : [];
+    const replacementKit = {
+      "minecraft:cobblestone": 16,
+      "minecraft:cooked_beef": 8,
+      "minecraft:oak_log": 12,
+      "minecraft:wooden_pickaxe": 1,
+      "minecraft:wooden_sword": 1,
+    };
+    driver.pathResolver = (position, radius, policy) =>
+      Effect.sync(() => {
+        driver.paths.push({ position, radius, policy });
+        if (
+          position.dimension === "minecraft:overworld"
+          && radius === 0
+        ) {
+          driver.currentObservation = observation({
+            dimension: "minecraft:the_nether",
+            position: {
+              x: 0,
+              y: 64,
+              z: 0,
+              dimension: "minecraft:the_nether",
+            },
+            counts: replacementKit,
+            remainingDurability: { "minecraft:wooden_pickaxe": 59 },
+          });
+        }
+        if (
+          position.dimension === deathPosition.dimension
+          && position.x === deathPosition.x
+          && position.y === deathPosition.y
+          && position.z === deathPosition.z
+        ) {
+          driver.currentObservation = observation({
+            position: deathPosition,
+            counts: {
+              ...replacementKit,
+              "minecraft:iron_pickaxe": 1,
+              "minecraft:shield": 1,
+            },
+          });
+        }
+      });
+
+    await Effect.runPromise(Effect.scoped(
+      beatGameWithDriver(driver, {
+        runId: "cross-dimension-death-run",
+        team: { teamId: "cross-dimension-death-team" },
+        checkpointStore: store,
+        strategy: { observationPollMs: 1 },
+      }).pipe(
+        Effect.flatMap((run) =>
+          Effect.gen(function* () {
+            yield* run.events.pipe(
+              Stream.filter((event) =>
+                event.type === "items-recovered"
+                && event.detail === "Death recovery completed"
+              ),
+              Stream.runHead,
+            );
+            yield* run.stop;
+            yield* run.awaitCompletion.pipe(Effect.either);
+          })
+        ),
+      ),
+    ));
+    const saved = await Effect.runPromise(
+      store.load("cross-dimension-death-run"),
+    );
+    expect(saved?.planner.phase).toBe(
+      BeatGamePhase.COLLECT_NETHER_RESOURCES,
+    );
+    expect(saved?.memory.deathPositions).toEqual([]);
+    expect(saved?.memory.latestDeath).toBeUndefined();
+    expect(driver.paths).toContainEqual(expect.objectContaining({
+      position: expect.objectContaining({
+        dimension: portalPosition.dimension,
+      }),
+      radius: 0,
+    }));
+    expect(driver.paths).toContainEqual(expect.objectContaining({
+      position: deathPosition,
+      radius: 2,
+      policy: expect.objectContaining({
+        searchMode: BeatGamePathSearchMode.URGENT,
+        maximumQualityBound: 2,
+      }),
+    }));
+  });
+
+  it("bounds cross-dimension recovery when no portal can be found", async () => {
+    const driver = new FakeBeatGameDriver();
+    const store = new InMemoryBeatGameCheckpointStore();
+    const observedAt = new Date().toISOString();
+    const deathPosition = {
+      x: 12,
+      y: 64,
+      z: 72,
+      dimension: "minecraft:the_nether",
+    };
+    const initial = checkpoint(BeatGamePhase.COLLECT_NETHER_RESOURCES, {
+      runId: "missing-recovery-portal-run",
+      teamId: "missing-recovery-portal-team",
+    });
+    await Effect.runPromise(store.save({
+      ...initial,
+      memory: {
+        ...initial.memory,
+        deathPositions: [{
+          key: `death:${observedAt}`,
+          value: {
+            ...deathPosition,
+            inventoryCounts: {
+              "minecraft:iron_pickaxe": 1,
+              "minecraft:shield": 1,
+            },
+          },
+          observedAt,
+          confidence: 1,
+        }],
+      },
+    }, undefined));
+    driver.currentObservation = observation({
+      observedAt,
+      dead: true,
+      health: 0,
+      position: deathPosition,
+    });
+    driver.taskObserver = (task) => {
+      if (task.type === "auto-respawn") {
+        driver.currentObservation = observation();
+      }
+    };
+
+    await Effect.runPromise(Effect.scoped(
+      beatGameWithDriver(driver, {
+        runId: "missing-recovery-portal-run",
+        team: { teamId: "missing-recovery-portal-team" },
+        checkpointStore: store,
+        strategy: { observationPollMs: 1 },
+      }).pipe(
+        Effect.flatMap((run) =>
+          Effect.gen(function* () {
+            yield* run.events.pipe(
+              Stream.filter((event) =>
+                event.type === "items-recovered"
+                && event.detail
+                  === "Abandoned a cross-dimension corpse after three bounded portal recovery attempts"
+              ),
+              Stream.runHead,
+            );
+            yield* run.stop;
+            yield* run.awaitCompletion.pipe(Effect.either);
+          })
+        ),
+      ),
+    ));
+
+    const saved = await Effect.runPromise(
+      store.load("missing-recovery-portal-run"),
+    );
+    expect(saved?.planner.phase).toBe(BeatGamePhase.PREPARE_OVERWORLD);
+    expect(saved?.memory.deathPositions).toEqual([]);
+    expect(driver.blockQueries.filter(({ selector }) =>
+      selector.blockIds?.includes("minecraft:nether_portal")
+    )).toHaveLength(3);
+    expect(driver.paths).not.toContainEqual(expect.objectContaining({
+      position: deathPosition,
+    }));
+  });
+
+  it("repairs a post-death Nether checkpoint with an empty Overworld inventory", async () => {
+    const driver = new FakeBeatGameDriver();
+    const store = new InMemoryBeatGameCheckpointStore();
+    const initial = checkpoint(BeatGamePhase.COLLECT_NETHER_RESOURCES, {
+      runId: "empty-nether-checkpoint-run",
+      teamId: "empty-nether-checkpoint-team",
+    });
+    const deathObservedAt = new Date(
+      Date.now() - 30 * 60 * 1_000,
+    ).toISOString();
+    await Effect.runPromise(store.save({
+      ...initial,
+      memory: {
+        ...initial.memory,
+        latestDeath: {
+          key: `death:${deathObservedAt}`,
+          value: {
+            x: 12,
+            y: 64,
+            z: 72,
+            dimension: "minecraft:the_nether",
+          },
+          observedAt: deathObservedAt,
+          confidence: 1,
+        },
+      },
+    }, undefined));
+    driver.currentObservation = observation({
+      dimension: "minecraft:overworld",
+    });
+
+    const phaseChange = await Effect.runPromise(Effect.scoped(
+      beatGameWithDriver(driver, {
+        runId: "empty-nether-checkpoint-run",
+        team: { teamId: "empty-nether-checkpoint-team" },
+        checkpointStore: store,
+        strategy: { observationPollMs: 1 },
+      }).pipe(
+        Effect.flatMap((run) =>
+          Effect.gen(function* () {
+            const changed = yield* run.events.pipe(
+              Stream.filter((event) =>
+                event.type === "phase-changed"
+                && event.current === BeatGamePhase.PREPARE_OVERWORLD
+              ),
+              Stream.runHead,
+              Effect.timeout("2 seconds"),
+            );
+            yield* run.stop;
+            yield* run.awaitCompletion.pipe(Effect.either);
+            return changed;
+          })
+        ),
+      ),
+    ));
+
+    expect(Option.getOrUndefined(phaseChange)).toMatchObject({
+      type: "phase-changed",
+      previous: BeatGamePhase.COLLECT_NETHER_RESOURCES,
+      current: BeatGamePhase.PREPARE_OVERWORLD,
+    });
+    expect(driver.paths).toEqual([]);
+    const saved = await Effect.runPromise(
+      store.load("empty-nether-checkpoint-run"),
+    );
+    expect(saved?.planner.phase).toBe(BeatGamePhase.PREPARE_OVERWORLD);
+    expect(saved?.memory.latestDeath).toBeUndefined();
+  });
+
+  it("repairs a retained empty checkpoint after death recovery completed", async () => {
+    const driver = new FakeBeatGameDriver();
+    const store = new InMemoryBeatGameCheckpointStore();
+    const initial = checkpoint(BeatGamePhase.COLLECT_NETHER_RESOURCES, {
+      runId: "retained-empty-recovery-run",
+      teamId: "retained-empty-recovery-team",
+    });
+    const recoveredAt = new Date().toISOString();
+    await Effect.runPromise(store.save({
+      ...initial,
+      activeSkill: {
+        skillId: "stale-portal-skill",
+        kind: BeatGameDurableSkillKind.PORTAL_CONSTRUCTION,
+        phase: BeatGamePhase.COLLECT_NETHER_RESOURCES,
+        action: "build-and-enter-nether",
+        status: BeatGameDurableSkillStatus.SUSPENDED,
+        substep: "observe",
+        targets: [],
+        protectedBlocks: [],
+        protectedItemIds: [],
+        completedWorldChanges: [],
+        requiredResources: {},
+        retries: {},
+        startedAt: recoveredAt,
+        updatedAt: recoveredAt,
+      },
+      lastStableAction: {
+        action: "recover-death",
+        phase: BeatGamePhase.COLLECT_NETHER_RESOURCES,
+        completedAt: recoveredAt,
+        evidence: "TASK_RESULT",
+        connectionEpoch: "epoch-1",
+        playerRevision: "1",
+        inventoryRevision: "1",
+      },
+    }, undefined));
+    driver.currentObservation = observation({
+      dimension: "minecraft:overworld",
+    });
+
+    const phaseChange = await Effect.runPromise(Effect.scoped(
+      Effect.gen(function* () {
+        const run = yield* beatGameWithDriver(driver, {
+          runId: "retained-empty-recovery-run",
+          team: { teamId: "retained-empty-recovery-team" },
+          checkpointStore: store,
+          strategy: { observationPollMs: 1 },
+        });
+        const phaseChange = yield* run.events.pipe(
+          Stream.filter((event) =>
+            event.type === "phase-changed"
+            && event.current === BeatGamePhase.PREPARE_OVERWORLD
+          ),
+          Stream.runHead,
+          Effect.timeout("2 seconds"),
+        );
+        yield* run.stop;
+        return phaseChange;
+      }),
+    ));
+
+    expect(Option.getOrUndefined(phaseChange)).toMatchObject({
+      previous: BeatGamePhase.COLLECT_NETHER_RESOURCES,
+      current: BeatGamePhase.PREPARE_OVERWORLD,
+    });
+    const saved = await Effect.runPromise(
+      store.load("retained-empty-recovery-run"),
+    );
+    expect(saved?.activeSkill).toBeUndefined();
+    expect(saved?.memory.skillHistory).toContainEqual(expect.objectContaining({
+      skillId: "stale-portal-skill",
+      status: BeatGameDurableSkillStatus.ABANDONED,
+      completionEvidence:
+        "catastrophic inventory loss restarted Overworld preparation",
+    }));
+  });
+
+  it("restarts preparation after respawning without a recoverable inventory", async () => {
+    const driver = new FakeBeatGameDriver();
+    const store = new InMemoryBeatGameCheckpointStore();
+    const deathPosition = {
+      x: 40,
+      y: 58,
+      z: 12,
+      dimension: "minecraft:the_nether",
+    } as const;
+    driver.currentObservation = observation({
+      dimension: deathPosition.dimension,
+      position: deathPosition,
+      dead: true,
+      health: 0,
+    });
+    driver.taskObserver = (task) => {
+      if (task.type === "auto-respawn") {
+        driver.currentObservation = observation({
+          dimension: "minecraft:overworld",
+        });
+      }
+    };
+    await Effect.runPromise(store.save(checkpoint(
+      BeatGamePhase.COLLECT_NETHER_RESOURCES,
+      {
+        runId: "empty-respawn-run",
+        teamId: "empty-respawn-team",
+      },
+    ), undefined));
+
+    await Effect.runPromise(Effect.scoped(
+      Effect.gen(function* () {
+        const run = yield* beatGameWithDriver(driver, {
+          runId: "empty-respawn-run",
+          team: { teamId: "empty-respawn-team" },
+          checkpointStore: store,
+          strategy: { observationPollMs: 1 },
+        });
+        yield* run.events.pipe(
+          Stream.filter((event) =>
+            event.type === "action-succeeded"
+            && event.action === "recover-death"
+          ),
+          Stream.runHead,
+          Effect.timeout("2 seconds"),
+        );
+        yield* run.stop;
+      }),
+    ));
+
+    const saved = await Effect.runPromise(store.load("empty-respawn-run"));
+    expect(saved?.planner.phase).toBe(BeatGamePhase.PREPARE_OVERWORLD);
+    expect(saved?.planner.completedActions).toEqual(["recover-death"]);
+  });
+
   it("skips a stored corpse containing only trivial mob drops", async () => {
     const driver = new FakeBeatGameDriver();
     const store = new InMemoryBeatGameCheckpointStore();
@@ -3338,7 +4832,7 @@ describe("beat-game run lifecycle", () => {
     }));
   });
 
-  it("keeps an unreachable valuable corpse after repeated safe recovery attempts", async () => {
+  it("abandons an unreachable valuable corpse after three safe recovery attempts", async () => {
     const driver = new FakeBeatGameDriver();
     const store = new InMemoryBeatGameCheckpointStore();
     const deathPosition = {
@@ -3380,12 +4874,12 @@ describe("beat-game run lifecycle", () => {
         "minecraft:oak_log": 12,
       },
     });
-    driver.pathResolver = (position, radius, policy) =>
+    driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
-        driver.paths.push({ position, radius, policy });
+        driver.xzPaths.push({ x, z, dimension, radius, policy });
       }).pipe(
         Effect.zipRight(Effect.fail(new BeatGameDriverError({
-          operation: "pathfind",
+          operation: "pathfind-xz",
           code: "unreachable",
           retryable: false,
           message: "No safe route found to the corpse",
@@ -3403,10 +4897,9 @@ describe("beat-game run lifecycle", () => {
           Effect.gen(function* () {
             yield* run.events.pipe(
               Stream.filter((event) =>
-                event.type === "diagnostic"
-                && event.message
-                  === "Keeping a valuable corpse pending after failed recovery attempts"
-                && event.data?.recoveryFailures === 3
+                event.type === "items-recovered"
+                && event.detail
+                  === "Abandoned an unrecoverable corpse after three safe recovery attempts"
               ),
               Stream.runHead,
             );
@@ -3416,26 +4909,105 @@ describe("beat-game run lifecycle", () => {
         ),
       ),
     ));
-    const corpsePaths = driver.paths.filter((path) =>
-      path.position.x === deathPosition.x
-      && path.position.y === deathPosition.y
-      && path.position.z === deathPosition.z
-      && path.position.dimension === deathPosition.dimension
-    );
-    expect(corpsePaths).toHaveLength(6);
-    expect(corpsePaths.map((path) => path.policy.avoidFluids)).toEqual([
-      true,
-      false,
-      true,
-      false,
-      true,
-      false,
-    ]);
+    expect(driver.xzPaths).toHaveLength(6);
+    expect(driver.paths).toHaveLength(0);
     const saved = await Effect.runPromise(
       store.load("unreachable-corpse-run"),
     );
     expect(saved?.planner.phase).toBe(BeatGamePhase.ENTER_NETHER);
-    expect(saved?.memory.deathPositions).toHaveLength(1);
+    expect(saved?.memory.deathPositions).toHaveLength(0);
+  });
+
+  it("abandons corpse recovery after six survival-forced interruptions", async () => {
+    const driver = new FakeBeatGameDriver();
+    const store = new InMemoryBeatGameCheckpointStore();
+    const deathPosition = {
+      x: 120,
+      y: 64,
+      z: 40,
+      dimension: "minecraft:overworld",
+    };
+    const observedAt = new Date().toISOString();
+    const runId = "interrupted-corpse-run";
+    const teamId = "interrupted-corpse-team";
+    const initial = checkpoint(BeatGamePhase.ENTER_NETHER, {
+      runId,
+      teamId,
+    });
+    await Effect.runPromise(store.save({
+      ...initial,
+      activeSkill: {
+        skillId: "interrupted-corpse-skill",
+        kind: BeatGameDurableSkillKind.DEATH_RECOVERY,
+        phase: BeatGamePhase.ENTER_NETHER,
+        action: "recover-death",
+        status: BeatGameDurableSkillStatus.ACTIVE,
+        substep: "observe",
+        targets: [],
+        protectedBlocks: [],
+        protectedItemIds: [],
+        completedWorldChanges: [],
+        requiredResources: {},
+        retries: {
+          "air fell below the safety threshold": 3,
+          "interrupted item recovery to defend against a hostile": 1,
+          "paused item recovery to evade an immediate hostile": 1,
+          "environmental damage was observed without a nearby attacker": 1,
+        },
+        startedAt: observedAt,
+        updatedAt: observedAt,
+      },
+      memory: {
+        ...initial.memory,
+        deathPositions: [{
+          key: `death:${observedAt}`,
+          value: {
+            ...deathPosition,
+            inventoryCounts: { "minecraft:iron_pickaxe": 1 },
+          },
+          observedAt,
+          confidence: 1,
+        }],
+      },
+    }, undefined));
+    driver.currentObservation = observation({
+      counts: {
+        "minecraft:cooked_beef": 8,
+        "minecraft:dirt": 16,
+        "minecraft:oak_log": 12,
+        "minecraft:stone_pickaxe": 1,
+        "minecraft:wooden_sword": 1,
+      },
+    });
+
+    await Effect.runPromise(Effect.scoped(
+      beatGameWithDriver(driver, {
+        runId,
+        team: { teamId },
+        checkpointStore: store,
+        strategy: { observationPollMs: 1 },
+      }).pipe(
+        Effect.flatMap((run) =>
+          Effect.gen(function* () {
+            yield* run.events.pipe(
+              Stream.filter((event) =>
+                event.type === "items-recovered"
+                && event.detail
+                  === "Abandoned corpse recovery after six safety interruptions"
+              ),
+              Stream.runHead,
+            );
+            yield* run.stop;
+            yield* run.awaitCompletion.pipe(Effect.either);
+          })
+        ),
+      ),
+    ));
+
+    const saved = await Effect.runPromise(store.load(runId));
+    expect(saved?.memory.deathPositions).toHaveLength(0);
+    expect(driver.paths).toHaveLength(0);
+    expect(driver.xzPaths).toHaveLength(0);
   });
 
   it("does not mistake a distant matching drop for corpse recovery", async () => {
@@ -4115,6 +5687,227 @@ describe("beat-game run lifecycle", () => {
     expect(driver.xzPaths).toHaveLength(0);
   });
 
+  it("leaves underwater corpse recovery for a breathing pocket before excavating", async () => {
+    const driver = new FakeBeatGameDriver();
+    const store = new InMemoryBeatGameCheckpointStore();
+    const deathPosition = {
+      x: 4.5,
+      y: 57,
+      z: 0.5,
+      dimension: "minecraft:overworld",
+    };
+    const breathingPocket = {
+      x: 1.5,
+      y: 58,
+      z: 0.5,
+      dimension: "minecraft:overworld",
+    };
+    const observedAt = new Date().toISOString();
+    const initial = checkpoint(BeatGamePhase.PREPARE_OVERWORLD, {
+      runId: "underwater-corpse-air-run",
+      teamId: "underwater-corpse-air-team",
+    });
+    await Effect.runPromise(store.save({
+      ...initial,
+      memory: {
+        ...initial.memory,
+        deathPositions: [{
+          key: `death:${observedAt}`,
+          value: {
+            ...deathPosition,
+            inventoryCounts: { "minecraft:iron_ingot": 7 },
+          },
+          observedAt,
+          confidence: 1,
+        }],
+      },
+    }, undefined));
+    driver.currentObservation = observation({
+      health: 5,
+      food: 9,
+      counts: {
+        "minecraft:stone_pickaxe": 1,
+        "minecraft:wooden_sword": 1,
+      },
+    });
+    driver.entityQueryResolver = (query) =>
+      query.selector.categories?.includes(6)
+        ? [{
+          connectionEpoch: "epoch-1",
+          networkId: 72,
+          entityType: "minecraft:item",
+          itemId: "minecraft:iron_ingot",
+          position: deathPosition,
+          velocity: { x: 0, y: 0, z: 0 },
+          alive: true,
+          health: 5,
+          observedAt: new Date().toISOString(),
+        }]
+        : [];
+    driver.surfaceQueryResolver = () => [];
+    let atBreathingPocket = false;
+    let recoveringBreath = false;
+    driver.blockQueryResolver = (query) => {
+      const position = {
+        x: Math.floor(query.center.x),
+        y: Math.floor(query.center.y),
+        z: Math.floor(query.center.z),
+        dimension: query.center.dimension,
+      };
+      const blockIds = query.selector.blockIds;
+      if (blockIds?.some((blockId) =>
+        blockId === "minecraft:air"
+        || blockId === "minecraft:cave_air"
+        || blockId === "minecraft:void_air"
+      ) === true) {
+        return [blockObservation({
+          x: 1,
+          y: 59,
+          z: 0,
+          dimension: "minecraft:overworld",
+        }, {
+          blockId: "minecraft:air",
+          hardness: 0,
+          diggable: false,
+          replaceable: true,
+          effectiveToolTags: [],
+        })];
+      }
+      if (blockIds?.includes("minecraft:water") === true) {
+        return position.y <= 58
+          ? [blockObservation(position, {
+            blockId: "minecraft:water",
+            hardness: 100,
+            diggable: false,
+            replaceable: true,
+            effectiveToolTags: [],
+          })]
+          : [];
+      }
+      if (blockIds === undefined) {
+        const air = atBreathingPocket && position.y >= 59;
+        return [blockObservation(position, air
+          ? {
+            blockId: "minecraft:air",
+            hardness: 0,
+            diggable: false,
+            replaceable: true,
+            effectiveToolTags: [],
+          }
+          : {
+            blockId: "minecraft:water",
+            hardness: 100,
+            diggable: false,
+            replaceable: true,
+            effectiveToolTags: [],
+          })];
+      }
+      return [];
+    };
+    driver.pathResolver = (position, radius, policy) => {
+      driver.paths.push({ position, radius, policy });
+      if (
+        position.x === deathPosition.x
+        && position.y === deathPosition.y
+        && position.z === deathPosition.z
+      ) {
+        return Effect.never;
+      }
+      if (
+        position.x === breathingPocket.x
+        && position.y === breathingPocket.y
+        && position.z === breathingPocket.z
+      ) {
+        return Effect.sync(() => {
+          atBreathingPocket = true;
+          driver.currentObservation = observation({
+            air: 220,
+            health: 5,
+            food: 9,
+            onGround: false,
+            position,
+            counts: {
+              "minecraft:stone_pickaxe": 1,
+              "minecraft:wooden_sword": 1,
+            },
+          });
+        });
+      }
+      return Effect.void;
+    };
+    driver.actionObserver = (action) => {
+      if (
+        action.type === "set-movement"
+        && action.jump === true
+        && atBreathingPocket
+      ) {
+        recoveringBreath = true;
+      }
+      if (action.type === "reset-movement") {
+        recoveringBreath = false;
+      }
+    };
+    driver.observationResolver = () =>
+      Effect.sync(() => {
+        if (!recoveringBreath) {
+          return driver.currentObservation;
+        }
+        const current = driver.currentObservation;
+        driver.currentObservation = {
+          ...current,
+          player: {
+            ...current.player,
+            air: Math.min(current.player.maxAir, current.player.air + 30),
+          },
+        };
+        return driver.currentObservation;
+      });
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        runId: "underwater-corpse-air-run",
+        team: { teamId: "underwater-corpse-air-team" },
+        checkpointStore: store,
+        strategy: { observationPollMs: 1 },
+      });
+      while (!driver.paths.some(({ position }) =>
+        position.x === deathPosition.x
+        && position.y === deathPosition.y
+        && position.z === deathPosition.z
+      )) {
+        yield* Effect.sleep(1);
+      }
+      driver.currentObservation = observation({
+        air: 259,
+        health: 5,
+        food: 9,
+        onGround: false,
+        position: { x: 0.5, y: 57.2, z: 0.5 },
+        counts: {
+          "minecraft:stone_pickaxe": 1,
+          "minecraft:wooden_sword": 1,
+        },
+      });
+      while (!atBreathingPocket || driver.currentObservation.player.air < 300) {
+        yield* Effect.sleep(1);
+      }
+      yield* run.stop;
+      yield* run.awaitCompletion.pipe(Effect.either);
+    }).pipe(Effect.timeout("5 seconds"))));
+
+    expect(driver.paths).toContainEqual(expect.objectContaining({
+      position: breathingPocket,
+      radius: 0.75,
+      policy: expect.objectContaining({
+        allowMining: false,
+        allowPlacing: false,
+      }),
+    }));
+    expect(driver.currentObservation.player.air).toBe(300);
+    expect(driver.actions.some((action) => action.type === "dig-block"))
+      .toBe(false);
+  });
+
   it("tries an existing route to a corpse below before mining by hand", async () => {
     const driver = new FakeBeatGameDriver();
     const store = new InMemoryBeatGameCheckpointStore();
@@ -4467,7 +6260,7 @@ describe("beat-game run lifecycle", () => {
     driver.blockQueryResolver = ({ center, selector }) =>
       selector.diggable === true
         ? [blockObservation({
-          x: Math.floor(center.x),
+          x: Math.floor(center.x) + 3,
           y: Math.floor(center.y),
           z: Math.floor(center.z),
           dimension: center.dimension,
@@ -4878,7 +6671,16 @@ describe("beat-game run lifecycle", () => {
     expect(driver.tasks).not.toContainEqual(expect.objectContaining({
       type: "attack-entity",
     }));
-    expect(driver.xzPaths).toHaveLength(0);
+    expect(driver.xzPaths).toContainEqual(expect.objectContaining({
+      x: 12,
+      z: 0,
+      dimension: deathPosition.dimension,
+      radius: 3,
+      policy: expect.objectContaining({
+        allowMining: false,
+        allowPlacing: false,
+      }),
+    }));
   });
 
   it("prepares outside corpse chunk-loading range", async () => {
@@ -6331,7 +8133,7 @@ describe("beat-game run lifecycle", () => {
     }));
   });
 
-  it("does not bypass a missing food reserve after bounded preparation", async () => {
+  it("abandons recovery when a missing food reserve makes no progress", async () => {
     const driver = new FakeBeatGameDriver();
     const store = new InMemoryBeatGameCheckpointStore();
     const deathPosition = {
@@ -6385,11 +8187,9 @@ describe("beat-game run lifecycle", () => {
       });
       yield* run.events.pipe(
         Stream.filter((event) =>
-          event.type === "diagnostic"
-          && event.message
-            === "Continuing preparation for a valuable distant corpse"
-          && event.data?.preparationFailures === 8
-          && event.data.foodReserveStillMissing === true
+          event.type === "items-recovered"
+          && event.detail
+            === "Abandoned a distant corpse after three bounded preparation attempts"
         ),
         Stream.runHead,
         Effect.timeout("10 seconds"),
@@ -6401,9 +8201,11 @@ describe("beat-game run lifecycle", () => {
     expect(driver.paths).not.toContainEqual(expect.objectContaining({
       position: deathPosition,
     }));
+    const saved = await Effect.runPromise(store.load(runId));
+    expect(saved?.memory.deathPositions).toHaveLength(0);
   }, 15_000);
 
-  it("keeps preparing instead of risking a low-health valuable recovery", async () => {
+  it("abandons persisted preparation exhaustion before rebuilding a recovery kit", async () => {
     const driver = new FakeBeatGameDriver();
     const store = new InMemoryBeatGameCheckpointStore();
     const deathPosition = {
@@ -6460,10 +8262,9 @@ describe("beat-game run lifecycle", () => {
       });
       yield* run.events.pipe(
         Stream.filter((event) =>
-          event.type === "diagnostic"
-          && event.message
-            === "Continuing preparation for a valuable distant corpse"
-          && event.data?.preparationFailures === 8
+          event.type === "items-recovered"
+          && event.detail
+            === "Abandoned a distant corpse after three bounded preparation attempts"
         ),
         Stream.runHead,
       );
@@ -6474,11 +8275,10 @@ describe("beat-game run lifecycle", () => {
     expect(driver.paths).not.toContainEqual(expect.objectContaining({
       position: deathPosition,
     }));
-    expect(driver.xzPaths.length).toBeLessThan(8);
+    expect(driver.xzPaths).toHaveLength(0);
+    expect(driver.tasks).toHaveLength(0);
     const saved = await Effect.runPromise(store.load(runId));
-    expect(saved?.memory.deathRecoveryFailures?.[
-      `${observedAt}:preparation`
-    ]).toBe(8);
+    expect(saved?.memory.deathPositions).toHaveLength(0);
   }, 15_000);
 
   it("abandons distant recovery after three bounded food searches", async () => {
@@ -6660,7 +8460,7 @@ describe("beat-game run lifecycle", () => {
     expect(driver.tasks).toHaveLength(0);
   });
 
-  it("keeps a valuable distant corpse pending until its recovery kit is ready", async () => {
+  it("abandons a valuable distant corpse after bounded preparation fails", async () => {
     const driver = new FakeBeatGameDriver();
     const store = new InMemoryBeatGameCheckpointStore();
     const deathPosition = {
@@ -6714,26 +8514,12 @@ describe("beat-game run lifecycle", () => {
         });
         yield* run.events.pipe(
           Stream.filter((event) =>
-            event.type === "diagnostic"
-            && event.message
-              === "Continuing preparation for a valuable distant corpse"
-            && event.data?.preparationFailures === 4
+            event.type === "items-recovered"
+            && event.detail
+              === "Abandoned a distant corpse after three bounded preparation attempts"
           ),
           Stream.runHead,
           Effect.timeout("5 seconds"),
-        );
-        const earlySearches = driver.tasks.filter((task) =>
-          task.type === "collect-blocks"
-        ).length;
-        yield* run.events.pipe(
-          Stream.filter((event) =>
-            event.type === "diagnostic"
-            && event.message
-              === "Continuing preparation for a valuable distant corpse"
-            && event.data?.preparationFailures === 10
-          ),
-          Stream.runHead,
-          Effect.timeout("10 seconds"),
         );
         const boundedSearches = driver.tasks.filter((task) =>
           task.type === "collect-blocks"
@@ -6749,19 +8535,17 @@ describe("beat-game run lifecycle", () => {
         return {
           boundedSearches,
           directRecoveryAttempts,
-          earlySearches,
         };
       }),
     ));
 
-    expect(recoveryActivity.earlySearches).toBe(4);
-    expect(recoveryActivity.boundedSearches).toBeGreaterThanOrEqual(10);
+    expect(recoveryActivity.boundedSearches).toBe(3);
     expect(recoveryActivity.directRecoveryAttempts).toBe(0);
     const saved = await Effect.runPromise(
       store.load("bounded-corpse-equipment-run"),
     );
-    expect(saved?.memory.deathPositions).toHaveLength(1);
-  }, 25_000);
+    expect(saved?.memory.deathPositions).toHaveLength(0);
+  });
 
   it("searches for corpse recovery supplies along the recovery route", async () => {
     const driver = new FakeBeatGameDriver();
@@ -6967,131 +8751,6 @@ describe("beat-game run lifecycle", () => {
       observedAt,
     }));
   }, 15_000);
-
-  it("does not count preparation misses as corpse pickup failures", async () => {
-    const driver = new FakeBeatGameDriver();
-    const store = new InMemoryBeatGameCheckpointStore();
-    const deathPosition = {
-      x: 700,
-      y: 64,
-      z: 0,
-      dimension: "minecraft:overworld",
-    };
-    const observedAt = new Date().toISOString();
-    const initial = checkpoint(BeatGamePhase.PREPARE_OVERWORLD, {
-      runId: "staged-corpse-recovery-run",
-      teamId: "staged-corpse-recovery-team",
-    });
-    await Effect.runPromise(store.save({
-      ...initial,
-      memory: {
-        ...initial.memory,
-        deathPositions: [{
-          key: `death:${observedAt}`,
-          value: {
-            ...deathPosition,
-            inventoryCounts: { "minecraft:iron_ingot": 7 },
-          },
-          observedAt,
-          confidence: 1,
-        }],
-      },
-    }, undefined));
-    const preparedCounts = {
-      "minecraft:dirt": 16,
-      "minecraft:wooden_sword": 1,
-      "minecraft:cooked_chicken": 8,
-      "minecraft:oak_log": 12,
-    };
-    driver.currentObservation = observation({
-      food: 7,
-      counts: {
-        "minecraft:dirt": 16,
-        "minecraft:oak_log": 12,
-        "minecraft:wooden_sword": 1,
-      },
-    });
-    driver.entityQueryResolver = (query) =>
-      query.selector.categories?.includes(6)
-        ? [{
-          connectionEpoch: "epoch-1",
-          networkId: 44,
-          entityType: "minecraft:item",
-          itemId: "minecraft:iron_ingot",
-          position: deathPosition,
-          velocity: { x: 0, y: 0, z: 0 },
-          alive: true,
-          health: 5,
-          observedAt: "2026-01-01T00:00:00.000Z",
-        }]
-        : [];
-    driver.xzPathResolver = (x, z, dimension, radius, policy) =>
-      Effect.sync(() => {
-        driver.xzPaths.push({ x, z, dimension, radius, policy });
-        if (driver.xzPaths.length === 4) {
-          driver.currentObservation = observation({
-            counts: preparedCounts,
-          });
-        }
-      });
-    driver.pathResolver = (position, radius, policy) =>
-      Effect.sync(() => {
-        driver.paths.push({ position, radius, policy });
-        if (
-          position.x === deathPosition.x
-          && position.y === deathPosition.y
-          && position.z === deathPosition.z
-          && position.dimension === deathPosition.dimension
-        ) {
-          driver.currentObservation = observation({
-            position: deathPosition,
-            counts: preparedCounts,
-          });
-        }
-      });
-
-    await Effect.runPromise(Effect.scoped(
-      beatGameWithDriver(driver, {
-        runId: "staged-corpse-recovery-run",
-        team: { teamId: "staged-corpse-recovery-team" },
-        checkpointStore: store,
-        strategy: {
-          maximumActionRetries: 1,
-          observationPollMs: 1,
-        },
-      }).pipe(
-        Effect.flatMap((run) =>
-          Effect.gen(function* () {
-            yield* run.events.pipe(
-              Stream.filter((event) =>
-                event.type === "diagnostic"
-                && event.message
-                  === "Keeping a valuable corpse pending after failed recovery attempts"
-                && event.data?.recoveryFailures === 3
-              ),
-              Stream.runHead,
-              Effect.timeout("15 seconds"),
-            );
-            yield* run.stop;
-            yield* run.awaitCompletion.pipe(Effect.either);
-          })
-        ),
-      ),
-    ));
-
-    const corpsePaths = driver.paths.filter(({ position }) =>
-      position.x === deathPosition.x
-      && position.y === deathPosition.y
-      && position.z === deathPosition.z
-      && position.dimension === deathPosition.dimension
-    );
-    expect(driver.xzPaths.length).toBeGreaterThanOrEqual(4);
-    expect(corpsePaths).toHaveLength(3);
-    const saved = await Effect.runPromise(
-      store.load("staged-corpse-recovery-run"),
-    );
-    expect(saved?.memory.deathPositions).toHaveLength(1);
-  }, 20_000);
 
   it("keeps an incomplete food bootstrap active until direct recovery is safe", async () => {
     const driver = new FakeBeatGameDriver();
@@ -7947,6 +9606,176 @@ describe("beat-game run lifecycle", () => {
     )).toBe(false);
   }, 10_000);
 
+  it("re-observes and fights a close pursuer after a flee route fails", async () => {
+    const driver = new FakeBeatGameDriver();
+    let zombie: BeatGameEntityObservation = {
+      connectionEpoch: "epoch-1",
+      networkId: 35,
+      entityType: "minecraft:zombie",
+      position: {
+        x: 6,
+        y: 64,
+        z: 0,
+        dimension: "minecraft:overworld",
+      },
+      velocity: { x: 0, y: 0, z: 0 },
+      alive: true,
+      health: 20,
+      observedAt: "2026-01-01T00:00:01.000Z",
+    };
+    driver.currentObservation = observation({
+      health: 8,
+      food: 8,
+      counts: { "minecraft:wooden_sword": 1 },
+    });
+    driver.entityQueryResolver = (query) =>
+      query.selector.categories?.includes(2)
+          || query.selector.networkId === zombie.networkId
+        ? [zombie]
+        : [];
+    driver.taskResolver = (task) =>
+      Effect.sync(() => {
+        driver.tasks.push(task);
+        if (task.type === "flee") {
+          zombie = {
+            ...zombie,
+            position: { ...zombie.position, x: 1.5, y: 55 },
+          };
+          driver.currentObservation = observation({
+            health: 6,
+            food: 8,
+            position: { x: 0, y: 55, z: 0 },
+            counts: { "minecraft:wooden_sword": 1 },
+          });
+        } else if (task.type === "attack-entity") {
+          driver.entityQueryResolver = () => [];
+          driver.entityResults = [];
+        }
+      }).pipe(
+        Effect.zipRight(
+          task.type === "flee"
+            ? Effect.fail(new BeatGameDriverError({
+              operation: "task.flee",
+              code: "unreachable",
+              retryable: true,
+              message: "The pursuer followed the bot into a terrain trap",
+            }))
+            : Effect.void,
+        ),
+      );
+
+    await Effect.runPromise(Effect.scoped(
+      beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+      }).pipe(
+        Effect.flatMap((run) =>
+          Effect.gen(function* () {
+            while (!driver.tasks.some((task) =>
+              task.type === "attack-entity"
+            )) {
+              yield* Effect.sleep(1);
+            }
+            yield* run.stop;
+            yield* run.awaitCompletion.pipe(Effect.either);
+          })
+        ),
+      ),
+    ));
+
+    expect(driver.actions).toContainEqual({
+      type: "attack-entity",
+      connectionEpoch: zombie.connectionEpoch,
+      networkId: zombie.networkId,
+      sprinting: true,
+    });
+    expect(driver.tasks).toContainEqual(expect.objectContaining({
+      type: "attack-entity",
+      target: expect.objectContaining({ networkId: zombie.networkId }),
+      selectBestWeapon: true,
+    }));
+  }, 10_000);
+
+  it("keeps evading a melee pursuer instead of pillaring after a flee route fails", async () => {
+    const driver = new FakeBeatGameDriver();
+    const zombie = {
+      connectionEpoch: "epoch-1",
+      networkId: 36,
+      entityType: "minecraft:zombie",
+      position: {
+        x: -4,
+        y: 75,
+        z: 0,
+        dimension: "minecraft:overworld",
+      },
+      velocity: { x: 0, y: 0, z: 0 },
+      alive: true,
+      health: 20,
+      observedAt: "2026-01-01T00:00:01.000Z",
+    } as const;
+    driver.currentObservation = observation({
+      health: 8,
+      food: 8,
+      position: { x: 0, y: 70, z: 0 },
+    });
+    driver.entityResults = [zombie];
+    driver.entityQueryResolver = (query) =>
+      query.selector.categories?.includes(2) === true
+          || query.selector.networkId === zombie.networkId
+        ? driver.entityResults
+        : [];
+    driver.surfaceColumns = [{
+      x: 3,
+      z: 0,
+      loaded: true,
+      surfaceY: 76,
+      blockId: "minecraft:grass_block",
+      biomeId: "minecraft:plains",
+      skyLight: 15,
+      blockLight: 0,
+    }];
+    driver.taskResolver = (task) =>
+      Effect.sync(() => {
+        driver.tasks.push(task);
+      }).pipe(
+        Effect.zipRight(
+          task.type === "flee"
+            ? Effect.fail(new BeatGameDriverError({
+              operation: "task.flee",
+              code: "unreachable",
+              retryable: true,
+              message: "The pursuer is above the bot on rough terrain",
+            }))
+            : Effect.never,
+        ),
+      );
+    driver.pathResolver = (position, radius, policy) =>
+      Effect.sync(() => {
+        driver.paths.push({ position, radius, policy });
+      }).pipe(Effect.zipRight(Effect.never));
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+      });
+      while (
+        driver.tasks.filter((task) => task.type === "flee").length < 2
+      ) {
+        yield* Effect.sleep(1);
+      }
+      yield* run.stop;
+      yield* run.awaitCompletion.pipe(Effect.either);
+    })));
+
+    expect(driver.tasks.filter((task) => task.type === "flee").length)
+      .toBeGreaterThanOrEqual(2);
+    expect(driver.paths).not.toContainEqual(expect.objectContaining({
+      policy: expect.objectContaining({
+        allowMining: true,
+        allowPlacing: true,
+      }),
+    }));
+  }, 10_000);
+
   it("keeps monitoring for new attackers after resuming item recovery", async () => {
     const driver = new FakeBeatGameDriver();
     const deathObservedAt = new Date().toISOString();
@@ -8024,6 +9853,157 @@ describe("beat-game run lifecycle", () => {
       driver.tasks.filter((task) => task.type === "attack-entity"),
     ).toHaveLength(2);
   });
+
+  it("shields an imminent creeper blast instead of delaying for knockback", async () => {
+    const driver = new FakeBeatGameDriver();
+    driver.currentObservation = observation({
+      counts: {
+        "minecraft:shield": 1,
+        "minecraft:stone_sword": 1,
+      },
+      health: 5,
+    });
+    driver.entityResults = [{
+      connectionEpoch: "epoch-1",
+      networkId: 41,
+      entityType: "minecraft:creeper",
+      position: {
+        x: 1.2,
+        y: 64,
+        z: 0,
+        dimension: "minecraft:overworld",
+      },
+      velocity: { x: 0, y: 0, z: 0 },
+      alive: true,
+      health: 20,
+      creeper: {
+        fuseProgress: 0.6,
+        swellDirection: 1,
+        powered: false,
+        ignited: false,
+      },
+      observedAt: "2026-01-01T00:00:01.000Z",
+    }];
+    driver.actionObserver = (action) => {
+      if (action.type === "use-item" && action.hand === "off") {
+        driver.entityResults = [];
+      }
+    };
+    driver.taskResolver = (task) =>
+      Effect.sync(() => {
+        driver.tasks.push(task);
+      }).pipe(Effect.zipRight(Effect.never));
+
+    await Effect.runPromise(Effect.scoped(
+      beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+      }).pipe(
+        Effect.flatMap((run) =>
+          Effect.gen(function* () {
+            while (!driver.actions.some((action) =>
+              action.type === "release-item"
+            )) {
+              yield* Effect.sleep(1);
+            }
+            yield* run.stop;
+            yield* run.awaitCompletion.pipe(Effect.either);
+          })
+        ),
+      ),
+    ));
+
+    expect(driver.actions).toContainEqual({
+      type: "equip-item",
+      selector: { itemIds: ["minecraft:shield"] },
+      equipmentSlot: "offhand",
+    });
+    expect(driver.actions).toContainEqual({
+      type: "use-item",
+      hand: "off",
+    });
+    expect(driver.actions).toContainEqual({ type: "release-item" });
+    expect(driver.actions.some((action) =>
+      action.type === "attack-entity"
+    )).toBe(false);
+    expect(driver.actions.some((action) =>
+      action.type === "set-movement" && action.forward === true
+    )).toBe(false);
+  }, 10_000);
+
+  it("prioritizes a fusing creeper over a nearer idle creeper", async () => {
+    const driver = new FakeBeatGameDriver();
+    driver.currentObservation = observation({
+      counts: { "minecraft:shield": 1 },
+      health: 10,
+    });
+    const idleCreeper = {
+      connectionEpoch: "epoch-1",
+      networkId: 41,
+      entityType: "minecraft:creeper",
+      position: {
+        x: 2,
+        y: 64,
+        z: 0,
+        dimension: "minecraft:overworld",
+      },
+      velocity: { x: 0, y: 0, z: 0 },
+      alive: true,
+      health: 20,
+      creeper: {
+        fuseProgress: 0,
+        swellDirection: -1,
+        powered: false,
+        ignited: false,
+      },
+      observedAt: "2026-01-01T00:00:01.000Z",
+    } as const;
+    const fusingCreeper = {
+      ...idleCreeper,
+      networkId: 42,
+      position: { ...idleCreeper.position, x: 4 },
+      creeper: {
+        ...idleCreeper.creeper,
+        fuseProgress: 0.8,
+        swellDirection: 1,
+      },
+    } as const;
+    driver.entityResults = [idleCreeper, fusingCreeper];
+    driver.actionObserver = (action) => {
+      if (action.type === "use-item" && action.hand === "off") {
+        driver.entityResults = [];
+      }
+    };
+    driver.taskResolver = (task) =>
+      Effect.sync(() => {
+        driver.tasks.push(task);
+      }).pipe(Effect.zipRight(Effect.never));
+
+    await Effect.runPromise(Effect.scoped(
+      beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+      }).pipe(
+        Effect.flatMap((run) =>
+          Effect.gen(function* () {
+            while (!driver.actions.some((action) =>
+              action.type === "release-item"
+            )) {
+              yield* Effect.sleep(1);
+            }
+            yield* run.stop;
+            yield* run.awaitCompletion.pipe(Effect.either);
+          })
+        ),
+      ),
+    ));
+
+    expect(driver.entityQueries).toContainEqual(expect.objectContaining({
+      selector: { networkId: fusingCreeper.networkId, alive: true },
+    }));
+    expect(driver.actions).toContainEqual({
+      type: "use-item",
+      hand: "off",
+    });
+  }, 10_000);
 
   it("sprints and dynamically flees the hostile group around a creeper", async () => {
     const driver = new FakeBeatGameDriver();
@@ -8806,6 +10786,12 @@ describe("beat-game run lifecycle", () => {
         blockObservation(position, overrides),
       );
     };
+    setBlock({
+      x: 0,
+      y: 60,
+      z: 0,
+      dimension: "minecraft:overworld",
+    });
     for (let rise = 1; rise <= 4; rise += 1) {
       setBlock({
         x: rise,
@@ -8828,6 +10814,17 @@ describe("beat-game run lifecycle", () => {
           }
           : {});
       }
+      setBlock({
+        x: rise - 1,
+        y: 62 + rise,
+        z: 0,
+        dimension: "minecraft:overworld",
+      }, {
+        blockId: "minecraft:air",
+        diggable: false,
+        replaceable: true,
+        solid: false,
+      });
     }
     driver.blockQueryResolver = ({ center, radius, selector }) => {
       if (radius > 0.25 || Object.keys(selector).length > 0) {
@@ -9614,6 +11611,123 @@ describe("beat-game run lifecycle", () => {
     expect(driver.actions).toContainEqual({ type: "use-item", hand: "main" });
   });
 
+  it("swims to a dry ledge instead of using water in Nether lava", async () => {
+    const driver = new FakeBeatGameDriver();
+    const dimension = "minecraft:the_nether";
+    const drySupport = blockObservation({
+      x: 3,
+      y: 64,
+      z: 0,
+      dimension,
+    }, {
+      blockId: "minecraft:netherrack",
+    });
+    let inLava = true;
+    driver.currentObservation = observation({
+      dimension,
+      health: 16,
+      onGround: false,
+      counts: {
+        "minecraft:cooked_beef": 4,
+        "minecraft:water_bucket": 1,
+      },
+    });
+    driver.blockQueryResolver = ({ center, selector }) => {
+      if (selector.solid === true) {
+        return [drySupport];
+      }
+      if (
+        inLava
+        && selector.blockIds?.includes("minecraft:lava") === true
+      ) {
+        return [blockObservation({
+          x: Math.floor(center.x),
+          y: Math.floor(center.y),
+          z: Math.floor(center.z),
+          dimension: center.dimension,
+        }, {
+          blockId: "minecraft:lava",
+          replaceable: true,
+          solid: false,
+        })];
+      }
+      if (selector.blockIds === undefined) {
+        return [blockObservation({
+          x: Math.floor(center.x),
+          y: Math.floor(center.y),
+          z: Math.floor(center.z),
+          dimension: center.dimension,
+        }, {
+          blockId: "minecraft:air",
+          diggable: false,
+          replaceable: true,
+          solid: false,
+        })];
+      }
+      return [];
+    };
+    driver.actionObserver = (action) => {
+      if (
+        action.type !== "set-movement"
+        || action.forward !== true
+        || action.jump !== true
+      ) {
+        return;
+      }
+      inLava = false;
+      driver.currentObservation = observation({
+        dimension,
+        health: 20,
+        position: {
+          x: drySupport.position.x + 0.5,
+          y: drySupport.position.y + 1,
+          z: drySupport.position.z + 0.5,
+        },
+        counts: {
+          "minecraft:cooked_beef": 4,
+          "minecraft:water_bucket": 1,
+        },
+      });
+    };
+
+    const retreatCompleted = await Effect.runPromise(Effect.scoped(
+      beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+      }).pipe(
+        Effect.flatMap((run) =>
+          Effect.gen(function* () {
+            const event = yield* run.events.pipe(
+              Stream.filter((candidate) =>
+                candidate.type === "action-succeeded"
+                && candidate.action === "retreat"
+              ),
+              Stream.runHead,
+            );
+            yield* run.stop;
+            yield* run.awaitCompletion.pipe(Effect.either);
+            return event;
+          })
+        ),
+      ),
+    ));
+
+    expect(Option.isSome(retreatCompleted)).toBe(true);
+    expect(driver.actions).not.toContainEqual({
+      type: "select-item",
+      selector: { itemIds: ["minecraft:water_bucket"] },
+    });
+    expect(driver.actions).not.toContainEqual({
+      type: "use-item",
+      hand: "main",
+    });
+    expect(driver.actions).toContainEqual({
+      type: "set-movement",
+      forward: true,
+      jump: true,
+      sprint: true,
+    });
+  });
+
   it("enters nearby water before retreating while on fire", async () => {
     const driver = new FakeBeatGameDriver();
     const water = {
@@ -9680,6 +11794,65 @@ describe("beat-game run lifecycle", () => {
         maxFallDistance: 1,
       }),
     });
+  });
+
+  it("continues an environmental retreat through later damage ticks", async () => {
+    const driver = new FakeBeatGameDriver();
+    const initialObservation = observation({
+      health: 8,
+      counts: { "minecraft:cooked_beef": 1 },
+    });
+    let retreatStarted = false;
+    let observedHealth = initialObservation.player.health;
+    driver.currentObservation = initialObservation;
+    driver.observationResolver = () =>
+      Effect.sync(() => {
+        if (retreatStarted) {
+          observedHealth = Math.max(1, observedHealth - 1);
+          driver.currentObservation = observation({
+            health: observedHealth,
+            counts: { "minecraft:cooked_beef": 1 },
+          });
+        }
+        return driver.currentObservation;
+      });
+    const environmentalFailures: string[] = [];
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+        hooks: {
+          retreat: () =>
+            Effect.sync(() => {
+              retreatStarted = true;
+            }).pipe(Effect.zipRight(Effect.sleep(20))),
+        },
+      });
+      yield* run.events.pipe(
+        Stream.runForEach((event) =>
+          event.type === "action-failed"
+              && event.action === "retreat"
+              && event.detail?.includes("environmental damage") === true
+            ? Effect.sync(() => {
+              environmentalFailures.push(event.detail ?? "");
+            })
+            : Effect.void
+        ),
+        Effect.forkScoped,
+      );
+      const retreatCompleted = yield* run.events.pipe(
+        Stream.filter((event) =>
+          event.type === "action-succeeded"
+          && event.action === "retreat"
+        ),
+        Stream.runHead,
+      );
+      expect(Option.isSome(retreatCompleted)).toBe(true);
+      yield* run.stop;
+      yield* run.awaitCompletion.pipe(Effect.either);
+    })));
+
+    expect(environmentalFailures).toEqual([]);
   });
 
   it("replans when a retreat target cannot be reached", async () => {
@@ -11290,7 +13463,7 @@ describe("beat-game run lifecycle", () => {
       .toBe(false);
   });
 
-  it("fights a ranged hostile from a confined shaft when armed", async () => {
+  it("retreats from a ranged hostile in a low shaft when wounded", async () => {
     const driver = new FakeBeatGameDriver();
     const shaftPosition = {
       x: 75,
@@ -11320,13 +13493,8 @@ describe("beat-game run lifecycle", () => {
     driver.entityQueryResolver = (query) =>
       query.selector.categories?.includes(2) ? driver.entityResults : [];
     driver.taskObserver = (task) => {
-      if (task.type === "attack-entity") {
+      if (task.type === "flee") {
         driver.entityResults = [];
-        driver.currentObservation = observation({
-          health: 20,
-          position: shaftPosition,
-          counts: { "minecraft:stone_sword": 1 },
-        });
       }
     };
 
@@ -11337,7 +13505,7 @@ describe("beat-game run lifecycle", () => {
         Effect.flatMap((run) =>
           Effect.gen(function* () {
             while (
-              !driver.tasks.some((task) => task.type === "attack-entity")
+              !driver.tasks.some((task) => task.type === "flee")
             ) {
               yield* Effect.sleep(1);
             }
@@ -11349,15 +13517,81 @@ describe("beat-game run lifecycle", () => {
     ));
 
     expect(driver.tasks).toContainEqual(expect.objectContaining({
-      type: "attack-entity",
-      target: expect.objectContaining({
-        entityType: "minecraft:skeleton",
-      }),
-      selectBestWeapon: true,
+      type: "flee",
+      selector: { categories: [2], alive: true },
     }));
-    expect(driver.actions.some((action) =>
-      action.type === "set-movement" && action.sprint === true
-    )).toBe(false);
+    expect(driver.tasks.some((task) => task.type === "attack-entity"))
+      .toBe(false);
+  });
+
+  it("retreats from the low-health multi-skeleton cave regression", async () => {
+    const driver = new FakeBeatGameDriver();
+    const cavePosition = {
+      x: 141.53,
+      y: 16,
+      z: -75.53,
+      dimension: "minecraft:overworld",
+    } as const;
+    driver.currentObservation = observation({
+      health: 7.5,
+      food: 16,
+      position: cavePosition,
+      counts: {
+        "minecraft:shield": 1,
+        "minecraft:stone_sword": 1,
+      },
+    });
+    driver.entityResults = [{
+      connectionEpoch: "epoch-1",
+      networkId: 24_215,
+      entityType: "minecraft:skeleton",
+      position: { ...cavePosition, y: 15, z: -82.7 },
+      velocity: { x: 0, y: 0, z: 0 },
+      alive: true,
+      health: 20,
+      observedAt: "2026-08-30T05:35:23.000Z",
+    }, {
+      connectionEpoch: "epoch-1",
+      networkId: 24_216,
+      entityType: "minecraft:skeleton",
+      position: { ...cavePosition, x: 120, y: 15, z: -72 },
+      velocity: { x: 0, y: 0, z: 0 },
+      alive: true,
+      health: 20,
+      observedAt: "2026-08-30T05:35:23.000Z",
+    }];
+    driver.entityQueryResolver = (query) =>
+      query.selector.categories?.includes(2) ? driver.entityResults : [];
+    driver.taskObserver = (task) => {
+      if (task.type === "flee") {
+        driver.entityResults = [];
+      }
+    };
+
+    await Effect.runPromise(Effect.scoped(
+      beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+      }).pipe(
+        Effect.flatMap((run) =>
+          Effect.gen(function* () {
+            while (!driver.tasks.some((task) => task.type === "flee")) {
+              yield* Effect.sleep(1);
+            }
+            yield* run.stop;
+            yield* run.awaitCompletion.pipe(Effect.either);
+          })
+        ),
+      ),
+    ));
+
+    expect(driver.tasks).toContainEqual(expect.objectContaining({
+      type: "flee",
+      selector: { categories: [2], alive: true },
+      triggerRadius: 24,
+      safeDistance: 32,
+    }));
+    expect(driver.tasks.some((task) => task.type === "attack-entity"))
+      .toBe(false);
   });
 
   it("keeps its shield raised instead of fleeing a ranged fight wounded", async () => {
@@ -11679,7 +13913,7 @@ describe("beat-game run lifecycle", () => {
       observedAt: "2026-01-01T00:00:00.000Z",
     } as const;
     driver.currentObservation = observation({
-      health: 10,
+      health: 16,
       counts: {
         "minecraft:shield": 1,
         "minecraft:stone_sword": 1,
@@ -11838,7 +14072,7 @@ describe("beat-game run lifecycle", () => {
     expect(driver.tasks.some((task) => task.type === "flee")).toBe(false);
   });
 
-  it("evades before mining upward when a ranged route fails while wounded", async () => {
+  it("evades before mining upward when a ranged hostile has it wounded", async () => {
     const driver = new FakeBeatGameDriver();
     const undergroundPosition = {
       x: 0,
@@ -11893,18 +14127,7 @@ describe("beat-game run lifecycle", () => {
         if (task.type === "flee") {
           driver.entityResults = [];
         }
-      }).pipe(
-        Effect.zipRight(
-          task.type === "attack-entity"
-            ? Effect.fail(new BeatGameDriverError({
-              operation: "task.attack-entity",
-              code: "unreachable",
-              retryable: true,
-              message: "The skeleton is firing down an enclosed shaft",
-            }))
-            : Effect.void,
-        ),
-      );
+      });
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
@@ -11927,7 +14150,7 @@ describe("beat-game run lifecycle", () => {
     ));
 
     expect(driver.tasks.filter((task) => task.type === "attack-entity"))
-      .toHaveLength(1);
+      .toHaveLength(0);
     expect(driver.tasks).toContainEqual(expect.objectContaining({
       type: "flee",
       selector: { categories: [2], alive: true },
@@ -12136,6 +14359,7 @@ describe("beat-game run lifecycle", () => {
         velocity: { x: 0, y: 0, z: 0 },
         alive: true,
         health: 16,
+        aggressive: true,
         observedAt: "2026-01-01T00:00:00.000Z",
       },
     ];
@@ -12199,6 +14423,7 @@ describe("beat-game run lifecycle", () => {
       velocity: { x: 0, y: 0, z: 0 },
       alive: true,
       health: 16,
+      aggressive: true,
       observedAt: "2026-01-01T00:00:00.000Z",
     } as const;
     driver.entityResults = [
@@ -12410,7 +14635,7 @@ describe("beat-game run lifecycle", () => {
       .toBe(false);
   }, 10_000);
 
-  it("fights an underground skeleton instead of retreating through a tunnel", async () => {
+  it("retreats from an underground skeleton while wounded", async () => {
     const driver = new FakeBeatGameDriver();
     driver.currentObservation = observation({
       health: 11,
@@ -12442,7 +14667,7 @@ describe("beat-game run lifecycle", () => {
     driver.entityQueryResolver = (query) =>
       query.selector.categories?.includes(2) ? driver.entityResults : [];
     driver.taskObserver = (task) => {
-      if (task.type === "attack-entity") {
+      if (task.type === "flee") {
         driver.entityResults = [];
       }
     };
@@ -12453,9 +14678,7 @@ describe("beat-game run lifecycle", () => {
       }).pipe(
         Effect.flatMap((run) =>
           Effect.gen(function* () {
-            while (!driver.tasks.some((task) =>
-              task.type === "attack-entity"
-            )) {
+            while (!driver.tasks.some((task) => task.type === "flee")) {
               yield* Effect.sleep(1);
             }
             yield* run.stop;
@@ -12466,14 +14689,11 @@ describe("beat-game run lifecycle", () => {
     ));
 
     expect(driver.tasks).toContainEqual(expect.objectContaining({
-      type: "attack-entity",
-      target: expect.objectContaining({
-        connectionEpoch: skeleton.connectionEpoch,
-        networkId: skeleton.networkId,
-      }),
-      selectBestWeapon: true,
+      type: "flee",
+      selector: { categories: [2], alive: true },
     }));
-    expect(driver.tasks.some((task) => task.type === "flee")).toBe(false);
+    expect(driver.tasks.some((task) => task.type === "attack-entity"))
+      .toBe(false);
   }, 10_000);
 
   it("knocks back and escapes a close spider when bare-handed and underfed", async () => {
@@ -12492,6 +14712,7 @@ describe("beat-game run lifecycle", () => {
         velocity: { x: 0, y: 0, z: 0 },
         alive: true,
         health: 16,
+        aggressive: true,
         observedAt: "2026-01-01T00:00:00.000Z",
       },
       {
@@ -12507,6 +14728,7 @@ describe("beat-game run lifecycle", () => {
         velocity: { x: 0, y: 0, z: 0 },
         alive: true,
         health: 16,
+        aggressive: true,
         observedAt: "2026-01-01T00:00:00.000Z",
       },
     ];
@@ -12583,6 +14805,7 @@ describe("beat-game run lifecycle", () => {
       velocity: { x: 0, y: 0, z: 0 },
       alive: true,
       health: 16,
+      aggressive: true,
       observedAt: "2026-01-01T00:00:00.000Z",
     } as const;
     driver.currentObservation = observation({ health: 9.5, food: 14 });
@@ -12660,6 +14883,7 @@ describe("beat-game run lifecycle", () => {
       velocity: { x: 0, y: 0, z: 0 },
       alive: true,
       health: 16,
+      aggressive: true,
       observedAt: "2026-01-01T00:00:00.000Z",
     } as const;
     driver.entityQueryResolver = (query) =>
@@ -12733,6 +14957,7 @@ describe("beat-game run lifecycle", () => {
       velocity: { x: 0, y: 0, z: 0 },
       alive: true,
       health: 16,
+      aggressive: true,
       observedAt: "2026-01-01T00:00:00.000Z",
     } as const;
     const skeleton = {
@@ -12834,6 +15059,7 @@ describe("beat-game run lifecycle", () => {
       velocity: { x: 0, y: 0, z: 0 },
       alive: true,
       health: 16,
+      aggressive: true,
       observedAt: "2026-01-01T00:00:00.000Z",
     } as const;
     driver.entityQueryResolver = (query) =>
@@ -13056,6 +15282,96 @@ describe("beat-game run lifecycle", () => {
     }));
   }, 10_000);
 
+  it("turns on an attacking piglin after its first hit", async () => {
+    const driver = new FakeBeatGameDriver();
+    const piglin = {
+      connectionEpoch: "epoch-1",
+      networkId: 57,
+      entityType: "minecraft:piglin",
+      position: {
+        x: 2,
+        y: 64,
+        z: 0,
+        dimension: "minecraft:overworld",
+      },
+      velocity: { x: 0, y: 0, z: 0 },
+      alive: true,
+      health: 16,
+      aggressive: true,
+      observedAt: "2026-01-01T00:00:00.000Z",
+    } as const;
+    driver.currentObservation = observation({
+      counts: {
+        "minecraft:shield": 1,
+        "minecraft:stone_sword": 1,
+      },
+    });
+    driver.entityQueryResolver = (query) =>
+      query.selector.categories?.includes(2) === true
+          || query.selector.networkId === piglin.networkId
+        ? driver.entityResults
+        : [];
+    driver.taskResolver = (task) =>
+      Effect.sync(() => {
+        driver.tasks.push(task);
+      }).pipe(
+        Effect.zipRight(
+          task.type === "collect-blocks"
+              || task.type === "flee"
+              || task.type === "attack-entity"
+            ? Effect.never
+            : Effect.void,
+        ),
+      );
+
+    await Effect.runPromise(Effect.scoped(
+      beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+      }).pipe(
+        Effect.flatMap((run) =>
+          Effect.gen(function* () {
+            while (!driver.tasks.some((task) =>
+              task.type === "collect-blocks"
+            )) {
+              yield* Effect.sleep(1);
+            }
+            driver.entityResults = [piglin];
+            driver.currentObservation = observation({
+              health: 15,
+              counts: {
+                "minecraft:shield": 1,
+                "minecraft:stone_sword": 1,
+              },
+            });
+            while (!driver.tasks.some((task) =>
+              task.type === "attack-entity"
+            )) {
+              yield* Effect.sleep(1);
+            }
+            yield* run.stop;
+            yield* run.awaitCompletion.pipe(Effect.either);
+          })
+        ),
+      ),
+    ));
+
+    expect(driver.tasks).toContainEqual(expect.objectContaining({
+      type: "attack-entity",
+      target: expect.objectContaining({
+        connectionEpoch: piglin.connectionEpoch,
+        networkId: piglin.networkId,
+      }),
+      selectBestWeapon: true,
+      useOffhandShield: true,
+    }));
+    expect(driver.tasks.some((task) => task.type === "flee")).toBe(false);
+    expect(driver.actions).toContainEqual({
+      type: "equip-item",
+      selector: { itemIds: ["minecraft:shield"] },
+      equipmentSlot: "offhand",
+    });
+  }, 10_000);
+
   it("knocks back and flees a close spider at lethal health", async () => {
     const driver = new FakeBeatGameDriver();
     driver.currentObservation = observation({
@@ -13083,6 +15399,7 @@ describe("beat-game run lifecycle", () => {
       velocity: { x: 0, y: 0, z: 0 },
       alive: true,
       health: 16,
+      aggressive: true,
       observedAt: "2026-01-01T00:00:00.000Z",
     }];
     driver.entityQueryResolver = (query) =>
@@ -13143,6 +15460,7 @@ describe("beat-game run lifecycle", () => {
       velocity: { x: 0, y: 0, z: 0 },
       alive: true,
       health: 16,
+      aggressive: true,
       observedAt: "2026-01-01T00:00:00.000Z",
     } as const;
     driver.currentObservation = observation({
@@ -13221,6 +15539,7 @@ describe("beat-game run lifecycle", () => {
       velocity: { x: 0, y: 0, z: 0 },
       alive: true,
       health: 16,
+      aggressive: true,
       observedAt: "2026-01-01T00:00:00.000Z",
     } as const;
     driver.entityQueryResolver = (query) =>
@@ -13387,6 +15706,150 @@ describe("beat-game run lifecycle", () => {
       }),
     }));
   });
+
+  it("preempts a recovery fight when a closer melee hostile arrives", async () => {
+    const driver = new FakeBeatGameDriver();
+    const firstZombie = {
+      connectionEpoch: "epoch-1",
+      networkId: 201,
+      entityType: "minecraft:zombie",
+      position: {
+        x: 2,
+        y: 64,
+        z: 0,
+        dimension: "minecraft:overworld",
+      },
+      velocity: { x: 0, y: 0, z: 0 },
+      alive: true,
+      health: 20,
+      observedAt: "2026-01-01T00:00:00.000Z",
+    } as const;
+    const skeleton = {
+      connectionEpoch: "epoch-1",
+      networkId: 202,
+      entityType: "minecraft:skeleton",
+      position: {
+        x: 8,
+        y: 64,
+        z: 0,
+        dimension: "minecraft:overworld",
+      },
+      velocity: { x: 0, y: 0, z: 0 },
+      alive: true,
+      health: 20,
+      observedAt: "2026-01-01T00:00:01.000Z",
+    } as const;
+    const closingZombie = {
+      connectionEpoch: "epoch-1",
+      networkId: 203,
+      entityType: "minecraft:zombie",
+      position: {
+        x: 1.5,
+        y: 64,
+        z: 0,
+        dimension: "minecraft:overworld",
+      },
+      velocity: { x: 0, y: 0, z: 0 },
+      alive: true,
+      health: 20,
+      observedAt: "2026-01-01T00:00:02.000Z",
+    } as const;
+    driver.currentObservation = observation({
+      health: 20,
+      counts: {
+        "minecraft:cooked_beef": 1,
+        "minecraft:shield": 1,
+        "minecraft:stone_sword": 1,
+      },
+    });
+    driver.entityQueryResolver = (query) => {
+      if (query.selector.networkId !== undefined) {
+        return driver.entityResults.filter((entity) =>
+          entity.networkId === query.selector.networkId
+        );
+      }
+      return query.selector.categories?.includes(2)
+        ? driver.entityResults
+        : [];
+    };
+    let skeletonInterrupted = 0;
+    driver.taskResolver = (task) =>
+      Effect.sync(() => {
+        driver.tasks.push(task);
+        if (
+          task.type === "attack-entity"
+          && task.target.networkId === firstZombie.networkId
+        ) {
+          driver.entityResults = [skeleton];
+        }
+        if (
+          task.type === "attack-entity"
+          && task.target.networkId === closingZombie.networkId
+        ) {
+          driver.entityResults = [];
+        }
+      }).pipe(
+        Effect.zipRight(
+          task.type === "collect-blocks"
+            ? Effect.never
+            : task.type === "attack-entity"
+                && task.target.networkId === skeleton.networkId
+            ? Effect.never
+            : Effect.void,
+        ),
+        Effect.onInterrupt(() =>
+          Effect.sync(() => {
+            if (
+              task.type === "attack-entity"
+              && task.target.networkId === skeleton.networkId
+            ) {
+              skeletonInterrupted += 1;
+            }
+          })
+        ),
+      );
+
+    await Effect.runPromise(Effect.scoped(
+      beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+      }).pipe(
+        Effect.flatMap((run) =>
+          Effect.gen(function* () {
+            while (
+              !driver.tasks.some((task) => task.type === "collect-blocks")
+            ) {
+              yield* Effect.sleep(1);
+            }
+            driver.entityResults = [firstZombie];
+            while (!driver.tasks.some((task) =>
+              task.type === "attack-entity"
+              && task.target.networkId === skeleton.networkId
+            )) {
+              yield* Effect.sleep(1);
+            }
+            driver.entityResults = [skeleton, closingZombie];
+            while (!driver.tasks.some((task) =>
+              task.type === "attack-entity"
+              && task.target.networkId === closingZombie.networkId
+            )) {
+              yield* Effect.sleep(1);
+            }
+            yield* run.stop;
+            yield* run.awaitCompletion.pipe(Effect.either);
+          })
+        ),
+      ),
+    ));
+
+    expect(skeletonInterrupted).toBeGreaterThanOrEqual(1);
+    expect(driver.tasks).toContainEqual(expect.objectContaining({
+      type: "attack-entity",
+      target: expect.objectContaining({
+        networkId: closingZombie.networkId,
+      }),
+      selectBestWeapon: true,
+    }));
+  }, 10_000);
 
   it("evades a visible witch before entering potion range", async () => {
     const driver = new FakeBeatGameDriver();
@@ -13863,6 +16326,7 @@ describe("beat-game run lifecycle", () => {
         velocity: { x: 0, y: 0, z: 0 },
         alive: true,
         health: 16,
+        aggressive: true,
         observedAt: "2026-01-01T00:00:01.000Z",
       },
     ] as const;
@@ -13920,23 +16384,42 @@ describe("beat-game run lifecycle", () => {
       .toBe(false);
   });
 
-  it("leaves a nearby neutral Enderman alone", async () => {
+  it("leaves calm category-hostile neutral mobs alone", async () => {
     const driver = new FakeBeatGameDriver();
-    driver.entityResults = [{
-      connectionEpoch: "epoch-1",
-      networkId: 25,
-      entityType: "minecraft:enderman",
-      position: {
-        x: 3,
-        y: 64,
-        z: 0,
-        dimension: "minecraft:overworld",
+    driver.entityResults = [
+      {
+        connectionEpoch: "epoch-1",
+        networkId: 25,
+        entityType: "minecraft:enderman",
+        position: {
+          x: 3,
+          y: 64,
+          z: 0,
+          dimension: "minecraft:overworld",
+        },
+        velocity: { x: 0, y: 0, z: 0 },
+        alive: true,
+        health: 40,
+        aggressive: false,
+        observedAt: "2026-01-01T00:00:01.000Z",
       },
-      velocity: { x: 0, y: 0, z: 0 },
-      alive: true,
-      health: 40,
-      observedAt: "2026-01-01T00:00:01.000Z",
-    }];
+      {
+        connectionEpoch: "epoch-1",
+        networkId: 26,
+        entityType: "minecraft:zombified_piglin",
+        position: {
+          x: 2,
+          y: 64,
+          z: 0,
+          dimension: "minecraft:overworld",
+        },
+        velocity: { x: 0, y: 0, z: 0 },
+        alive: true,
+        health: 20,
+        aggressive: false,
+        observedAt: "2026-01-01T00:00:01.000Z",
+      },
+    ];
     driver.entityQueryResolver = (query) =>
       query.selector.categories?.includes(2) ? driver.entityResults : [];
     driver.taskResolver = (task) =>
@@ -13959,15 +16442,13 @@ describe("beat-game run lifecycle", () => {
           Effect.gen(function* () {
             let attempts = 1_000;
             while (
-              !driver.entityQueries.some((query) =>
-                query.selector.categories?.includes(2)
-              )
+              !driver.tasks.some((task) => task.type === "collect-blocks")
               && attempts > 0
             ) {
               attempts -= 1;
               yield* Effect.sleep(1);
             }
-            yield* Effect.sleep(10);
+            yield* Effect.sleep(20);
             yield* run.stop;
             yield* run.awaitCompletion.pipe(Effect.either);
           })
@@ -13986,6 +16467,243 @@ describe("beat-game run lifecycle", () => {
     )).toBe(false);
   });
 
+  it("knocks back an aggressive zombified piglin without targeting calm group members", async () => {
+    const driver = new FakeBeatGameDriver();
+    driver.currentObservation = observation({
+      health: 8,
+      counts: { "minecraft:cooked_beef": 1 },
+    });
+    driver.entityResults = [1, 2, 3].map((networkId) => ({
+      connectionEpoch: "epoch-1",
+      networkId,
+      entityType: "minecraft:zombified_piglin",
+      position: {
+        x: networkId,
+        y: 64,
+        z: 0,
+        dimension: "minecraft:overworld",
+      },
+      velocity: { x: 0, y: 0, z: 0 },
+      alive: true,
+      health: 20,
+      aggressive: networkId === 1,
+      observedAt: "2026-01-01T00:00:01.000Z",
+    }));
+    driver.actionObserver = (action) => {
+      if (action.type === "attack-entity") {
+        driver.entityResults = [];
+      }
+    };
+
+    await Effect.runPromise(Effect.scoped(
+      beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+      }).pipe(
+        Effect.flatMap((run) =>
+          Effect.gen(function* () {
+            let attempts = 3_000;
+            while (
+              (
+                !driver.tasks.some((task) =>
+                  task.type === "flee"
+                  && task.selector.categories?.includes(2)
+                )
+                || !driver.actions.some((action) =>
+                  action.type === "attack-entity"
+                )
+              )
+              && attempts > 0
+            ) {
+              attempts -= 1;
+              yield* Effect.sleep(1);
+            }
+            yield* run.stop;
+            yield* run.awaitCompletion.pipe(Effect.either);
+          })
+        ),
+      ),
+    ));
+
+    expect(driver.tasks).toContainEqual(expect.objectContaining({
+      type: "flee",
+      selector: { categories: [2], alive: true },
+    }));
+    expect(driver.tasks.some((task) => task.type === "attack-entity"))
+      .toBe(false);
+    expect(driver.actions).toContainEqual(expect.objectContaining({
+      type: "attack-entity",
+      connectionEpoch: "epoch-1",
+      networkId: 1,
+    }));
+    expect(driver.actions.some((action) =>
+      action.type === "attack-entity"
+      && action.networkId !== 1
+    )).toBe(false);
+  }, 10_000);
+
+  it("keeps one zombified piglin group flee active through transient calm observations", async () => {
+    const driver = new FakeBeatGameDriver();
+    driver.currentObservation = observation({
+      counts: {
+        "minecraft:cooked_beef": 5,
+        "minecraft:shield": 1,
+        "minecraft:stone_sword": 1,
+      },
+    });
+    driver.entityResults = [1, 2, 3, 4].map((networkId) => ({
+      connectionEpoch: "epoch-1",
+      networkId,
+      entityType: "minecraft:zombified_piglin",
+      position: {
+        x: networkId + 1,
+        y: 64,
+        z: 0,
+        dimension: "minecraft:overworld",
+      },
+      velocity: { x: 0, y: 0, z: 0 },
+      alive: true,
+      health: 20,
+      aggressive: true,
+      observedAt: "2026-01-01T00:00:01.000Z",
+    }));
+    driver.taskResolver = (task) =>
+      Effect.sync(() => {
+        driver.tasks.push(task);
+        driver.taskObserver(task);
+        if (task.type === "flee") {
+          driver.entityResults = driver.entityResults.map((entity) => ({
+            ...entity,
+            aggressive: false,
+          }));
+        }
+      }).pipe(
+        Effect.zipRight(
+          task.type === "flee" ? Effect.never : Effect.succeed({}),
+        ),
+      );
+
+    await Effect.runPromise(Effect.scoped(
+      beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+      }).pipe(
+        Effect.flatMap((run) =>
+          Effect.gen(function* () {
+            while (!driver.tasks.some((task) => task.type === "flee")) {
+              yield* Effect.sleep(1);
+            }
+            for (
+              let poll = 0;
+              poll < 20
+                && !driver.tasks.some((task) =>
+                  task.type === "attack-entity"
+                );
+              poll += 1
+            ) {
+              yield* Effect.sleep(1);
+            }
+            yield* run.stop;
+            yield* run.awaitCompletion.pipe(Effect.either);
+          })
+        ),
+      ),
+    ));
+
+    expect(driver.tasks.filter((task) => task.type === "flee")).toHaveLength(1);
+    expect(driver.tasks.some((task) => task.type === "attack-entity"))
+      .toBe(false);
+    expect(driver.actions.some((action) =>
+      action.type === "attack-entity"
+      && action.networkId !== 1
+    )).toBe(false);
+  });
+
+  it("uses carried blocks to escape an aggressive zombified piglin group", async () => {
+    const driver = new FakeBeatGameDriver();
+    driver.currentObservation = observation({
+      counts: {
+        "minecraft:cooked_beef": 5,
+        "minecraft:shield": 1,
+        "minecraft:stone_sword": 1,
+        "minecraft:cobblestone": 64,
+      },
+      pathBuildingBlockCount: 64,
+    });
+    driver.entityResults = [1, 2, 3].map((networkId) => ({
+      connectionEpoch: "epoch-1",
+      networkId,
+      entityType: "minecraft:zombified_piglin",
+      position: {
+        x: networkId + 1,
+        y: 64,
+        z: 0,
+        dimension: "minecraft:overworld",
+      },
+      velocity: { x: 0, y: 0, z: 0 },
+      alive: true,
+      health: 20,
+      aggressive: networkId === 1,
+      observedAt: "2026-01-01T00:00:01.000Z",
+    }));
+    driver.taskResolver = (task) =>
+      Effect.sync(() => {
+        driver.tasks.push(task);
+      }).pipe(
+        Effect.zipRight(
+          task.type === "collect-blocks"
+            ? Effect.never
+            : task.type === "flee"
+            ? Effect.fail(new BeatGameDriverError({
+              operation: "task.flee",
+              code: "unreachable",
+              retryable: true,
+              message: "No safe group escape route exists",
+            }))
+            : Effect.succeed({}),
+        ),
+      );
+
+    await Effect.runPromise(Effect.scoped(
+      beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+      }).pipe(
+        Effect.flatMap((run) =>
+          Effect.gen(function* () {
+            while (
+              driver.tasks.filter((task) => task.type === "flee").length < 2
+              && !driver.tasks.some((task) => task.type === "attack-entity")
+            ) {
+              yield* Effect.sleep(1);
+            }
+            yield* run.stop;
+            yield* run.awaitCompletion.pipe(Effect.either);
+          })
+        ),
+      ),
+    ));
+
+    expect(driver.tasks.filter((task) => task.type === "flee").length)
+      .toBeGreaterThanOrEqual(2);
+    const fleePolicies = driver.tasks.flatMap((task, index) =>
+      task.type === "flee" ? [driver.taskPolicies[index]] : []
+    );
+    expect(fleePolicies.every((policy) =>
+      policy?.allowMining === false
+      && policy.allowPlacing === true
+      && policy.maxFallDistance <= 3
+    )).toBe(true);
+    expect(driver.tasks.some((task) => task.type === "attack-entity"))
+      .toBe(false);
+    expect(driver.actions).toContainEqual(expect.objectContaining({
+      type: "attack-entity",
+      connectionEpoch: "epoch-1",
+      networkId: 1,
+    }));
+    expect(driver.actions.some((action) =>
+      action.type === "attack-entity"
+      && action.networkId !== 1
+    )).toBe(false);
+  });
+
   it("escapes an attacking Enderman into nearby water", async () => {
     const driver = new FakeBeatGameDriver();
     const attacker = {
@@ -14001,7 +16719,7 @@ describe("beat-game run lifecycle", () => {
       velocity: { x: 0, y: 0, z: 0 },
       alive: true,
       health: 40,
-      target: { connectionEpoch: "epoch-1", networkId: 1 },
+      aggressive: true,
       observedAt: "2026-01-01T00:00:01.000Z",
     } as const;
     driver.blockQueryResolver = (query) =>
@@ -15110,7 +17828,7 @@ describe("beat-game run lifecycle", () => {
             ) {
               yield* Effect.sleep(1);
             }
-            driver.currentObservation = observation({ air: 100 });
+            driver.currentObservation = observation({ air: 259 });
             while (
               !driver.actions.some((action) =>
                 action.type === "set-movement" && action.jump === true
@@ -15132,11 +17850,90 @@ describe("beat-game run lifecycle", () => {
     });
     expect(driver.actions).toContainEqual({
       type: "set-movement",
-      forward: true,
       jump: true,
-      sprint: true,
     });
     expect(driver.actions).toContainEqual({ type: "reset-movement" });
+  });
+
+  it("interrupts work to clutch a dangerous fall with a water bucket", async () => {
+    const driver = new FakeBeatGameDriver();
+    driver.taskResolver = (task) =>
+      Effect.sync(() => {
+        driver.tasks.push(task);
+      }).pipe(
+        Effect.zipRight(
+          task.type === "collect-blocks" ? Effect.never : Effect.void,
+        ),
+      );
+    driver.raycastResolver = () => ({
+      block: blockObservation({
+        x: 0,
+        y: 20,
+        z: 0,
+        dimension: "minecraft:overworld",
+      }),
+      distance: 3.5,
+    });
+    driver.actionResolver = (action) =>
+      Effect.sync(() => {
+        if (action.type !== "use-item") {
+          return {};
+        }
+        const current = driver.currentObservation;
+        driver.currentObservation = observation({
+          counts: { "minecraft:bucket": 1 },
+          onGround: true,
+          position: current.player.position,
+          rotation: current.player.rotation,
+          velocity: { y: 0 },
+        });
+        return {};
+      });
+
+    await Effect.runPromise(Effect.scoped(
+      beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+      }).pipe(
+        Effect.flatMap((run) =>
+          Effect.gen(function* () {
+            while (
+              !driver.tasks.some((task) => task.type === "collect-blocks")
+            ) {
+              yield* Effect.sleep(1);
+            }
+            driver.currentObservation = observation({
+              counts: { "minecraft:water_bucket": 1 },
+              onGround: false,
+              position: { x: 0.5, y: 24, z: 0.5 },
+              velocity: { y: -1.1 },
+            });
+            while (
+              !driver.actions.some((action) => action.type === "use-item")
+            ) {
+              yield* Effect.sleep(1);
+            }
+            yield* run.stop;
+            yield* run.awaitCompletion.pipe(Effect.either);
+          })
+        ),
+      ),
+    ));
+
+    expect(driver.actions).toContainEqual({
+      type: "select-item",
+      selector: { itemIds: ["minecraft:water_bucket"] },
+    });
+    expect(driver.actions).toContainEqual({
+      type: "look",
+      yaw: 0,
+      pitch: 90,
+    });
+    expect(driver.actions).toContainEqual({ type: "use-item", hand: "main" });
+    expect(driver.raycasts).toContainEqual({
+      direction: { x: 0, y: -1, z: 0 },
+      maximumDistance: 96,
+      includeFluids: true,
+    });
   });
 
   it("swims directly to shore when an obstructed ascent stalls", async () => {
@@ -15243,31 +18040,19 @@ describe("beat-game run lifecycle", () => {
     });
   });
 
-  it("stops swimming when a failed shore route already reached dry ground", async () => {
+  it("uses a nearby cave ledge instead of the topmost overhang surface", async () => {
     const driver = new FakeBeatGameDriver();
-    driver.surfaceColumns = [-1, 0, 1].map((z) => ({
-      x: 4,
+    const overhangColumns = [-1, 0, 1].map((z) => ({
+      x: 0,
       z,
       loaded: true,
-      surfaceY: 64,
+      surfaceY: 97,
       blockId: "minecraft:grass_block",
       skyLight: 15,
       blockLight: 0,
     }));
-    driver.blockQueryResolver = (query) =>
-      query.selector.blockIds?.includes("minecraft:water") === true
-          && driver.currentObservation.player.position.x < 4
-        ? [blockObservation({
-          x: Math.floor(query.center.x),
-          y: Math.floor(query.center.y),
-          z: Math.floor(query.center.z),
-          dimension: query.center.dimension,
-        }, {
-          blockId: "minecraft:water",
-          diggable: false,
-          replaceable: true,
-        })]
-        : [];
+    driver.surfaceQueryResolver = (center) =>
+      center.y < 63 ? overhangColumns : [];
     driver.taskResolver = (task) =>
       Effect.sync(() => {
         driver.tasks.push(task);
@@ -15276,21 +18061,59 @@ describe("beat-game run lifecycle", () => {
           task.type === "collect-blocks" ? Effect.never : Effect.void,
         ),
       );
-    driver.pathResolver = (position, radius, policy) =>
-      Effect.sync(() => {
-        driver.paths.push({ position, radius, policy });
-        driver.currentObservation = observation({
-          air: 300,
-          position,
-        });
-      }).pipe(
-        Effect.zipRight(Effect.fail(new BeatGameDriverError({
-          operation: "pathfind",
-          code: "timeout",
-          retryable: true,
-          message: "The route timed out after reaching shore",
-        }))),
-      );
+    driver.blockQueryResolver = (query) => {
+      const position = {
+        x: Math.floor(query.center.x),
+        y: Math.floor(query.center.y),
+        z: Math.floor(query.center.z),
+        dimension: query.center.dimension,
+      };
+      if (query.selector.solid === true) {
+        return [blockObservation({
+          x: 3,
+          y: 62,
+          z: 0,
+          dimension: "minecraft:overworld",
+        }, { blockId: "minecraft:grass_block" })];
+      }
+      if (query.selector.blockIds?.includes("minecraft:water") === true) {
+        return driver.currentObservation.player.position.x < 3
+            && position.y <= 62
+          ? [blockObservation(position, {
+            blockId: "minecraft:water",
+            diggable: false,
+            replaceable: true,
+            solid: false,
+          })]
+          : [];
+      }
+      if (Object.keys(query.selector).length > 0) {
+        return [];
+      }
+      if (position.x === 3 && position.y === 62 && position.z === 0) {
+        return [blockObservation(position, {
+          blockId: "minecraft:grass_block",
+        })];
+      }
+      const inPool = position.x < 3 && position.y <= 62;
+      return [blockObservation(position, inPool
+        ? {
+          blockId: "minecraft:water",
+          diggable: false,
+          replaceable: true,
+          solid: false,
+        }
+        : {
+          blockId: "minecraft:air",
+          diggable: false,
+          replaceable: true,
+          solid: false,
+        })];
+    };
+    let resolveReachedLedge!: () => void;
+    const reachedLedge = new Promise<void>((resolve) => {
+      resolveReachedLedge = resolve;
+    });
     driver.actionObserver = (action) => {
       const current = driver.currentObservation;
       if (action.type === "look") {
@@ -15303,16 +18126,26 @@ describe("beat-game run lifecycle", () => {
         };
         return;
       }
-      if (
-        action.type === "set-movement"
-        && action.jump === true
-        && current.player.rotation.pitch === -90
-      ) {
+      if (action.type !== "set-movement" || action.jump !== true) {
+        if (
+          action.type === "reset-movement"
+          && driver.currentObservation.player.position.x >= 3
+        ) {
+          resolveReachedLedge();
+        }
+        return;
+      }
+      if (action.forward === true && current.player.rotation.pitch !== -90) {
         driver.currentObservation = observation({
           air: 300,
-          position: { x: 0, y: 63.95, z: 0 },
+          position: { x: 3.5, y: 63, z: 0.5 },
         });
+        return;
       }
+      driver.currentObservation = {
+        ...current,
+        player: { ...current.player, air: 300 },
+      };
     };
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
@@ -15324,24 +18157,258 @@ describe("beat-game run lifecycle", () => {
       }
       driver.currentObservation = observation({
         air: 100,
-        position: { x: 0, y: 61, z: 0 },
+        position: { x: 0.5, y: 61, z: 0.5 },
       });
-      while (driver.paths.length === 0) {
-        yield* Effect.sleep(1);
-      }
-      yield* Effect.sleep(10);
+      yield* Effect.promise(() => reachedLedge).pipe(
+        Effect.timeout("5 seconds"),
+      );
       yield* run.stop;
     })));
 
-    expect(driver.currentObservation.player.position).toMatchObject({
-      x: 4.5,
-      y: 65,
-      z: 0.5,
-    });
-    expect(driver.actions).not.toContainEqual(expect.objectContaining({
+    expect(driver.actions).toContainEqual(expect.objectContaining({
       type: "look",
       pitch: -20,
     }));
+    expect(driver.paths).toEqual([]);
+    expect(driver.currentObservation.player.position).toMatchObject({
+      x: 3.5,
+      y: 63,
+    });
+  });
+
+  it("uses bounded pathfinding to leave safe surface water below a high shore", async () => {
+    const driver = new FakeBeatGameDriver();
+    const preparedItems = {
+      "minecraft:oak_log": 11,
+      "minecraft:wooden_sword": 1,
+    };
+    driver.currentObservation = observation({
+      air: 300,
+      food: 15,
+      health: 18.5,
+      position: { x: 0.5, y: 62.1, z: 0.5 },
+      counts: preparedItems,
+    });
+    const highShore = [-1, 0, 1].map((z) => ({
+      x: 8,
+      z,
+      loaded: true,
+      surfaceY: 68,
+      blockId: "minecraft:grass_block",
+      skyLight: 15,
+      blockLight: 0,
+    }));
+    driver.surfaceQueryResolver = (_center, radius) =>
+      radius > 4 ? highShore : [];
+    driver.blockQueryResolver = (query) => {
+      const position = {
+        x: Math.floor(query.center.x),
+        y: Math.floor(query.center.y),
+        z: Math.floor(query.center.z),
+        dimension: query.center.dimension,
+      };
+      if (query.selector.blockIds?.includes("minecraft:water") === true) {
+        return driver.currentObservation.player.position.x < 8
+            && position.y === 62
+          ? [blockObservation(position, {
+            blockId: "minecraft:water",
+            diggable: false,
+            replaceable: true,
+          })]
+          : [];
+      }
+      if (query.selector.blockIds !== undefined) {
+        return [];
+      }
+      return [blockObservation(position, position.y === 68
+        ? {
+          blockId: "minecraft:grass_block",
+          diggable: true,
+          replaceable: false,
+        }
+        : {
+          blockId: "minecraft:air",
+          diggable: false,
+          replaceable: true,
+        })];
+    };
+    let resolveReachedShore!: () => void;
+    const reachedShore = new Promise<void>((resolve) => {
+      resolveReachedShore = resolve;
+    });
+    driver.pathResolver = (position, radius, policy) =>
+      Effect.sync(() => {
+        driver.paths.push({ position, radius, policy });
+        if (position.x !== 8.5 || position.y !== 69) {
+          return;
+        }
+        driver.currentObservation = observation({
+          air: 300,
+          food: 15,
+          health: 18.5,
+          position,
+          counts: preparedItems,
+        });
+        resolveReachedShore();
+      });
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+      });
+      yield* Effect.promise(() => reachedShore).pipe(
+        Effect.timeout("5 seconds"),
+      );
+      yield* run.stop;
+    })));
+
+    expect(driver.paths).toContainEqual({
+      position: {
+        x: 8.5,
+        y: 69,
+        z: 0.5,
+        dimension: "minecraft:overworld",
+      },
+      radius: 0.75,
+      policy: expect.objectContaining({
+        allowMining: false,
+        allowPlacing: false,
+        avoidFluids: false,
+        maxSearchTimeMs: 5_000,
+      }),
+    });
+    expect(driver.currentObservation.player.position).toMatchObject({
+      x: 8.5,
+      y: 69,
+    });
+  });
+
+  it("continues a food hunt from safe surface water when dry egress is blocked", async () => {
+    const driver = new FakeBeatGameDriver();
+    const preparedItems = {
+      "minecraft:oak_log": 11,
+      "minecraft:wooden_sword": 1,
+    };
+    driver.currentObservation = observation({
+      air: 300,
+      food: 15,
+      health: 18.5,
+      position: { x: 0.5, y: 62.1, z: 0.5 },
+      counts: preparedItems,
+    });
+    const highShore = [-1, 0, 1].map((z) => ({
+      x: 8,
+      z,
+      loaded: true,
+      surfaceY: 68,
+      blockId: "minecraft:grass_block",
+      skyLight: 15,
+      blockLight: 0,
+    }));
+    driver.surfaceQueryResolver = (_center, radius) =>
+      radius > 4 ? highShore : [];
+    driver.blockQueryResolver = (query) => {
+      const position = {
+        x: Math.floor(query.center.x),
+        y: Math.floor(query.center.y),
+        z: Math.floor(query.center.z),
+        dimension: query.center.dimension,
+      };
+      if (query.selector.blockIds?.includes("minecraft:water") === true) {
+        return position.y === 62
+          ? [blockObservation(position, {
+            blockId: "minecraft:water",
+            diggable: false,
+            replaceable: true,
+          })]
+          : [];
+      }
+      if (query.selector.blockIds !== undefined) {
+        return [];
+      }
+      return [blockObservation(position, position.y === 68
+        ? {
+          blockId: "minecraft:grass_block",
+          diggable: true,
+          replaceable: false,
+        }
+        : {
+          blockId: "minecraft:air",
+          diggable: false,
+          replaceable: true,
+        })];
+    };
+    const pig = {
+      connectionEpoch: "epoch-1",
+      networkId: 57,
+      entityType: "minecraft:pig",
+      position: {
+        x: 2,
+        y: 63,
+        z: 0,
+        dimension: "minecraft:overworld",
+      },
+      velocity: { x: 0, y: 0, z: 0 },
+      alive: true,
+      health: 10,
+      observedAt: "2026-01-01T00:00:00.000Z",
+    } satisfies BeatGameEntityObservation;
+    driver.entityQueryResolver = (query) =>
+      query.selector.entityTypes?.includes("minecraft:pig") === true
+        ? [pig]
+        : [];
+    driver.pathResolver = (position, radius, policy) =>
+      Effect.sync(() => {
+        driver.paths.push({ position, radius, policy });
+      }).pipe(Effect.zipRight(Effect.fail(new BeatGameDriverError({
+        operation: "pathfind",
+        code: "unreachable",
+        retryable: true,
+        message: "The high bank has no traversable landing",
+      }))));
+    driver.taskResolver = (task) =>
+      Effect.sync(() => {
+        driver.tasks.push(task);
+      }).pipe(
+        Effect.zipRight(
+          task.type === "attack-entity" ? Effect.never : Effect.void,
+        ),
+      );
+    const failures: string[] = [];
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+      });
+      yield* run.events.pipe(
+        Stream.runForEach((event) =>
+          event.type === "action-failed"
+            ? Effect.sync(() => {
+              failures.push(event.detail ?? "");
+            })
+            : Effect.void
+        ),
+        Effect.forkScoped,
+      );
+      while (!driver.tasks.some((task) => task.type === "attack-entity")) {
+        yield* Effect.sleep(1);
+      }
+      yield* run.stop;
+    })));
+
+    expect(driver.tasks).toContainEqual(expect.objectContaining({
+      type: "attack-entity",
+      target: expect.objectContaining({ networkId: pig.networkId }),
+    }));
+    const attackIndex = driver.tasks.findIndex(
+      (task) => task.type === "attack-entity",
+    );
+    expect(driver.taskPolicies[attackIndex]).toMatchObject({
+      avoidFluids: false,
+    });
+    expect(failures).not.toContain(
+      "Interrupted for replanning: no observable progress while satisfying food-supply",
+    );
   });
 
   it("keeps ascending before responding to an underwater threat", async () => {
@@ -15363,6 +18430,7 @@ describe("beat-game run lifecycle", () => {
     } satisfies BeatGameEntityObservation;
     driver.blockQueryResolver = (query) =>
       query.selector.blockIds?.includes("minecraft:water") === true
+          && driver.currentObservation.player.position.y < 52.5
         ? [blockObservation({
           x: Math.floor(query.center.x),
           y: Math.floor(query.center.y),
@@ -15381,7 +18449,6 @@ describe("beat-game run lifecycle", () => {
     driver.actionObserver = (action) => {
       if (
         action.type === "set-movement"
-        && action.forward === true
         && action.jump === true
       ) {
         ascending = true;
@@ -15453,9 +18520,7 @@ describe("beat-game run lifecycle", () => {
     expect(responseAir).toBeGreaterThan(200);
     expect(driver.actions).toContainEqual({
       type: "set-movement",
-      forward: true,
       jump: true,
-      sprint: true,
     });
     expect(driver.actions).toContainEqual({ type: "reset-movement" });
   });
@@ -15566,7 +18631,6 @@ describe("beat-game run lifecycle", () => {
       }
       if (
         action.type === "set-movement"
-        && action.forward === true
         && action.jump === true
       ) {
         const swimmingVertically =
@@ -15659,23 +18723,7 @@ describe("beat-game run lifecycle", () => {
       jump: true,
       sprint: false,
     });
-    expect(driver.paths[0]).toEqual({
-      position: {
-        x: 4.5,
-        y: 65,
-        z: 0.5,
-        dimension: "minecraft:overworld",
-      },
-      radius: 0.75,
-      policy: expect.objectContaining({
-        allowMining: false,
-        allowPlacing: false,
-        avoidFluids: false,
-        maxFallDistance: 3,
-        maxSearchTimeMs: 5_000,
-        sprint: false,
-      }),
-    });
+    expect(driver.paths).toEqual([]);
     expect(driver.currentObservation.player.position).toMatchObject({
       x: 4.5,
       y: 65,
@@ -15761,7 +18809,6 @@ describe("beat-game run lifecycle", () => {
       }
       if (
         action.type === "set-movement"
-        && action.forward === true
         && action.jump === true
       ) {
         const swimmingUpward = current.player.rotation.pitch === -90;
@@ -15861,6 +18908,7 @@ describe("beat-game run lifecycle", () => {
       velocity: { x: 0, y: 0, z: 0 },
       alive: true,
       health: 16,
+      aggressive: true,
       observedAt: "2026-01-01T00:00:01.000Z",
     } satisfies BeatGameEntityObservation;
     let swimmingToShore = false;
@@ -15894,7 +18942,6 @@ describe("beat-game run lifecycle", () => {
       }
       if (
         action.type === "set-movement"
-        && action.forward === true
         && action.jump === true
       ) {
         const swimmingUpward = current.player.rotation.pitch === -90;
@@ -16275,7 +19322,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       driver.currentObservation = observation({
-        air: 100,
+        air: 195,
         position: { x: 0.5, y: 31, z: 0.5 },
       });
       yield* Effect.promise(() => escaped).pipe(
@@ -16304,13 +19351,89 @@ describe("beat-game run lifecycle", () => {
       .toBe(false);
   });
 
+  it("does not spend critical air on breathing-pocket path searches", async () => {
+    const driver = new FakeBeatGameDriver();
+    driver.surfaceQueryResolver = () => [];
+    driver.taskResolver = (task) =>
+      Effect.sync(() => {
+        driver.tasks.push(task);
+      }).pipe(Effect.zipRight(Effect.never));
+    driver.blockQueryResolver = (query) => {
+      const position = {
+        x: Math.floor(query.center.x),
+        y: Math.floor(query.center.y),
+        z: Math.floor(query.center.z),
+        dimension: query.center.dimension,
+      };
+      if (
+        query.selector.blockIds?.some((blockId) =>
+          blockId === "minecraft:air"
+          || blockId === "minecraft:cave_air"
+          || blockId === "minecraft:void_air"
+        ) === true
+      ) {
+        return [blockObservation({
+          x: 1,
+          y: 29,
+          z: 0,
+          dimension: "minecraft:overworld",
+        }, {
+          blockId: "minecraft:air",
+          diggable: false,
+          replaceable: true,
+        })];
+      }
+      return [blockObservation(position, {
+        blockId: "minecraft:water",
+        diggable: false,
+        replaceable: true,
+      })];
+    };
+    let ascentAttempts = 0;
+    let resolveRetriedAscent!: () => void;
+    const retriedAscent = new Promise<void>((resolve) => {
+      resolveRetriedAscent = resolve;
+    });
+    driver.actionObserver = (action) => {
+      if (action.type === "set-movement" && action.jump === true) {
+        ascentAttempts += 1;
+        if (ascentAttempts >= 2) {
+          resolveRetriedAscent();
+        }
+      }
+    };
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+      });
+      while (!driver.tasks.some((task) => task.type === "collect-blocks")) {
+        yield* Effect.sleep(1);
+      }
+      driver.currentObservation = observation({
+        air: 100,
+        position: { x: 0.5, y: 31, z: 0.5 },
+      });
+      yield* Effect.promise(() => retriedAscent).pipe(
+        Effect.timeout("5 seconds"),
+      );
+      yield* run.stop;
+      yield* run.awaitCompletion.pipe(Effect.either);
+    })));
+
+    expect(ascentAttempts).toBeGreaterThanOrEqual(2);
+    expect(driver.paths).toEqual([]);
+    expect(driver.actions.some((action) => action.type === "dig-block"))
+      .toBe(false);
+  });
+
   it("abandons a blocked shore and clears the immediate swimming ceiling", async () => {
     const driver = new FakeBeatGameDriver();
     const preparedItems = {
       "minecraft:oak_log": 8,
       "minecraft:cobblestone": 20,
       "minecraft:stone_sword": 1,
-      "minecraft:wooden_pickaxe": 1,
+      "minecraft:stone_pickaxe": 1,
       "minecraft:beef": 8,
     };
     driver.surfaceQueryResolver = () =>
@@ -16375,7 +19498,7 @@ describe("beat-game run lifecycle", () => {
             y: blockY,
             z: blockZ,
             dimension: query.center.dimension,
-          })];
+          }, { hardness: 0.1 })];
       }
       return [];
     };
@@ -16471,7 +19594,7 @@ describe("beat-game run lifecycle", () => {
         yield* Effect.sleep(1);
       }
       driver.currentObservation = observation({
-        air: 190,
+        air: 260,
         food: 12,
         counts: preparedItems,
         position: { x: 0.5, y: 62.4, z: 0.5 },
@@ -16776,7 +19899,7 @@ describe("beat-game run lifecycle", () => {
     })));
 
     expect(driver.paths).toHaveLength(2);
-    expect(driver.paths[0]?.policy.avoidFluids).toBe(false);
+    expect(driver.paths[0]?.policy.avoidFluids).toBe(true);
     expect(driver.paths[1]).toEqual(expect.objectContaining({
       position: {
         x: 0.5,
@@ -16857,7 +19980,7 @@ describe("beat-game run lifecycle", () => {
     }));
   });
 
-  it("returns to the surface before searching for portal water", async () => {
+  it("returns to the surface before considering loaded underground portal water", async () => {
     const driver = new FakeBeatGameDriver();
     const store = new InMemoryBeatGameCheckpointStore();
     const runId = "deep-portal-water-run";
@@ -16892,6 +20015,23 @@ describe("beat-game run lifecycle", () => {
       skyLight: 15,
       blockLight: 0,
     }];
+    const undergroundSource = blockObservation({
+      x: 2,
+      y: -53,
+      z: 0,
+      dimension: "minecraft:overworld",
+    }, {
+      blockId: "minecraft:water",
+      properties: { level: "0" },
+      replaceable: true,
+      solid: false,
+    });
+    driver.blockQueryResolver = ({ selector }) =>
+      selector.blockIds?.length === 1
+          && selector.blockIds[0] === "minecraft:water"
+          && selector.properties?.level === "0"
+        ? [undergroundSource]
+        : [];
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
@@ -16932,7 +20072,366 @@ describe("beat-game run lifecycle", () => {
         avoidFluids: true,
       }),
     }));
+    expect(driver.paths).not.toContainEqual(expect.objectContaining({
+      position: undergroundSource.position,
+    }));
     expect(driver.tasks).toHaveLength(0);
+  });
+
+  it("collects water immediately when already standing in the source", async () => {
+    const driver = new FakeBeatGameDriver();
+    const store = new InMemoryBeatGameCheckpointStore();
+    const runId = "in-source-water-run";
+    const teamId = "in-source-water-team";
+    const source = blockObservation({
+      x: 0,
+      y: 64,
+      z: 0,
+      dimension: "minecraft:overworld",
+    }, {
+      blockId: "minecraft:water",
+      properties: { level: "0" },
+      replaceable: true,
+      solid: false,
+    });
+    driver.currentObservation = observation({
+      position: { x: 0.5, y: 64, z: 0.5 },
+      counts: {
+        "minecraft:bucket": 1,
+        "minecraft:cobblestone": 20,
+        "minecraft:cooked_beef": 8,
+        "minecraft:flint_and_steel": 1,
+        "minecraft:iron_ingot": 7,
+        "minecraft:lava_bucket": 1,
+        "minecraft:oak_log": 4,
+        "minecraft:shield": 1,
+        "minecraft:stone_pickaxe": 1,
+        "minecraft:stone_sword": 1,
+        "minecraft:wooden_sword": 1,
+      },
+    });
+    driver.blockQueryResolver = ({ center, selector }) => {
+      const queriedPosition = {
+        x: Math.floor(center.x),
+        y: Math.floor(center.y),
+        z: Math.floor(center.z),
+        dimension: center.dimension,
+      };
+      if (
+        queriedPosition.x === source.position.x
+        && queriedPosition.y === source.position.y
+        && queriedPosition.z === source.position.z
+        && queriedPosition.dimension === source.position.dimension
+        && (
+          selector.blockIds?.includes("minecraft:water") === true
+          || Object.keys(selector).length === 0
+        )
+      ) {
+        return [source];
+      }
+      return [];
+    };
+    let resolveUsedBucket!: () => void;
+    const usedBucket = new Promise<void>((resolve) => {
+      resolveUsedBucket = resolve;
+    });
+    driver.actionObserver = (action) => {
+      if (action.type === "look") {
+        driver.currentObservation = {
+          ...driver.currentObservation,
+          player: {
+            ...driver.currentObservation.player,
+            rotation: { yaw: action.yaw, pitch: action.pitch },
+          },
+        };
+      }
+      if (action.type === "use-item") {
+        resolveUsedBucket();
+      }
+    };
+    await Effect.runPromise(store.save(checkpoint(
+      BeatGamePhase.ENTER_NETHER,
+      { runId, teamId },
+    ), undefined));
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        runId,
+        team: { teamId },
+        checkpointStore: store,
+        strategy: {
+          observationPollMs: 1,
+          portalStrategy: "CAST",
+        },
+      });
+      yield* Effect.promise(() => usedBucket).pipe(
+        Effect.timeout("5 seconds"),
+      );
+      yield* run.stop;
+      yield* run.awaitCompletion.pipe(Effect.either);
+    })));
+
+    expect(driver.paths).toHaveLength(0);
+    expect(driver.actions).toContainEqual({
+      type: "select-item",
+      selector: { itemIds: ["minecraft:bucket"] },
+    });
+    expect(driver.actions).toContainEqual({
+      type: "use-item",
+      hand: "main",
+    });
+  });
+
+  it("tries another loaded water source after a capped path search", async () => {
+    const driver = new FakeBeatGameDriver();
+    const deepSource = blockObservation({
+      x: 1,
+      y: 61,
+      z: 0,
+      dimension: "minecraft:overworld",
+    }, {
+      blockId: "minecraft:water",
+      properties: { level: "0" },
+      replaceable: true,
+      solid: false,
+    });
+    const blockedSurfaceSource = blockObservation({
+      x: 4,
+      y: 82,
+      z: 0,
+      dimension: "minecraft:overworld",
+    }, {
+      blockId: "minecraft:water",
+      properties: { level: "0" },
+      replaceable: true,
+      solid: false,
+    });
+    const reachableSurfaceSource = blockObservation({
+      x: 10,
+      y: 82,
+      z: 0,
+      dimension: "minecraft:overworld",
+    }, {
+      blockId: "minecraft:water",
+      properties: { level: "0" },
+      replaceable: true,
+      solid: false,
+    });
+    driver.currentObservation = observation({
+      position: { x: 0.5, y: 82, z: 0.5 },
+      counts: {
+        "minecraft:bucket": 1,
+        "minecraft:cobblestone": 20,
+        "minecraft:cooked_beef": 8,
+        "minecraft:iron_ingot": 7,
+        "minecraft:oak_log": 8,
+        "minecraft:shield": 1,
+        "minecraft:stone_pickaxe": 1,
+        "minecraft:stone_sword": 1,
+        "minecraft:wooden_sword": 1,
+      },
+    });
+    driver.blockQueryResolver = ({ selector }) =>
+      selector.blockIds?.length === 1
+          && selector.blockIds[0] === "minecraft:water"
+          && selector.properties?.level === "0"
+        ? [deepSource, blockedSurfaceSource, reachableSurfaceSource]
+        : [];
+    driver.pathResolver = (position, radius, policy) =>
+      Effect.sync(() => {
+        driver.paths.push({ position, radius, policy });
+      }).pipe(
+        Effect.zipRight(
+          position.x === blockedSurfaceSource.position.x
+            ? Effect.fail(new BeatGameDriverError({
+              operation: "pathfind",
+              code: "task_failed",
+              retryable: false,
+              message:
+                "Pathfinding reached its search limit after 50000 expanded states",
+            }))
+            : Effect.never,
+        ),
+      );
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+      });
+      while (driver.paths.length < 2) {
+        yield* Effect.sleep(1);
+      }
+      yield* run.stop;
+      yield* run.awaitCompletion.pipe(Effect.either);
+    })));
+
+    expect(driver.paths.slice(0, 2).map(({ position }) => position)).toEqual([
+      blockedSurfaceSource.position,
+      reachableSurfaceSource.position,
+    ]);
+    expect(driver.paths.some(({ position }) =>
+      position.x === deepSource.position.x
+      && position.y === deepSource.position.y
+      && position.z === deepSource.position.z
+    )).toBe(false);
+    expect(driver.paths.slice(0, 2).every(({ policy }) =>
+      policy.avoidFluids === true
+      && policy.maxFallDistance === 1
+      && policy.maxSearchTimeMs === 5_000
+    )).toBe(true);
+  });
+
+  it("explores after every loaded water source rejects pathfinding", async () => {
+    const driver = new FakeBeatGameDriver();
+    const sources = [4, 10].map((x) => blockObservation({
+      x,
+      y: 64,
+      z: 0,
+      dimension: "minecraft:overworld",
+    }, {
+      blockId: "minecraft:water",
+      properties: { level: "0" },
+      replaceable: true,
+      solid: false,
+    }));
+    driver.currentObservation = observation({
+      counts: {
+        "minecraft:bucket": 1,
+        "minecraft:cobblestone": 20,
+        "minecraft:cooked_beef": 8,
+        "minecraft:iron_ingot": 7,
+        "minecraft:oak_log": 8,
+        "minecraft:shield": 1,
+        "minecraft:stone_pickaxe": 1,
+        "minecraft:stone_sword": 1,
+        "minecraft:wooden_sword": 1,
+      },
+    });
+    driver.blockQueryResolver = ({ selector }) =>
+      selector.blockIds?.length === 1
+          && selector.blockIds[0] === "minecraft:water"
+          && selector.properties?.level === "0"
+        ? sources
+        : [];
+    driver.pathResolver = (position, radius, policy) =>
+      Effect.sync(() => {
+        driver.paths.push({ position, radius, policy });
+      }).pipe(
+        Effect.zipRight(Effect.fail(new BeatGameDriverError({
+          operation: "pathfind",
+          code: "task_failed",
+          retryable: false,
+          message:
+            "Pathfinding reached its search limit after 50000 expanded states",
+        }))),
+      );
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+      });
+      while (!driver.tasks.some((task) => task.type === "explore")) {
+        yield* Effect.sleep(1);
+      }
+      yield* run.stop;
+      yield* run.awaitCompletion.pipe(Effect.either);
+    })));
+
+    expect(driver.paths.map(({ position }) => position)).toEqual(
+      sources.map(({ position }) => position),
+    );
+    expect(driver.tasks).toContainEqual(expect.objectContaining({
+      type: "explore",
+      purpose: expect.stringContaining("find-water"),
+    }));
+  });
+
+  it("tries another water source after the server rejects sightline clearing", async () => {
+    const driver = new FakeBeatGameDriver();
+    const sources = [3, 8].map((x) => blockObservation({
+      x,
+      y: 64,
+      z: 0,
+      dimension: "minecraft:overworld",
+    }, {
+      blockId: "minecraft:water",
+      properties: { level: "0" },
+      replaceable: true,
+      solid: false,
+    }));
+    const obstruction = blockObservation({
+      x: 1,
+      y: 64,
+      z: 0,
+      dimension: "minecraft:overworld",
+    }, { blockId: "minecraft:stone" });
+    driver.currentObservation = observation({
+      counts: {
+        "minecraft:bucket": 1,
+        "minecraft:cobblestone": 20,
+        "minecraft:cooked_beef": 8,
+        "minecraft:iron_ingot": 7,
+        "minecraft:oak_log": 8,
+        "minecraft:shield": 1,
+        "minecraft:stone_pickaxe": 1,
+        "minecraft:stone_sword": 1,
+        "minecraft:wooden_sword": 1,
+      },
+    });
+    driver.blockQueryResolver = ({ selector }) =>
+      selector.blockIds?.length === 1
+          && selector.blockIds[0] === "minecraft:water"
+          && selector.properties?.level === "0"
+        ? sources
+        : [];
+    const resolvePath = driver.pathResolver;
+    driver.pathResolver = (position, radius, policy) =>
+      resolvePath(position, radius, policy).pipe(
+        Effect.zipRight(
+          position.x === sources[1]?.position.x
+            ? Effect.never
+            : Effect.void,
+        ),
+      );
+    driver.raycastResolver = () => ({
+      block: obstruction,
+      distance: 1.5,
+    });
+    driver.actionResolver = (action) => {
+      if (action.type === "look") {
+        driver.currentObservation = observation({
+          counts: driver.currentObservation.inventory.counts,
+          rotation: { yaw: action.yaw, pitch: action.pitch },
+        });
+      }
+      return action.type === "dig-block"
+        ? Effect.fail(new BeatGameDriverError({
+          operation: "act:dig-block",
+          code: "failed_precondition",
+          retryable: false,
+          message: "The server rejected breaking the target block",
+        }))
+        : Effect.succeed({});
+    };
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+      });
+      while (driver.paths.length < 2) {
+        yield* Effect.sleep(1);
+      }
+      yield* run.stop;
+      yield* run.awaitCompletion.pipe(Effect.either);
+    })));
+
+    expect(driver.paths.slice(0, 2).map(({ position }) => position)).toEqual(
+      sources.map(({ position }) => position),
+    );
+    expect(driver.actions).toContainEqual({
+      type: "dig-block",
+      position: obstruction.position,
+    });
   });
 
   it("replaces a pickaxe broken on approach before exposing a fluid source", async () => {
@@ -17268,7 +20767,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-        if (radius === 0.75) {
+        if (radius === 0.75 || radius === 2) {
           driver.currentObservation = observation({
             position,
             counts: driver.currentObservation.inventory.counts,
@@ -17502,7 +21001,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-        if (radius === 0.75) {
+        if (radius === 0.75 || radius === 2) {
           driver.currentObservation = observation({
             position,
             counts: driver.currentObservation.inventory.counts,
@@ -19109,7 +22608,7 @@ describe("beat-game run lifecycle", () => {
               actionEvents.push(
                 `${event.type}:${"detail" in event ? event.detail ?? "" : ""}`,
               );
-              if (event.type === "action-succeeded") {
+              if (event.type === "action-progressed") {
                 resolveSearchContinued();
               }
             })
@@ -19138,7 +22637,9 @@ describe("beat-game run lifecycle", () => {
       dimension: "minecraft:overworld",
       policy: expect.objectContaining({ avoidFluids: true }),
     }));
-    expect(actionEvents).toContain("action-succeeded:");
+    expect(actionEvents).toContain(
+      "action-progressed:advanced the search for lava-bucket",
+    );
   }, 15_000);
 
   it("searches for a lava pool before casting with a lone source", async () => {
@@ -19413,7 +22914,7 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
-        if (radius === 0.75) {
+        if (radius === 0.75 || radius === 2) {
           driver.currentObservation = observation({
             position,
             counts: driver.currentObservation.inventory.counts,
@@ -19478,6 +22979,775 @@ describe("beat-game run lifecycle", () => {
         status: "BUILDING",
         candidateLavaSources: expect.arrayContaining([source.position]),
       },
+    });
+  });
+
+  it("requests only the remaining lava when resuming a partial cast portal", async () => {
+    const driver = new FakeBeatGameDriver();
+    const store = new InMemoryBeatGameCheckpointStore();
+    const runId = "resume-partial-cast-portal-run";
+    const teamId = "resume-partial-cast-portal-team";
+    const origin = {
+      x: 0,
+      y: -52,
+      z: 0,
+      dimension: "minecraft:overworld",
+    } as const;
+    const frame = createNetherPortalFrame(origin, "x");
+    const observedFrame = frame.blocks.slice(0, 8);
+    const now = "2026-01-01T00:00:00.000Z";
+    const workspace = {
+      workspaceId: "partial-workspace",
+      origin,
+      axis: "x" as const,
+      method: "CAST" as const,
+      status: "BUILDING" as const,
+      targetFrame: frame.blocks,
+      observedFrame,
+      interior: frame.interior,
+      protectedBlocks: frame.blocks,
+      candidateLavaSources: [],
+      rejectedLavaSources: [],
+      waterFlow: [],
+      bucketState: "LAVA" as const,
+      ignitionState: "NOT_ATTEMPTED" as const,
+      interiorState: "CLEAR" as const,
+      entryAttempts: 0,
+      observedAt: now,
+      updatedAt: now,
+    };
+    const saved = checkpoint(BeatGamePhase.ENTER_NETHER, {
+      runId,
+      teamId,
+      activeSkill: {
+        skillId: "partial-portal-skill",
+        kind: BeatGameDurableSkillKind.PORTAL_CONSTRUCTION,
+        phase: BeatGamePhase.ENTER_NETHER,
+        action: "build-and-enter-nether",
+        status: BeatGameDurableSkillStatus.SUSPENDED,
+        substep: "repair-frame",
+        targets: [origin],
+        protectedBlocks: frame.blocks,
+        protectedItemIds: [
+          "minecraft:water_bucket",
+          "minecraft:lava_bucket",
+          "minecraft:flint_and_steel",
+        ],
+        completedWorldChanges: observedFrame,
+        requiredResources: {
+          "minecraft:water_bucket": 1,
+          "minecraft:lava_bucket": 1,
+        },
+        retries: { "failed:No route found to the goal!": 1 },
+        portalWorkspace: workspace,
+        startedAt: now,
+        updatedAt: now,
+      },
+      memory: {
+        ...checkpoint(BeatGamePhase.ENTER_NETHER).memory,
+        portalWorkspaces: [workspace],
+      },
+    });
+    await Effect.runPromise(store.save(saved, undefined));
+    driver.currentObservation = observation({
+      position: { ...origin, x: 0.5, z: -2.5 },
+      counts: {
+        "minecraft:cobblestone": 20,
+        "minecraft:cooked_beef": 8,
+        "minecraft:flint_and_steel": 1,
+        "minecraft:iron_pickaxe": 1,
+        "minecraft:lava_bucket": 1,
+        "minecraft:oak_log": 4,
+        "minecraft:shield": 1,
+        "minecraft:stone_sword": 1,
+        "minecraft:water_bucket": 1,
+      },
+    });
+    const source = blockObservation({
+      x: 4,
+      y: -54,
+      z: 4,
+      dimension: origin.dimension,
+    }, {
+      blockId: "minecraft:lava",
+      properties: { level: "0" },
+      replaceable: true,
+    });
+    let maximumResults: number | undefined;
+    let resolveLavaQuery!: () => void;
+    const lavaQuery = new Promise<void>((resolve) => {
+      resolveLavaQuery = resolve;
+    });
+    driver.blockQueryResolver = ({ selector, maximumResults: maximum }) => {
+      if (selector.blockIds?.includes("minecraft:nether_portal") === true) {
+        return [];
+      }
+      if (
+        selector.blockIds?.includes("minecraft:lava") === true
+        && selector.properties?.level === "0"
+      ) {
+        maximumResults = maximum;
+        resolveLavaQuery();
+        return [source];
+      }
+      return [];
+    };
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        runId,
+        team: { teamId },
+        checkpointStore: store,
+        strategy: {
+          observationPollMs: 1,
+          portalStrategy: "CAST",
+        },
+      });
+      yield* Effect.promise(() => lavaQuery).pipe(
+        Effect.timeout("5 seconds"),
+      );
+      yield* run.stop;
+      yield* run.awaitCompletion.pipe(Effect.either);
+    })));
+
+    expect(maximumResults).toBe(1);
+  });
+
+  it("approaches a distant remembered portal through bounded local regions", async () => {
+    const driver = new FakeBeatGameDriver();
+    const store = new InMemoryBeatGameCheckpointStore();
+    const runId = "remembered-portal-segments-run";
+    const teamId = "remembered-portal-segments-team";
+    const observedAt = "2026-01-01T00:00:00.000Z";
+    const portal = blockObservation({
+      x: 0,
+      y: 64,
+      z: 0,
+      dimension: "minecraft:overworld",
+    }, {
+      blockId: "minecraft:nether_portal",
+      diggable: false,
+      solid: false,
+      observedAt,
+    });
+    const initial = checkpoint(BeatGamePhase.ENTER_NETHER, {
+      runId,
+      teamId,
+    });
+    await Effect.runPromise(store.save({
+      ...initial,
+      memory: {
+        ...initial.memory,
+        portals: [{
+          key: "portal:minecraft:overworld:0:64:0",
+          value: portal,
+          observedAt,
+          confidence: 0.25,
+        }],
+      },
+    }, undefined));
+    driver.currentObservation = observation({
+      position: {
+        x: 128,
+        y: 64,
+        z: 0,
+        dimension: "minecraft:overworld",
+      },
+      counts: {
+        "minecraft:cooked_beef": 8,
+        "minecraft:oak_log": 4,
+        "minecraft:cobblestone": 20,
+        "minecraft:stone_sword": 1,
+        "minecraft:stone_pickaxe": 1,
+        "minecraft:shield": 1,
+      },
+    });
+    driver.blockQueryResolver = () => [];
+    let resolveSegmentedApproach!: () => void;
+    const segmentedApproach = new Promise<void>((resolve) => {
+      resolveSegmentedApproach = resolve;
+    });
+    driver.xzPathResolver = (x, z, dimension, radius, policy) => {
+      driver.xzPaths.push({ x, z, dimension, radius, policy });
+      if (driver.xzPaths.length === 1) {
+        return Effect.fail(new BeatGameDriverError({
+          operation: "pathfindXZ",
+          code: "search_limit",
+          retryable: true,
+          message: "Pathfinding reached its search limit",
+        }));
+      }
+      if (driver.xzPaths.length === 3) {
+        return Effect.fail(new BeatGameDriverError({
+          operation: "pathfindXZ",
+          code: "path_quality_bound_not_met",
+          retryable: true,
+          message:
+            "Pathfinding found a route with certified bound 2.6 but the request requires 1.5",
+        }));
+      }
+      return Effect.sync(() => {
+        driver.currentObservation = observation({
+          position: {
+            ...driver.currentObservation.player.position,
+            x,
+            z,
+            dimension,
+          },
+          counts: driver.currentObservation.inventory.counts,
+        });
+      });
+    };
+    driver.pathResolver = (position, radius, policy) =>
+      Effect.sync(() => {
+        driver.paths.push({ position, radius, policy });
+        resolveSegmentedApproach();
+      }).pipe(Effect.zipRight(Effect.never));
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        runId,
+        team: { teamId },
+        checkpointStore: store,
+        strategy: { observationPollMs: 1 },
+      });
+      yield* Effect.promise(() => segmentedApproach).pipe(
+        Effect.timeout("5 seconds"),
+      );
+      yield* run.stop;
+      yield* run.awaitCompletion.pipe(Effect.either);
+    })));
+
+    expect(driver.xzPaths.map(({ x }) => Math.round(x))).toEqual([
+      112,
+      112,
+      96,
+      96,
+      80,
+      64,
+      48,
+      32,
+      16,
+    ]);
+    expect(driver.xzPaths.map(({ policy }) => ({
+      searchMode: policy.searchMode,
+      maximumQualityBound: policy.maximumQualityBound,
+    }))).toEqual([
+      { searchMode: "NORMAL", maximumQualityBound: 1.5 },
+      { searchMode: "URGENT", maximumQualityBound: 3 },
+      { searchMode: "NORMAL", maximumQualityBound: 1.5 },
+      { searchMode: "URGENT", maximumQualityBound: 3 },
+      { searchMode: "NORMAL", maximumQualityBound: 1.5 },
+      { searchMode: "NORMAL", maximumQualityBound: 1.5 },
+      { searchMode: "NORMAL", maximumQualityBound: 1.5 },
+      { searchMode: "NORMAL", maximumQualityBound: 1.5 },
+      { searchMode: "NORMAL", maximumQualityBound: 1.5 },
+    ]);
+    expect(driver.xzPaths.every(({ radius }) => radius === 8)).toBe(true);
+    expect(driver.xzPaths.every(({ policy }) =>
+      policy.maximumExpandedStates === 100_000
+    )).toBe(true);
+    expect(driver.paths[0]).toMatchObject({
+      radius: 8,
+      policy: {
+        searchMode: "NORMAL",
+        maximumQualityBound: 1.2,
+        maxParkourGap: 0,
+        smoothCamera: false,
+        sprint: false,
+      },
+    });
+    const saved = await Effect.runPromise(store.load(runId));
+    expect(saved?.planner.requirements.map(({ key }) => key)).not.toEqual(
+      expect.arrayContaining([
+        "iron",
+        "water-bucket",
+        "lava-bucket",
+        "ignition",
+      ]),
+    );
+  });
+
+  it("returns to the surface before a distant lower remembered portal", async () => {
+    const driver = new FakeBeatGameDriver();
+    const store = new InMemoryBeatGameCheckpointStore();
+    const runId = "remembered-portal-surface-run";
+    const teamId = "remembered-portal-surface-team";
+    const observedAt = "2026-01-01T00:00:00.000Z";
+    const portal = blockObservation({
+      x: 0,
+      y: 46,
+      z: 0,
+      dimension: "minecraft:overworld",
+    }, {
+      blockId: "minecraft:nether_portal",
+      diggable: false,
+      solid: false,
+      observedAt,
+    });
+    const initial = checkpoint(BeatGamePhase.ENTER_NETHER, {
+      runId,
+      teamId,
+    });
+    await Effect.runPromise(store.save({
+      ...initial,
+      memory: {
+        ...initial.memory,
+        portals: [{
+          key: "portal:minecraft:overworld:0:46:0",
+          value: portal,
+          observedAt,
+          confidence: 1,
+        }],
+      },
+    }, undefined));
+    driver.currentObservation = observation({
+      position: {
+        x: 32.5,
+        y: 52,
+        z: 0.5,
+        dimension: "minecraft:overworld",
+      },
+      counts: {
+        "minecraft:cooked_beef": 8,
+        "minecraft:iron_pickaxe": 1,
+        "minecraft:oak_log": 4,
+        "minecraft:cobblestone": 20,
+        "minecraft:shield": 1,
+        "minecraft:stone_sword": 1,
+      },
+      remainingDurability: { "minecraft:iron_pickaxe": 250 },
+    });
+    driver.surfaceColumns = [{
+      x: 32,
+      z: 0,
+      loaded: true,
+      surfaceY: 63,
+      blockId: "minecraft:grass_block",
+      biomeId: "minecraft:plains",
+      skyLight: 15,
+      blockLight: 0,
+    }];
+    driver.blockQueryResolver = () => [];
+    driver.pathResolver = (position, radius, policy) =>
+      Effect.sync(() => {
+        driver.paths.push({ position, radius, policy });
+        driver.currentObservation = observation({
+          position,
+          counts: driver.currentObservation.inventory.counts,
+          remainingDurability:
+            driver.currentObservation.inventory.remainingDurability ?? {},
+        });
+      });
+    let resolveHorizontalApproach!: () => void;
+    const horizontalApproach = new Promise<void>((resolve) => {
+      resolveHorizontalApproach = resolve;
+    });
+    let horizontalApproachY: number | undefined;
+    driver.xzPathResolver = (x, z, dimension, radius, policy) =>
+      Effect.sync(() => {
+        driver.xzPaths.push({ x, z, dimension, radius, policy });
+        horizontalApproachY = driver.currentObservation.player.position.y;
+        resolveHorizontalApproach();
+      }).pipe(Effect.zipRight(Effect.never));
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        runId,
+        team: { teamId },
+        checkpointStore: store,
+        strategy: { observationPollMs: 1 },
+      });
+      yield* Effect.promise(() => horizontalApproach).pipe(
+        Effect.timeout("5 seconds"),
+      );
+      yield* run.stop;
+      yield* run.awaitCompletion.pipe(Effect.either);
+    })));
+
+    expect(driver.paths[0]).toMatchObject({
+      position: {
+        x: 32.5,
+        y: 64,
+        z: 0.5,
+        dimension: "minecraft:overworld",
+      },
+      policy: {
+        allowMining: true,
+        allowPlacing: true,
+      },
+    });
+    expect(horizontalApproachY).toBe(64);
+    expect(driver.xzPaths[0]?.radius).toBe(8);
+  });
+
+  it("restores construction requirements after remembered portal revalidation fails", async () => {
+    const driver = new FakeBeatGameDriver();
+    const store = new InMemoryBeatGameCheckpointStore();
+    const runId = "stale-remembered-portal-run";
+    const teamId = "stale-remembered-portal-team";
+    const observedAt = "2026-01-01T00:00:00.000Z";
+    const portal = blockObservation({
+      x: 16,
+      y: 64,
+      z: 0,
+      dimension: "minecraft:overworld",
+    }, {
+      blockId: "minecraft:nether_portal",
+      diggable: false,
+      solid: false,
+      observedAt,
+    });
+    const initial = checkpoint(BeatGamePhase.ENTER_NETHER, {
+      runId,
+      teamId,
+    });
+    await Effect.runPromise(store.save({
+      ...initial,
+      memory: {
+        ...initial.memory,
+        portals: [{
+          key: "portal:minecraft:overworld:16:64:0",
+          value: portal,
+          observedAt,
+          confidence: 1,
+        }],
+      },
+    }, undefined));
+    driver.currentObservation = observation({
+      position: {
+        x: 0,
+        y: 64,
+        z: 0,
+        dimension: "minecraft:overworld",
+      },
+      counts: {
+        "minecraft:cooked_beef": 8,
+        "minecraft:oak_log": 4,
+        "minecraft:cobblestone": 20,
+        "minecraft:stone_sword": 1,
+        "minecraft:stone_pickaxe": 1,
+        "minecraft:shield": 1,
+      },
+    });
+    driver.blockQueryResolver = () => [];
+    driver.pathResolver = (position, radius, policy) =>
+      Effect.sync(() => {
+        driver.paths.push({ position, radius, policy });
+        driver.currentObservation = observation({
+          position,
+          counts: driver.currentObservation.inventory.counts,
+        });
+      });
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        runId,
+        team: { teamId },
+        checkpointStore: store,
+        strategy: { observationPollMs: 1 },
+      });
+      yield* Effect.gen(function* () {
+        for (;;) {
+          const saved = yield* store.load(runId);
+          if (
+            saved?.memory.portals[0]?.confidence === 0
+            && saved.planner.requirements.some(({ key }) =>
+              key === "lava-bucket"
+            )
+          ) {
+            return;
+          }
+          yield* Effect.sleep(1);
+        }
+      }).pipe(Effect.timeout("5 seconds"));
+      yield* run.stop;
+      yield* run.awaitCompletion.pipe(Effect.either);
+    })));
+
+    const saved = await Effect.runPromise(store.load(runId));
+    expect(saved?.memory.portals[0]?.confidence).toBe(0);
+    expect(saved?.planner.requirements).toContainEqual(
+      expect.objectContaining({ key: "lava-bucket", satisfied: false }),
+    );
+  });
+
+  it("does not resume construction while a confirmed portal route cools down", async () => {
+    const driver = new FakeBeatGameDriver();
+    const store = new InMemoryBeatGameCheckpointStore();
+    const runId = "remembered-portal-route-cooldown-run";
+    const teamId = "remembered-portal-route-cooldown-team";
+    const observedAt = "2026-01-01T00:00:00.000Z";
+    const portal = blockObservation({
+      x: 64,
+      y: 64,
+      z: 0,
+      dimension: "minecraft:overworld",
+    }, {
+      blockId: "minecraft:nether_portal",
+      diggable: false,
+      solid: false,
+      observedAt,
+    });
+    const initial = checkpoint(BeatGamePhase.ENTER_NETHER, {
+      runId,
+      teamId,
+    });
+    await Effect.runPromise(store.save({
+      ...initial,
+      memory: {
+        ...initial.memory,
+        portals: [{
+          key: "portal:minecraft:overworld:64:64:0",
+          value: portal,
+          observedAt,
+          confidence: 1,
+        }],
+      },
+    }, undefined));
+    driver.currentObservation = observation({
+      position: {
+        x: 0,
+        y: 64,
+        z: 0,
+        dimension: "minecraft:overworld",
+      },
+      counts: {
+        "minecraft:cooked_beef": 8,
+        "minecraft:oak_log": 4,
+        "minecraft:cobblestone": 20,
+        "minecraft:stone_sword": 1,
+        "minecraft:stone_pickaxe": 1,
+        "minecraft:shield": 1,
+      },
+    });
+    driver.blockQueryResolver = () => [];
+    driver.xzPathResolver = () =>
+      Effect.fail(new BeatGameDriverError({
+        operation: "pathfindXZ",
+        code: "path_no_route",
+        retryable: true,
+        message: "No route found to the goal!",
+      }));
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        runId,
+        team: { teamId },
+        checkpointStore: store,
+        strategy: { observationPollMs: 1 },
+      });
+      yield* Effect.gen(function* () {
+        for (;;) {
+          const saved = yield* store.load(runId);
+          if (
+            saved?.memory.unreachable.some(({ key }) =>
+              key.startsWith("portal-route:")
+            ) === true
+          ) {
+            return;
+          }
+          yield* Effect.sleep(1);
+        }
+      }).pipe(Effect.timeout("5 seconds"));
+      yield* run.stop;
+      yield* run.awaitCompletion.pipe(Effect.either);
+    })));
+
+    const saved = await Effect.runPromise(store.load(runId));
+    expect(saved?.memory.portals[0]?.confidence).toBe(1);
+    expect(saved?.memory.unreachable).toContainEqual(
+      expect.objectContaining({
+        key: expect.stringContaining("portal-route:"),
+      }),
+    );
+    expect(saved?.planner.requirements).not.toContainEqual(
+      expect.objectContaining({ key: "lava-bucket" }),
+    );
+    expect(driver.paths).toHaveLength(0);
+  });
+
+  it("does not repeat a failed observed portal entry during its route cooldown", async () => {
+    const driver = new FakeBeatGameDriver();
+    const store = new InMemoryBeatGameCheckpointStore();
+    const runId = "observed-portal-entry-cooldown-run";
+    const teamId = "observed-portal-entry-cooldown-team";
+    const observedAt = "2026-01-01T00:00:00.000Z";
+    const portal = blockObservation({
+      x: 0,
+      y: 64,
+      z: 0,
+      dimension: "minecraft:overworld",
+    }, {
+      blockId: "minecraft:nether_portal",
+      properties: { axis: "x" },
+      diggable: false,
+      solid: false,
+      observedAt,
+    });
+    const initial = checkpoint(BeatGamePhase.ENTER_NETHER, {
+      runId,
+      teamId,
+    });
+    await Effect.runPromise(store.save({
+      ...initial,
+      memory: {
+        ...initial.memory,
+        portals: [{
+          key: "portal:minecraft:overworld:0:64:0",
+          value: portal,
+          observedAt,
+          confidence: 1,
+        }],
+      },
+    }, undefined));
+    driver.currentObservation = observation({
+      position: {
+        x: 10,
+        y: 64,
+        z: 10,
+        dimension: "minecraft:overworld",
+      },
+      counts: {
+        "minecraft:cooked_beef": 8,
+        "minecraft:oak_log": 4,
+        "minecraft:cobblestone": 20,
+        "minecraft:stone_sword": 1,
+        "minecraft:stone_pickaxe": 1,
+        "minecraft:shield": 1,
+      },
+    });
+    driver.blockQueryResolver = ({ selector }) =>
+      selector.blockIds?.includes("minecraft:nether_portal") === true
+        ? [portal]
+        : [];
+    driver.pathResolver = (position, radius, policy) =>
+      Effect.sync(() => {
+        driver.paths.push({ position, radius, policy });
+      }).pipe(Effect.zipRight(Effect.fail(new BeatGameDriverError({
+        operation: "pathfind",
+        code: "path_no_route",
+        retryable: true,
+        message: "No route found to the goal!",
+      }))));
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        runId,
+        team: { teamId },
+        checkpointStore: store,
+        strategy: { observationPollMs: 1 },
+      });
+      yield* Effect.gen(function* () {
+        for (;;) {
+          const saved = yield* store.load(runId);
+          if (
+            saved?.memory.unreachable.some(({ key }) =>
+              key.startsWith("portal-route:")
+            ) === true
+          ) {
+            return;
+          }
+          yield* Effect.sleep(1);
+        }
+      }).pipe(Effect.timeout("5 seconds"));
+      yield* Effect.sleep(25);
+      yield* run.stop;
+      yield* run.awaitCompletion.pipe(Effect.either);
+    })));
+
+    const saved = await Effect.runPromise(store.load(runId));
+    expect(saved?.memory.portals[0]?.confidence).toBe(1);
+    expect(saved?.memory.unreachable).toContainEqual(
+      expect.objectContaining({
+        key: expect.stringContaining("portal-route:"),
+      }),
+    );
+    expect(saved?.planner.requirements).not.toContainEqual(
+      expect.objectContaining({ key: "lava-bucket" }),
+    );
+    expect(driver.paths).toHaveLength(1);
+  });
+
+  it("retains portal progress after a local route miss", async () => {
+    const driver = new FakeBeatGameDriver();
+    const store = new InMemoryBeatGameCheckpointStore();
+    const runId = "retain-portal-route-miss-run";
+    const teamId = "retain-portal-route-miss-team";
+    driver.currentObservation = observation({
+      counts: {
+        "minecraft:cobblestone": 20,
+        "minecraft:cooked_beef": 8,
+        "minecraft:flint_and_steel": 1,
+        "minecraft:iron_pickaxe": 1,
+        "minecraft:lava_bucket": 1,
+        "minecraft:oak_log": 4,
+        "minecraft:shield": 1,
+        "minecraft:stone_sword": 1,
+        "minecraft:water_bucket": 1,
+      },
+    });
+    await Effect.runPromise(store.save(checkpoint(
+      BeatGamePhase.ENTER_NETHER,
+      { runId, teamId },
+    ), undefined));
+    let attempts = 0;
+    const failures: string[] = [];
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        runId,
+        team: { teamId },
+        checkpointStore: store,
+        strategy: { observationPollMs: 1 },
+        hooks: {
+          buildAndEnterNether: () =>
+            Effect.sync(() => {
+              attempts += 1;
+              return attempts;
+            }).pipe(
+              Effect.flatMap((attempt) =>
+                attempt === 1
+                  ? Effect.fail(new BeatGameDriverError({
+                    operation: "pathfind",
+                    code: "task_failed",
+                    retryable: false,
+                    message: "No route found to the goal!",
+                  }))
+                  : Effect.never
+              ),
+            ),
+        },
+      });
+      yield* run.events.pipe(
+        Stream.runForEach((event) =>
+          event.type === "action-failed" && event.detail !== undefined
+            ? Effect.sync(() => {
+              failures.push(event.detail!);
+            })
+            : Effect.void
+        ),
+        Effect.forkScoped,
+      );
+      yield* Effect.gen(function* () {
+        while (attempts < 2) {
+          yield* Effect.sleep(1);
+        }
+      }).pipe(Effect.timeout("5 seconds"));
+      yield* run.stop;
+      yield* run.awaitCompletion.pipe(Effect.either);
+    })));
+
+    const retained = await Effect.runPromise(store.load(runId));
+    expect(attempts).toBe(2);
+    expect(failures).toContainEqual(expect.stringContaining(
+      "retained the portal workspace after a local route failure",
+    ));
+    expect(retained?.planner.status).not.toBe(BeatGameRunStatus.FAILED);
+    expect(retained?.activeSkill).toMatchObject({
+      kind: BeatGameDurableSkillKind.PORTAL_CONSTRUCTION,
+      action: "build-and-enter-nether",
+      status: BeatGameDurableSkillStatus.SUSPENDED,
     });
   });
 
@@ -19566,6 +23836,14 @@ describe("beat-game run lifecycle", () => {
     driver.pathResolver = (position, radius, policy) =>
       Effect.sync(() => {
         driver.paths.push({ position, radius, policy });
+        if (radius === 2) {
+          driver.currentObservation = observation({
+            position,
+            counts: driver.currentObservation.inventory.counts,
+            remainingDurability:
+              driver.currentObservation.inventory.remainingDurability ?? {},
+          });
+        }
         if (
           radius === 0.75
           && position.x === safeStand.x
@@ -19784,6 +24062,7 @@ describe("beat-game run lifecycle", () => {
     const secondSupport = { ...firstSupport, x: 3 };
     const supports = [wetSupport, firstSupport, secondSupport] as const;
     let gravelPlaced = false;
+    let rejectedPlacement = false;
     let placedTarget: BeatGameBlockPosition = {
       ...firstSupport,
       y: firstSupport.y + 1,
@@ -19843,8 +24122,16 @@ describe("beat-game run lifecycle", () => {
       }
       return [];
     };
-    driver.actionResolver = (action) =>
-      Effect.sync(() => {
+    driver.actionResolver = (action) => {
+      if (action.type === "place-block" && !rejectedPlacement) {
+        rejectedPlacement = true;
+        return Effect.fail(new BeatGameDriverError({
+          operation: "placeBlock",
+          retryable: true,
+          message: "The held item could not be used on the target block",
+        }));
+      }
+      return Effect.sync(() => {
         if (action.type === "place-block") {
           gravelPlaced = true;
           placedTarget = {
@@ -19870,6 +24157,7 @@ describe("beat-game run lifecycle", () => {
         }
         return {};
       });
+    };
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
@@ -19920,6 +24208,9 @@ describe("beat-game run lifecycle", () => {
       face: "up",
       hand: "main",
     });
+    expect(rejectedPlacement).toBe(true);
+    expect(driver.actions.filter(({ type }) => type === "place-block"))
+      .toHaveLength(3);
     expect(driver.paths.filter(({ radius }) => radius === 3).every(
       ({ policy }) => policy.avoidFluids === true,
     )).toBe(true);
@@ -20154,7 +24445,8 @@ describe("beat-game run lifecycle", () => {
         allowMining: false,
         allowPlacing: true,
         maxFallDistance: 3,
-        maxSearchTimeMs: 30_000,
+        maxSearchTimeMs: 5_000,
+        maximumExpandedStates: 12_000,
       },
     });
     expect(driver.xzPaths).toHaveLength(0);
@@ -20402,7 +24694,6 @@ describe("beat-game run lifecycle", () => {
     driver.actionObserver = (action) => {
       if (
         action.type !== "set-movement"
-        || action.forward !== true
         || action.jump !== true
       ) {
         return;
@@ -20907,8 +25198,8 @@ describe("beat-game run lifecycle", () => {
       true,
     );
     expect(airAtAscentRelease).toBeGreaterThan(airAtAscentStart ?? 300);
-    expect(airAtAscentRelease).toBeLessThan(300);
-    expect(foodProvisioningFailures).not.toContain(
+    expect(airAtAscentRelease).toBe(300);
+    expect(foodProvisioningFailures).toContain(
       "Interrupted for replanning: air fell below the safety threshold",
     );
   }, 10_000);
@@ -20982,6 +25273,7 @@ describe("beat-game run lifecycle", () => {
         ...initial.memory,
         explorationFrontiers: {
           "minecraft:overworld:find-food-animals": {
+            progressVersion: 2,
             origin: {
               x: 0,
               y: 64,
@@ -20989,6 +25281,8 @@ describe("beat-game run lifecycle", () => {
               dimension: "minecraft:overworld",
             },
             nextIndex: 13,
+            targetAttempts: 0,
+            totalAdvances: 12,
             lastPosition: {
               x: 0,
               y: 64,
@@ -21052,6 +25346,112 @@ describe("beat-game run lifecycle", () => {
     expect(driver.paths).toHaveLength(0);
   });
 
+  it("prefers elevated land food over nearby fish during recovery", async () => {
+    const driver = new FakeBeatGameDriver();
+    const store = new InMemoryBeatGameCheckpointStore();
+    const runId = "land-before-aquatic-food-run";
+    const teamId = "land-before-aquatic-food-team";
+    const initial = checkpoint(BeatGamePhase.PREPARE_OVERWORLD, {
+      runId,
+      teamId,
+    });
+    await Effect.runPromise(store.save({
+      ...initial,
+      memory: {
+        ...initial.memory,
+        explorationFrontiers: {
+          "minecraft:overworld:find-food-animals": {
+            progressVersion: 2,
+            origin: {
+              x: 0,
+              y: 64,
+              z: 0,
+              dimension: "minecraft:overworld",
+            },
+            nextIndex: 13,
+            targetAttempts: 0,
+            totalAdvances: 12,
+            lastPosition: {
+              x: 0,
+              y: 64,
+              z: 0,
+              dimension: "minecraft:overworld",
+            },
+          },
+        },
+      },
+    }, undefined));
+    driver.currentObservation = observation({
+      health: 13.5,
+      food: 9,
+      counts: {
+        "minecraft:cobblestone": 20,
+        "minecraft:iron_ingot": 7,
+        "minecraft:oak_log": 8,
+        "minecraft:shield": 1,
+        "minecraft:stone_pickaxe": 1,
+        "minecraft:stone_sword": 1,
+      },
+    });
+    const salmon = {
+      connectionEpoch: "epoch-1",
+      networkId: 52,
+      entityType: "minecraft:salmon",
+      position: {
+        x: 3,
+        y: 62,
+        z: 0,
+        dimension: "minecraft:overworld",
+      },
+      velocity: { x: 0, y: 0, z: 0 },
+      alive: true,
+      health: 3,
+      observedAt: "2026-01-01T00:00:00.000Z",
+    } as const;
+    const cow = {
+      connectionEpoch: "epoch-1",
+      networkId: 53,
+      entityType: "minecraft:cow",
+      position: {
+        x: 16,
+        y: 90,
+        z: 0,
+        dimension: "minecraft:overworld",
+      },
+      velocity: { x: 0, y: 0, z: 0 },
+      alive: true,
+      health: 10,
+      observedAt: "2026-01-01T00:00:00.000Z",
+    } as const;
+    driver.entityResults = [salmon, cow];
+    driver.taskResolver = (task) => {
+      driver.tasks.push(task);
+      return task.type === "attack-entity" ? Effect.never : Effect.void;
+    };
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        runId,
+        team: { teamId },
+        checkpointStore: store,
+        strategy: { observationPollMs: 1 },
+      });
+      while (!driver.tasks.some((task) => task.type === "attack-entity")) {
+        yield* Effect.sleep(1);
+      }
+      yield* run.stop;
+    })));
+
+    expect(driver.tasks).toContainEqual(expect.objectContaining({
+      type: "attack-entity",
+      target: expect.objectContaining({ networkId: cow.networkId }),
+    }));
+    expect(driver.tasks).not.toContainEqual(expect.objectContaining({
+      type: "attack-entity",
+      target: expect.objectContaining({ networkId: salmon.networkId }),
+    }));
+  });
+
   it("buffers shallow fish after a healthy dry land search is exhausted", async () => {
     const driver = new FakeBeatGameDriver();
     const store = new InMemoryBeatGameCheckpointStore();
@@ -21067,6 +25467,7 @@ describe("beat-game run lifecycle", () => {
         ...initial.memory,
         explorationFrontiers: {
           "minecraft:overworld:find-food-animals": {
+            progressVersion: 2,
             origin: {
               x: 0,
               y: 64,
@@ -21074,6 +25475,7 @@ describe("beat-game run lifecycle", () => {
               dimension: "minecraft:overworld",
             },
             nextIndex: 13,
+            targetAttempts: 0,
             totalAdvances: 12,
           },
         },
@@ -21125,6 +25527,86 @@ describe("beat-game run lifecycle", () => {
       type: "attack-entity",
       target: expect.objectContaining({ networkId: salmon.networkId }),
     }));
+  });
+
+  it("keeps a fully fed reserve hunt on land after dry search is exhausted", async () => {
+    const driver = new FakeBeatGameDriver();
+    const store = new InMemoryBeatGameCheckpointStore();
+    const runId = "full-aquatic-buffer-run";
+    const teamId = "full-aquatic-buffer-team";
+    const initial = checkpoint(BeatGamePhase.PREPARE_OVERWORLD, {
+      runId,
+      teamId,
+    });
+    await Effect.runPromise(store.save({
+      ...initial,
+      memory: {
+        ...initial.memory,
+        explorationFrontiers: {
+          "minecraft:overworld:find-food-animals": {
+            progressVersion: 2,
+            origin: {
+              x: 0,
+              y: 64,
+              z: 0,
+              dimension: "minecraft:overworld",
+            },
+            nextIndex: 13,
+            targetAttempts: 0,
+            totalAdvances: 12,
+          },
+        },
+      },
+    }, undefined));
+    driver.currentObservation = observation({
+      health: 20,
+      food: 20,
+      counts: {
+        "minecraft:oak_log": 8,
+        "minecraft:wooden_sword": 1,
+      },
+    });
+    driver.entityResults = [{
+      connectionEpoch: "epoch-1",
+      networkId: 54,
+      entityType: "minecraft:salmon",
+      position: {
+        x: 3,
+        y: 63,
+        z: 0,
+        dimension: "minecraft:overworld",
+      },
+      velocity: { x: 0, y: 0, z: 0 },
+      alive: true,
+      health: 3,
+      observedAt: "2026-01-01T00:00:00.000Z",
+    }];
+    driver.xzPathResolver = (x, z, dimension, radius, policy) =>
+      Effect.sync(() => {
+        driver.xzPaths.push({ x, z, dimension, radius, policy });
+      }).pipe(Effect.zipRight(Effect.never));
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        runId,
+        team: { teamId },
+        checkpointStore: store,
+        strategy: { observationPollMs: 1 },
+      });
+      while (driver.xzPaths.length === 0) {
+        yield* Effect.sleep(1);
+      }
+      yield* run.stop;
+    })));
+
+    expect(driver.tasks.some((task) => task.type === "attack-entity"))
+      .toBe(false);
+    expect(driver.xzPaths[0]?.policy).toMatchObject({
+      allowMining: false,
+      allowPlacing: false,
+      avoidFluids: true,
+      sprint: false,
+    });
   });
 
   it("hunts passive food barehanded when injured", async () => {
@@ -22170,7 +26652,7 @@ describe("beat-game run lifecycle", () => {
     ]);
   }, 10_000);
 
-  it("rotates resource exploration after a threat interrupts a frontier", async () => {
+  it("rotates a pending frontier after a threat interrupts it", async () => {
     const driver = new FakeBeatGameDriver();
     const creeper = {
       connectionEpoch: "epoch-1",
@@ -22223,11 +26705,11 @@ describe("beat-game run lifecycle", () => {
 
     expect(driver.xzPaths.slice(0, 2).map(({ x, z }) => ({ x, z }))).toEqual([
       { x: 24, z: 0 },
-      { x: 22.62741699796952, z: 22.62741699796952 },
+      { x: 0, z: 24 },
     ]);
   });
 
-  it("continues durable exploration progress after an SDK restart", async () => {
+  it("persists a pending frontier without claiming progress after restart", async () => {
     const store = new InMemoryBeatGameCheckpointStore();
     const runId = "durable-exploration-run";
     const teamId = "durable-exploration-team";
@@ -22242,7 +26724,16 @@ describe("beat-game run lifecycle", () => {
     const stored = await Effect.runPromise(store.load(runId));
     expect(stored?.memory.explorationFrontiers).toMatchObject({
       "minecraft:overworld:find-logs": {
-        nextIndex: 2,
+        progressVersion: 2,
+        nextIndex: 1,
+        targetAttempts: 1,
+        totalAdvances: 0,
+        target: {
+          x: 0,
+          y: 64,
+          z: 24,
+          dimension: "minecraft:overworld",
+        },
         lastPosition: {
           x: 0,
           y: 64,
@@ -22261,9 +26752,109 @@ describe("beat-game run lifecycle", () => {
     });
 
     expect(firstPath).toMatchObject({ x: 24, z: 0 });
-    expect(secondPath).toMatchObject({
-      x: 22.62741699796952,
-      z: 22.62741699796952,
+    expect(secondPath).toMatchObject({ x: 0, z: 24 });
+    expect(firstDriver.xzPaths[0]?.policy).toMatchObject({
+      maxSearchTimeMs: 5_000,
+      maximumExpandedStates: 12_000,
+    });
+  }, 10_000);
+
+  it("resets legacy frontiers whose failed routes were counted as progress", async () => {
+    const driver = new FakeBeatGameDriver();
+    const store = new InMemoryBeatGameCheckpointStore();
+    const runId = "legacy-exploration-frontier-run";
+    const teamId = "legacy-exploration-frontier-team";
+    const initial = checkpoint(BeatGamePhase.PREPARE_OVERWORLD, {
+      runId,
+      teamId,
+    });
+    await Effect.runPromise(store.save({
+      ...initial,
+      memory: {
+        ...initial.memory,
+        explorationFrontiers: {
+          "minecraft:overworld:find-logs": {
+            origin: driver.currentObservation.player.position,
+            nextIndex: 505,
+            totalAdvances: 504,
+            lastPosition: driver.currentObservation.player.position,
+          },
+        },
+      },
+    }, undefined));
+
+    const path = await runUntilExplorationStarts({
+      driver,
+      store,
+      runId,
+      teamId,
+    });
+    const stored = await Effect.runPromise(store.load(runId));
+
+    expect(path).toMatchObject({ x: 24, z: 0 });
+    expect(stored?.memory.explorationFrontiers).toMatchObject({
+      "minecraft:overworld:find-logs": {
+        progressVersion: 2,
+        nextIndex: 1,
+        targetAttempts: 1,
+        totalAdvances: 0,
+      },
+    });
+  }, 10_000);
+
+  it("commits frontier progress only after reaching an observed leg", async () => {
+    const driver = new FakeBeatGameDriver();
+    const store = new InMemoryBeatGameCheckpointStore();
+    const runId = "observed-exploration-progress-run";
+    const teamId = "observed-exploration-progress-team";
+    driver.xzPathResolver = (x, z, dimension, radius, policy) =>
+      Effect.sync(() => {
+        driver.xzPaths.push({ x, z, dimension, radius, policy });
+        if (driver.xzPaths.length === 1) {
+          driver.currentObservation = observation({
+            position: { x, y: 64, z, dimension },
+          });
+          return true;
+        }
+        return false;
+      }).pipe(
+        Effect.flatMap((completed) =>
+          completed ? Effect.void : Effect.never
+        ),
+      );
+
+    await Effect.runPromise(Effect.scoped(
+      beatGameWithDriver(driver, {
+        runId,
+        team: { teamId },
+        checkpointStore: store,
+        strategy: { observationPollMs: 1 },
+      }).pipe(
+        Effect.flatMap((run) =>
+          Effect.gen(function* () {
+            while (driver.xzPaths.length < 2) {
+              yield* Effect.sleep(1);
+            }
+            yield* run.stop;
+            yield* run.awaitCompletion.pipe(Effect.either);
+          })
+        ),
+      ),
+    ));
+
+    const stored = await Effect.runPromise(store.load(runId));
+    expect(stored?.memory.explorationFrontiers).toMatchObject({
+      "minecraft:overworld:find-logs": {
+        progressVersion: 2,
+        nextIndex: 2,
+        totalAdvances: 1,
+        lastPosition: {
+          x: 24,
+          y: 64,
+          z: 0,
+          dimension: "minecraft:overworld",
+        },
+      },
     });
   }, 10_000);
 
@@ -22289,8 +26880,11 @@ describe("beat-game run lifecycle", () => {
         ...initial.memory,
         explorationFrontiers: {
           "minecraft:overworld:find-logs": {
+            progressVersion: 2,
             origin: driver.currentObservation.player.position,
             nextIndex: 2,
+            targetAttempts: 0,
+            totalAdvances: 1,
             lastPosition: deathPosition,
           },
         },
@@ -22310,12 +26904,12 @@ describe("beat-game run lifecycle", () => {
     });
 
     expect(path).toMatchObject({
-      x: 22.62741699796952,
-      z: 22.62741699796952,
+      x: expect.closeTo(22.62741699796952),
+      z: expect.closeTo(22.62741699796952),
     });
   }, 10_000);
 
-  it("preserves durable exploration expansion after an unrelated displacement", async () => {
+  it("reanchors after displacement without inventing exploration progress", async () => {
     const driver = new FakeBeatGameDriver();
     const store = new InMemoryBeatGameCheckpointStore();
     const runId = "displaced-exploration-run";
@@ -22330,6 +26924,7 @@ describe("beat-game run lifecycle", () => {
         ...initial.memory,
         explorationFrontiers: {
           "minecraft:overworld:find-logs": {
+            progressVersion: 2,
             origin: driver.currentObservation.player.position,
             nextIndex: 2,
             totalAdvances: 7,
@@ -22350,16 +26945,13 @@ describe("beat-game run lifecycle", () => {
       teamId,
     });
 
-    expect(path).toMatchObject({
-      x: 22.62741699796952,
-      z: -22.62741699796952,
-    });
+    expect(path).toMatchObject({ x: 24, z: 0 });
     const stored = await Effect.runPromise(store.load(runId));
     expect(
       stored?.memory.explorationFrontiers?.[
         "minecraft:overworld:find-logs"
       ]?.totalAdvances,
-    ).toBe(8);
+    ).toBe(7);
   }, 10_000);
 
   it("reanchors resource exploration without resetting it after a defensive escape", async () => {
@@ -22415,7 +27007,7 @@ describe("beat-game run lifecycle", () => {
 
     expect(driver.xzPaths.slice(0, 2).map(({ x, z }) => ({ x, z }))).toEqual([
       { x: 24, z: 0 },
-      { x: 122.62741699796952, z: 22.62741699796952 },
+      { x: 124, z: 0 },
     ]);
   });
 
@@ -22473,29 +27065,61 @@ describe("beat-game run lifecycle", () => {
     const dryPaths = driver.xzPaths.filter(({ policy }) =>
       policy.avoidFluids === true
     );
-    expect(dryPaths.slice(0, 3).map(({ x, z }) => ({ x, z }))).toEqual([
-      { x: 24, z: 0 },
-      { x: 0, z: 24 },
-      { x: -24, z: 0 },
-    ]);
+    const attemptedTargets = dryPaths.slice(0, 3).map(({ x, z }) => ({
+      x,
+      z,
+    }));
+    expect(new Set(attemptedTargets.map(({ x, z }) => `${x}:${z}`)).size)
+      .toBeGreaterThanOrEqual(2);
+    expect(attemptedTargets.every(({ x, z }) =>
+      Math.hypot(x, z) <= 24.01
+    )).toBe(true);
   });
 
-  it("segments distant exploration frontiers into loadable pathfinding legs", async () => {
+  it("segments a distant pending frontier into observed 32-block legs", async () => {
     const driver = new FakeBeatGameDriver();
+    const store = new InMemoryBeatGameCheckpointStore();
+    const runId = "segmented-exploration-frontier-run";
+    const teamId = "segmented-exploration-frontier-team";
+    const initial = checkpoint(BeatGamePhase.PREPARE_OVERWORLD, {
+      runId,
+      teamId,
+    });
+    await Effect.runPromise(store.save({
+      ...initial,
+      memory: {
+        ...initial.memory,
+        explorationFrontiers: {
+          "minecraft:overworld:find-logs": {
+            progressVersion: 2,
+            origin: driver.currentObservation.player.position,
+            nextIndex: 9,
+            targetAttempts: 0,
+            totalAdvances: 8,
+            lastPosition: driver.currentObservation.player.position,
+          },
+        },
+      },
+    }, undefined));
     driver.currentObservation = observation({
       counts: {
         "minecraft:cobblestone": 20,
-        "minecraft:oak_log": 8,
         "minecraft:stone_sword": 1,
       },
     });
     driver.xzPathResolver = (x, z, dimension, radius, policy) =>
       Effect.sync(() => {
         driver.xzPaths.push({ x, z, dimension, radius, policy });
-      }).pipe(Effect.zipRight(Effect.sleep(1)));
+        driver.currentObservation = observation({
+          position: { x, y: 64, z, dimension },
+        });
+      });
 
     await Effect.runPromise(Effect.scoped(
       beatGameWithDriver(driver, {
+        runId,
+        team: { teamId },
+        checkpointStore: store,
         strategy: { observationPollMs: 1 },
       }).pipe(
         Effect.flatMap((run) =>
@@ -22516,11 +27140,14 @@ describe("beat-game run lifecycle", () => {
       ),
     ));
 
-    const distances = driver.xzPaths.slice(0, 4).map(({ x, z }) =>
-      Math.hypot(x, z)
-    );
+    let previous = { x: 0, z: 0 };
+    const distances = driver.xzPaths.slice(0, 4).map(({ x, z }) => {
+      const distance = Math.hypot(x - previous.x, z - previous.z);
+      previous = { x, z };
+      return distance;
+    });
     expect(Math.max(...distances)).toBeCloseTo(32);
-    expect(distances.some((distance) => distance > 31.9)).toBe(true);
+    expect(distances.every((distance) => distance <= 32.01)).toBe(true);
   });
 
   it("returns to the Overworld surface before exploring for animals", async () => {
@@ -24433,16 +29060,6 @@ describe("beat-game run lifecycle", () => {
           searchStronghold: () => Effect.succeed(true),
           activateEndPortal: () => updateDimension("minecraft:the_end"),
           fightEnderDragon: () => Effect.succeed(true),
-          collectDragonEgg: ({ observation: current }) =>
-            Effect.sync(() => {
-              driver.currentObservation = observation({
-                dimension: "minecraft:the_end",
-                counts: {
-                  ...current.inventory.counts,
-                  "minecraft:dragon_egg": 1,
-                },
-              });
-            }),
           exitEnd: () => updateDimension("minecraft:overworld"),
         },
       }).pipe(Effect.flatMap(({ awaitCompletion }) => awaitCompletion)),
@@ -25406,6 +30023,183 @@ describe("beat-game run lifecycle", () => {
     )).toBe(false);
   });
 
+  it("uses the pathfinder before procedural dry-shaft excavation", async () => {
+    const driver = new FakeBeatGameDriver();
+    driver.currentObservation = observation({
+      position: {
+        x: 0.5,
+        y: 21,
+        z: 0.5,
+        dimension: "minecraft:overworld",
+      },
+      counts: {
+        "minecraft:oak_log": 3,
+        "minecraft:stone_pickaxe": 1,
+        "minecraft:wooden_sword": 1,
+      },
+    });
+    driver.surfaceColumns = [{
+      x: 8,
+      z: 0,
+      loaded: true,
+      surfaceY: 63,
+      blockId: "minecraft:grass_block",
+      biomeId: "minecraft:plains",
+      skyLight: 15,
+      blockLight: 0,
+    }];
+    let surfaceRecoveryAttempted = false;
+    driver.pathResolver = (position, radius, policy) =>
+      Effect.sync(() => {
+        driver.paths.push({ position, radius, policy });
+        if (surfaceRecoveryAttempted) {
+          return false;
+        }
+        surfaceRecoveryAttempted = true;
+        driver.currentObservation = {
+          ...driver.currentObservation,
+          player: {
+            ...driver.currentObservation.player,
+            position,
+          },
+        };
+      });
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+      });
+      yield* Effect.gen(function* () {
+        while (driver.currentObservation.player.position.y < 64) {
+          yield* Effect.sleep(1);
+        }
+      }).pipe(Effect.timeout("5 seconds"));
+      yield* run.stop;
+      yield* run.awaitCompletion.pipe(Effect.either);
+    })));
+
+    expect(driver.paths[0]).toMatchObject({
+      position: {
+        x: 8.5,
+        y: 64,
+        z: 0.5,
+        dimension: "minecraft:overworld",
+      },
+      radius: 1.5,
+      policy: {
+        allowMining: true,
+        allowPlacing: true,
+        avoidFluids: true,
+        maxSearchTimeMs: 2_000,
+      },
+    });
+    expect(driver.paths.some(({ radius }) => radius === 0.35)).toBe(false);
+  });
+
+  it("rebases surface recovery after a partial ARA* route", async () => {
+    const driver = new FakeBeatGameDriver();
+    driver.currentObservation = observation({
+      position: {
+        x: 0.5,
+        y: 60,
+        z: 0.5,
+        dimension: "minecraft:overworld",
+      },
+      counts: {
+        "minecraft:oak_log": 3,
+        "minecraft:stone_pickaxe": 1,
+        "minecraft:wooden_sword": 1,
+      },
+    });
+    driver.surfaceColumns = [{
+      x: 3,
+      z: 0,
+      loaded: true,
+      surfaceY: 62,
+      blockId: "minecraft:grass_block",
+      biomeId: "minecraft:plains",
+      skyLight: 15,
+      blockLight: 0,
+    }];
+    driver.blockQueryResolver = ({ center, selector }) =>
+      selector.blockIds?.includes("minecraft:oak_log") === true
+        ? [blockObservation({
+          x: Math.floor(center.x) + 3,
+          y: Math.floor(center.y),
+          z: Math.floor(center.z),
+          dimension: center.dimension,
+        }, { blockId: "minecraft:oak_log" })]
+        : selector.blockIds !== undefined
+        ? []
+        : [blockObservation({
+          x: Math.floor(center.x),
+          y: Math.floor(center.y),
+          z: Math.floor(center.z),
+          dimension: center.dimension,
+        })];
+    let surfaceRecoveryAttempted = false;
+    driver.pathResolver = (position, radius, policy) =>
+      Effect.sync(() => {
+        driver.paths.push({ position, radius, policy });
+        if (surfaceRecoveryAttempted) {
+          return;
+        }
+        surfaceRecoveryAttempted = true;
+        driver.currentObservation = {
+          ...driver.currentObservation,
+          player: {
+            ...driver.currentObservation.player,
+            position: {
+              x: 2.5,
+              y: 62,
+              z: 0.5,
+              dimension: "minecraft:overworld",
+            },
+          },
+        };
+      });
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+      });
+      yield* Effect.gen(function* () {
+        while (true) {
+          const snapshot = yield* run.snapshot;
+          if (
+            driver.paths.length > 0
+            && snapshot.checkpoint.planner.currentAction === undefined
+          ) {
+            return;
+          }
+          yield* Effect.sleep(1);
+        }
+      }).pipe(Effect.timeout("5 seconds"));
+      yield* run.stop;
+      yield* run.awaitCompletion.pipe(Effect.either);
+    })));
+    expect(driver.currentObservation.player.position).toEqual({
+      x: 2.5,
+      y: 62,
+      z: 0.5,
+      dimension: "minecraft:overworld",
+    });
+    expect(driver.paths.length).toBeGreaterThanOrEqual(1);
+    expect(driver.paths[0]).toMatchObject({
+      radius: 1.5,
+      policy: {
+        allowMining: true,
+        allowPlacing: true,
+        avoidFluids: true,
+        maxSearchTimeMs: 2_000,
+      },
+    });
+    expect(driver.surfaceQueries.some(({ center }) =>
+      center.x === 2.5 && center.y === 62 && center.z === 0.5
+    )).toBe(true);
+    expect(driver.actions.some((action) => action.type === "dig-block"))
+      .toBe(false);
+  });
+
   it("opens a shallow vertical shaft before resuming exploration", async () => {
     const driver = new FakeBeatGameDriver();
     driver.currentObservation = observation({
@@ -25491,7 +30285,7 @@ describe("beat-game run lifecycle", () => {
     });
   }, 10_000);
 
-  it("climbs a two-block-deep sealed pocket by a bounded staircase", async () => {
+  it("clears jump headroom while climbing a sealed pocket", async () => {
     const driver = new FakeBeatGameDriver();
     driver.currentObservation = observation({
       position: {
@@ -25507,7 +30301,7 @@ describe("beat-game run lifecycle", () => {
       },
     });
     driver.surfaceColumns = [{
-      x: 0,
+      x: 3,
       z: 0,
       loaded: true,
       surfaceY: 62,
@@ -25526,6 +30320,12 @@ describe("beat-game run lifecycle", () => {
         blockObservation(position, overrides),
       );
     };
+    setBlock({
+      x: 0,
+      y: 59,
+      z: 0,
+      dimension: "minecraft:overworld",
+    });
     for (let rise = 1; rise <= 3; rise += 1) {
       setBlock({
         x: rise,
@@ -25541,6 +30341,14 @@ describe("beat-game run lifecycle", () => {
           dimension: "minecraft:overworld",
         });
       }
+    }
+    for (let rise = 1; rise <= 3; rise += 1) {
+      setBlock({
+        x: rise - 1,
+        y: 61 + rise,
+        z: 0,
+        dimension: "minecraft:overworld",
+      });
     }
     driver.blockQueryResolver = ({ center, radius, selector }) => {
       if (selector.blockIds?.includes("minecraft:water") === true) {
@@ -25572,17 +30380,42 @@ describe("beat-game run lifecycle", () => {
         driver.paths.push({ position, radius, policy });
       });
       if (radius !== 0.35) {
-        return record.pipe(Effect.zipRight(Effect.never));
+        return record.pipe(Effect.zipRight(Effect.fail(
+          new BeatGameDriverError({
+            operation: "pathfind",
+            code: "unreachable",
+            retryable: true,
+            message: "No complete path leaves the sealed pocket",
+          }),
+        )));
       }
-      return record.pipe(Effect.tap(() => Effect.sync(() => {
-        driver.currentObservation = {
-          ...driver.currentObservation,
-          player: {
-            ...driver.currentObservation.player,
-            position,
-          },
-        };
-      })));
+      return record.pipe(
+        Effect.flatMap(() => {
+          const current = driver.currentObservation.player.position;
+          const jumpClearance = blocks.get([
+            Math.floor(current.x),
+            Math.floor(current.y) + 2,
+            Math.floor(current.z),
+          ].join(":"));
+          return jumpClearance !== undefined
+              && !jumpClearance.replaceable
+            ? Effect.fail(new BeatGameDriverError({
+              operation: "pathfind",
+              code: "unreachable",
+              retryable: true,
+              message: "The jump headroom is obstructed",
+            }))
+            : Effect.sync(() => {
+              driver.currentObservation = {
+                ...driver.currentObservation,
+                player: {
+                  ...driver.currentObservation.player,
+                  position,
+                },
+              };
+            });
+        }),
+      );
     };
 
     await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
@@ -25603,6 +30436,16 @@ describe("beat-game run lifecycle", () => {
       policy,
     }))).toEqual([
       expect.objectContaining({
+        position: expect.objectContaining({ x: 3.5, y: 63, z: 0.5 }),
+        radius: 1.5,
+        policy: expect.objectContaining({
+          allowMining: true,
+          allowPlacing: true,
+          avoidFluids: true,
+          maxSearchTimeMs: 2_000,
+        }),
+      }),
+      expect.objectContaining({
         position: expect.objectContaining({ x: 1.5, y: 61, z: 0.5 }),
         radius: 0.35,
         policy: expect.objectContaining({
@@ -25619,10 +30462,455 @@ describe("beat-game run lifecycle", () => {
         radius: 0.35,
       }),
     ]);
+    expect(driver.actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "dig-block",
+        position: {
+          x: 0,
+          y: 62,
+          z: 0,
+          dimension: "minecraft:overworld",
+        },
+      }),
+      expect.objectContaining({
+        type: "dig-block",
+        position: {
+          x: 1,
+          y: 63,
+          z: 0,
+          dimension: "minecraft:overworld",
+        },
+      }),
+    ]));
     expect(driver.tasks.some((task) =>
       task.type === "collect-blocks"
       && task.blockIds.includes("minecraft:oak_log")
     )).toBe(false);
+  });
+
+  it("segments a deep dry-shaft recovery into bounded staircases", async () => {
+    const driver = new FakeBeatGameDriver();
+    driver.currentObservation = observation({
+      position: {
+        x: 0.5,
+        y: 0,
+        z: 0.5,
+        dimension: "minecraft:overworld",
+      },
+      counts: {
+        "minecraft:oak_log": 3,
+        "minecraft:stone_pickaxe": 1,
+        "minecraft:wooden_sword": 1,
+      },
+    });
+    driver.surfaceColumns = [{
+      x: 36,
+      z: 0,
+      loaded: true,
+      surfaceY: 35,
+      blockId: "minecraft:grass_block",
+      biomeId: "minecraft:plains",
+      skyLight: 15,
+      blockLight: 0,
+    }];
+    const clearedBlocks = new Set<string>();
+    driver.blockQueryResolver = ({ center, selector }) => {
+      if (Object.keys(selector).length > 0) {
+        return [];
+      }
+      const position = {
+        x: Math.floor(center.x),
+        y: Math.floor(center.y),
+        z: Math.floor(center.z),
+        dimension: center.dimension,
+      };
+      const key = `${position.x}:${position.y}:${position.z}`;
+      if (
+        clearedBlocks.has(key)
+        || (
+          position.x === -1
+          && position.z === 0
+          && (position.y === 0 || position.y === 1)
+        )
+      ) {
+        return [blockObservation(position, {
+          blockId: "minecraft:air",
+          diggable: false,
+          replaceable: true,
+          solid: false,
+        })];
+      }
+      return [blockObservation(position)];
+    };
+    driver.actionObserver = (action) => {
+      if (action.type === "dig-block") {
+        clearedBlocks.add(
+          `${action.position.x}:${action.position.y}:${action.position.z}`,
+        );
+      }
+    };
+    driver.pathResolver = (position, radius, policy) => {
+      const record = Effect.sync(() => {
+        driver.paths.push({ position, radius, policy });
+        if (radius === 0.35) {
+          driver.currentObservation = {
+            ...driver.currentObservation,
+            player: {
+              ...driver.currentObservation.player,
+              position,
+            },
+          };
+        }
+      });
+      return radius === 0.35
+        ? record
+        : record.pipe(Effect.zipRight(Effect.fail(
+          new BeatGameDriverError({
+            operation: "pathfind",
+            code: "unreachable",
+            retryable: true,
+            message: "No complete path reaches the distant surface",
+          }),
+        )));
+    };
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+      });
+      yield* Effect.gen(function* () {
+        while (driver.currentObservation.player.position.y < 36) {
+          yield* Effect.sleep(1);
+        }
+      }).pipe(Effect.timeout("5 seconds"));
+      yield* run.stop;
+      yield* run.awaitCompletion.pipe(Effect.either);
+    })));
+
+    const recoverySteps = driver.paths.filter(({ radius }) => radius === 0.35);
+    expect(recoverySteps).toHaveLength(36);
+    expect(recoverySteps.map(({ position }) => position.y)).toEqual(
+      Array.from({ length: 36 }, (_, index) => index + 1),
+    );
+    expect(driver.paths[0]).toMatchObject({
+      position: {
+        x: 36.5,
+        y: 36,
+        z: 0.5,
+        dimension: "minecraft:overworld",
+      },
+      radius: 1.5,
+      policy: {
+        allowMining: true,
+        allowPlacing: true,
+        avoidFluids: true,
+        maxSearchTimeMs: 2_000,
+      },
+    });
+  });
+
+  it("builds stair supports while escaping an aquifer pocket", async () => {
+    const driver = new FakeBeatGameDriver();
+    driver.currentObservation = observation({
+      position: {
+        x: 0.5,
+        y: 0,
+        z: 0.5,
+        dimension: "minecraft:overworld",
+      },
+      counts: {
+        "minecraft:cobblestone": 8,
+        "minecraft:oak_log": 3,
+        "minecraft:stone_pickaxe": 1,
+        "minecraft:wooden_sword": 1,
+      },
+    });
+    driver.surfaceColumns = [{
+      x: 4,
+      z: 0,
+      loaded: true,
+      surfaceY: 3,
+      blockId: "minecraft:grass_block",
+      biomeId: "minecraft:plains",
+      skyLight: 15,
+      blockLight: 0,
+    }];
+    const key = (position: BeatGameBlockPosition) =>
+      `${position.x}:${position.y}:${position.z}`;
+    const replaceableSupports = new Set<string>();
+    for (let rise = 1; rise <= 3; rise += 1) {
+      replaceableSupports.add(`${rise}:${rise - 1}:0`);
+      replaceableSupports.add(`${rise}:${rise - 2}:0`);
+    }
+    const rejectedFirstSteps = new Set([
+      "-1:1:0",
+      "0:1:1",
+      "0:1:-1",
+    ]);
+    const placedBlocks = new Set<string>();
+    const clearedBlocks = new Set<string>();
+    driver.blockQueryResolver = ({ center, selector }) => {
+      if (Object.keys(selector).length > 0) {
+        return [];
+      }
+      const position: BeatGameBlockPosition = {
+        x: Math.floor(center.x),
+        y: Math.floor(center.y),
+        z: Math.floor(center.z),
+        dimension: center.dimension,
+      };
+      const positionKey = key(position);
+      if (placedBlocks.has(positionKey)) {
+        return [blockObservation(position, {
+          blockId: "minecraft:cobblestone",
+        })];
+      }
+      if (clearedBlocks.has(positionKey)) {
+        return [blockObservation(position, {
+          blockId: "minecraft:air",
+          diggable: false,
+          replaceable: true,
+          solid: false,
+        })];
+      }
+      if (
+        replaceableSupports.has(positionKey)
+        || rejectedFirstSteps.has(positionKey)
+      ) {
+        return [blockObservation(position, {
+          blockId: "minecraft:water",
+          replaceable: true,
+          solid: false,
+        })];
+      }
+      return [blockObservation(position)];
+    };
+    driver.actionObserver = (action) => {
+      if (action.type === "dig-block") {
+        clearedBlocks.add(key(action.position));
+        return;
+      }
+      if (action.type !== "place-block") {
+        return;
+      }
+      const expected = { ...action.against };
+      switch (action.face) {
+        case "up":
+          expected.y += 1;
+          break;
+        case "down":
+          expected.y -= 1;
+          break;
+        case "east":
+          expected.x += 1;
+          break;
+        case "west":
+          expected.x -= 1;
+          break;
+        case "south":
+          expected.z += 1;
+          break;
+        case "north":
+          expected.z -= 1;
+          break;
+      }
+      placedBlocks.add(key(expected));
+    };
+    driver.pathResolver = (position, radius, policy) => {
+      const record = Effect.sync(() => {
+        driver.paths.push({ position, radius, policy });
+        if (radius === 0.35) {
+          driver.currentObservation = {
+            ...driver.currentObservation,
+            player: {
+              ...driver.currentObservation.player,
+              position,
+            },
+          };
+        }
+      });
+      return radius === 0.35
+        ? record
+        : record.pipe(Effect.zipRight(Effect.fail(
+          new BeatGameDriverError({
+            operation: "pathfind",
+            code: "unreachable",
+            retryable: true,
+            message: "The pathfinder cannot leave the aquifer pocket",
+          }),
+        )));
+    };
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+      });
+      yield* Effect.gen(function* () {
+        while (driver.currentObservation.player.position.y < 4) {
+          yield* Effect.sleep(1);
+        }
+      }).pipe(Effect.timeout("5 seconds"));
+      yield* run.stop;
+      yield* run.awaitCompletion.pipe(Effect.either);
+    })));
+
+    expect(driver.paths.filter(({ radius }) => radius === 0.35)).toHaveLength(4);
+    expect(driver.paths[0]).toMatchObject({
+      position: {
+        x: 4.5,
+        y: 4,
+        z: 0.5,
+        dimension: "minecraft:overworld",
+      },
+      radius: 1.5,
+      policy: {
+        allowMining: true,
+        allowPlacing: true,
+        avoidFluids: true,
+        maxSearchTimeMs: 2_000,
+      },
+    });
+    expect(placedBlocks).toEqual(new Set([
+      "1:-1:0",
+      "1:0:0",
+      "2:0:0",
+      "2:1:0",
+      "3:1:0",
+      "3:2:0",
+    ]));
+  });
+
+  it("turns a recovery stair when the current corridor becomes unsafe", async () => {
+    const driver = new FakeBeatGameDriver();
+    driver.currentObservation = observation({
+      position: {
+        x: 0.5,
+        y: 0,
+        z: 0.5,
+        dimension: "minecraft:overworld",
+      },
+      counts: {
+        "minecraft:oak_log": 3,
+        "minecraft:stone_pickaxe": 1,
+        "minecraft:wooden_sword": 1,
+      },
+    });
+    driver.surfaceColumns = [{
+      x: 2,
+      z: 2,
+      loaded: true,
+      surfaceY: 4,
+      blockId: "minecraft:grass_block",
+      biomeId: "minecraft:plains",
+      skyLight: 15,
+      blockLight: 0,
+    }];
+    const unsafeSpaces = new Set([
+      "-1:1:0",
+      "0:1:1",
+      "0:1:-1",
+      "3:3:0",
+      "1:4:0",
+      "2:3:-1",
+      "2:5:3",
+    ]);
+    const clearedBlocks = new Set<string>();
+    driver.blockQueryResolver = ({ center, selector }) => {
+      if (Object.keys(selector).length > 0) {
+        return [];
+      }
+      const position: BeatGameBlockPosition = {
+        x: Math.floor(center.x),
+        y: Math.floor(center.y),
+        z: Math.floor(center.z),
+        dimension: center.dimension,
+      };
+      const key = `${position.x}:${position.y}:${position.z}`;
+      if (clearedBlocks.has(key)) {
+        return [blockObservation(position, {
+          blockId: "minecraft:air",
+          diggable: false,
+          replaceable: true,
+          solid: false,
+        })];
+      }
+      if (unsafeSpaces.has(key)) {
+        return [blockObservation(position, {
+          blockId: "minecraft:water",
+          replaceable: true,
+          solid: false,
+        })];
+      }
+      return [blockObservation(position)];
+    };
+    driver.actionObserver = (action) => {
+      if (action.type === "dig-block") {
+        clearedBlocks.add(
+          `${action.position.x}:${action.position.y}:${action.position.z}`,
+        );
+      }
+    };
+    driver.pathResolver = (position, radius, policy) => {
+      const record = Effect.sync(() => {
+        driver.paths.push({ position, radius, policy });
+        if (radius === 0.35) {
+          driver.currentObservation = {
+            ...driver.currentObservation,
+            player: {
+              ...driver.currentObservation.player,
+              position,
+            },
+          };
+        }
+      });
+      return radius === 0.35
+        ? record
+        : record.pipe(Effect.zipRight(Effect.fail(
+          new BeatGameDriverError({
+            operation: "pathfind",
+            code: "unreachable",
+            retryable: true,
+            message: "The pathfinder cannot leave the unsafe corridor",
+          }),
+        )));
+    };
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+      });
+      yield* Effect.gen(function* () {
+        while (driver.currentObservation.player.position.y < 4) {
+          yield* Effect.sleep(1);
+        }
+      }).pipe(Effect.timeout("5 seconds"));
+      yield* run.stop;
+      yield* run.awaitCompletion.pipe(Effect.either);
+    })));
+
+    expect(driver.paths.filter(({ radius }) => radius === 0.35).map(
+      ({ position }) => position,
+    )).toEqual([
+      expect.objectContaining({ x: 1.5, y: 1, z: 0.5 }),
+      expect.objectContaining({ x: 2.5, y: 2, z: 0.5 }),
+      expect.objectContaining({ x: 2.5, y: 3, z: 1.5 }),
+      expect.objectContaining({ x: 2.5, y: 4, z: 2.5 }),
+    ]);
+    expect(driver.paths[0]).toMatchObject({
+      position: {
+        x: 2.5,
+        y: 5,
+        z: 2.5,
+        dimension: "minecraft:overworld",
+      },
+      radius: 1.5,
+      policy: {
+        allowMining: true,
+        allowPlacing: true,
+        avoidFluids: true,
+        maxSearchTimeMs: 2_000,
+      },
+    });
   });
 
   it("allows a surface recovery route to leave flowing water", async () => {
@@ -26308,6 +31596,94 @@ describe("beat-game run lifecycle", () => {
     )).toHaveLength(0);
   });
 
+  it("selects a supported resource-search corridor before excavating", async () => {
+    const driver = new FakeBeatGameDriver();
+    const surfacePosition = {
+      x: 24.5,
+      y: 64,
+      z: -12.5,
+      dimension: "minecraft:overworld",
+    } as const;
+    const from = {
+      x: Math.floor(surfacePosition.x),
+      y: surfacePosition.y,
+      z: Math.floor(surfacePosition.z),
+      dimension: surfacePosition.dimension,
+    };
+    driver.currentObservation = observation({
+      position: surfacePosition,
+      counts: {
+        "minecraft:cooked_beef": 12,
+        "minecraft:oak_log": 8,
+        "minecraft:cobblestone": 30,
+        "minecraft:stone_sword": 1,
+        "minecraft:stone_pickaxe": 1,
+        "minecraft:water_bucket": 1,
+      },
+    });
+    const dugBlocks = new Set<string>();
+    driver.actionResolver = (action) =>
+      Effect.sync(() => {
+        if (action.type === "dig-block") {
+          dugBlocks.add(
+            `${action.position.x}:${action.position.y}:${action.position.z}`,
+          );
+        }
+        return {};
+      });
+    installStaircaseMovementSimulation(driver, from);
+    driver.blockQueryResolver = ({ center, selector }) => {
+      if (selector.blockIds?.includes("minecraft:iron_ore") === true) {
+        return [];
+      }
+      const position = {
+        x: Math.floor(center.x),
+        y: Math.floor(center.y),
+        z: Math.floor(center.z),
+        dimension: center.dimension,
+      };
+      const positiveDepth = position.x - from.x;
+      const unsupportedPositiveSupport = positiveDepth > 0
+        && position.z === from.z
+        && (
+          position.y === from.y - positiveDepth - 1
+          || position.y === from.y - positiveDepth - 2
+        );
+      const dug = dugBlocks.has(
+        `${position.x}:${position.y}:${position.z}`,
+      );
+      return [blockObservation(position,
+        unsupportedPositiveSupport || dug
+          ? {
+            blockId: "minecraft:air",
+            diggable: false,
+            replaceable: true,
+            solid: false,
+          }
+          : { blockId: "minecraft:stone" })];
+    };
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+      });
+      while (driver.currentObservation.player.position.y > 52) {
+        yield* Effect.sleep(1);
+      }
+      yield* run.stop;
+    })));
+
+    expect(driver.paths).toContainEqual(expect.objectContaining({
+      position: expect.objectContaining({ x: 23.5, y: 63, z: -12.5 }),
+    }));
+    expect(driver.paths).not.toContainEqual(expect.objectContaining({
+      position: expect.objectContaining({ x: 25.5, y: 63, z: -12.5 }),
+    }));
+    expect(driver.actions.some((action) =>
+      action.type === "dig-block" && action.position.x > from.x
+    )).toBe(false);
+  });
+
   it("mines loaded iron before descending past it", async () => {
     const driver = new FakeBeatGameDriver();
     driver.currentObservation = observation({
@@ -26900,6 +32276,146 @@ describe("beat-game run lifecycle", () => {
       face: "up",
       hand: "main",
     });
+  });
+
+  it("reaches actual dry ground before resuming iron smelting", async () => {
+    const driver = new FakeBeatGameDriver();
+    const furnace = blockObservation({
+      x: 5,
+      y: 65,
+      z: 0,
+      dimension: "minecraft:overworld",
+    }, { blockId: "minecraft:furnace" });
+    driver.currentObservation = observation({
+      air: 300,
+      position: { x: 0.5, y: 64, z: 0.5 },
+      counts: {
+        "minecraft:bucket": 1,
+        "minecraft:cobblestone": 20,
+        "minecraft:cooked_beef": 8,
+        "minecraft:iron_ingot": 2,
+        "minecraft:oak_log": 8,
+        "minecraft:raw_iron": 1,
+        "minecraft:shield": 1,
+        "minecraft:stone_pickaxe": 1,
+        "minecraft:stone_sword": 1,
+        "minecraft:water_bucket": 1,
+        "minecraft:wooden_sword": 1,
+      },
+    });
+    let surfaceQueries = 0;
+    driver.surfaceQueryResolver = () => {
+      surfaceQueries += 1;
+      return surfaceQueries <= 2
+        ? []
+        : [-1, 0, 1].map((z) => ({
+          x: 4,
+          z,
+          loaded: true,
+          surfaceY: 64,
+          blockId: "minecraft:grass_block",
+          skyLight: 15,
+          blockLight: 0,
+        }));
+    };
+    driver.blockQueryResolver = ({ center, selector }) => {
+      if (selector.blockIds?.includes("minecraft:furnace") === true) {
+        return [furnace];
+      }
+      const position = {
+        x: Math.floor(center.x),
+        y: Math.floor(center.y),
+        z: Math.floor(center.z),
+        dimension: center.dimension,
+      };
+      if (
+        selector.blockIds?.includes("minecraft:water") === true
+        && driver.currentObservation.player.position.x < 4
+      ) {
+        return [blockObservation(position, {
+          blockId: "minecraft:water",
+          diggable: false,
+          replaceable: true,
+          solid: false,
+        })];
+      }
+      if (
+        Object.keys(selector).length === 0
+        && position.x === 4
+        && position.y === 64
+      ) {
+        return [blockObservation(position, {
+          blockId: "minecraft:grass_block",
+        })];
+      }
+      return [];
+    };
+    driver.actionObserver = (action) => {
+      const current = driver.currentObservation;
+      if (action.type === "look") {
+        driver.currentObservation = {
+          ...current,
+          player: {
+            ...current.player,
+            rotation: { yaw: action.yaw, pitch: action.pitch },
+          },
+        };
+        return;
+      }
+      if (
+        action.type === "set-movement"
+        && action.forward === true
+        && action.jump === true
+        && current.player.rotation.pitch === -20
+      ) {
+        driver.currentObservation = observation({
+          counts: current.inventory.counts,
+          position: { x: 4.5, y: 65, z: 0.5 },
+        });
+      }
+    };
+    let resolveSmelting!: () => void;
+    const smelting = new Promise<void>((resolve) => {
+      resolveSmelting = resolve;
+    });
+    driver.taskResolver = (task) => {
+      driver.tasks.push(task);
+      if (
+        task.type === "smelt"
+        && task.input.itemIds?.includes("minecraft:raw_iron") === true
+      ) {
+        resolveSmelting();
+        return Effect.never;
+      }
+      return Effect.void;
+    };
+
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const run = yield* beatGameWithDriver(driver, {
+        strategy: { observationPollMs: 1 },
+      });
+      yield* Effect.promise(() => smelting).pipe(
+        Effect.timeout("5 seconds"),
+      );
+      yield* run.stop;
+      yield* run.awaitCompletion.pipe(Effect.either);
+    })));
+
+    expect(surfaceQueries).toBeGreaterThanOrEqual(3);
+    expect(driver.currentObservation.player.position).toMatchObject({
+      x: 4.5,
+      y: 65,
+      z: 0.5,
+    });
+    expect(driver.actions).toContainEqual(expect.objectContaining({
+      type: "look",
+      pitch: -20,
+    }));
+    expect(driver.tasks).toContainEqual(expect.objectContaining({
+      type: "smelt",
+      input: { itemIds: ["minecraft:raw_iron"] },
+      count: 1,
+    }));
   });
 
   it("cooks a full existing raw-food batch without exploring for a buffer", async () => {

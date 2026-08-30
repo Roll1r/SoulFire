@@ -320,6 +320,13 @@ export type BeatGameTask =
     readonly completeWhenNoUpgrade?: boolean;
   }
   | {
+    readonly type: "sleep";
+    readonly bed?: BeatGameBlockPosition;
+    readonly searchRadius?: number;
+    readonly waitUntilPossible?: boolean;
+    readonly retryIntervalTicks?: number;
+  }
+  | {
     readonly type: "build";
     readonly origin: BeatGameBlockPosition;
     readonly blocks: readonly BeatGameBuildBlock[];
@@ -456,6 +463,12 @@ export type BeatGameDriverEvent =
   | {
     readonly type: "bot-respawned";
     readonly observedAt: string;
+  }
+  | {
+    readonly type: "game-event";
+    readonly observedAt: string;
+    readonly event: string;
+    readonly parameter: number;
   };
 
 export interface BeatGameDriver {
@@ -576,6 +589,12 @@ export function makeSoulFireBeatGameDriver(
       : {
         additionalPlaceItemIds: [...policy.additionalPlaceItemIds],
       }),
+    ...(policy.protectedBlocks === undefined
+        || policy.protectedBlocks.length === 0
+      ? {}
+      : {
+        protectedBlocks: policy.protectedBlocks.map(blockPosition),
+      }),
     ...(policy.sprint === undefined ? {} : { sprint: policy.sprint }),
     ...(policy.minimumY === undefined
       ? {}
@@ -688,6 +707,7 @@ export function makeSoulFireBeatGameDriver(
           revision: inventory.revision,
           selectedHotbarSlot: inventory.selectedHotbarSlot,
           emptyPlayerSlots: Math.max(0, 36 - occupiedPlayerSlots),
+          pathBuildingBlockCount: inventory.pathBuildingBlockCount,
           counts,
           remainingDurability,
           hotbar,
@@ -1025,6 +1045,23 @@ export function makeSoulFireBeatGameDriver(
               ? {}
               : { completeWhenNoUpgrade: task.completeWhenNoUpgrade }),
           });
+        case "sleep":
+          return bot.tasks.sleep({
+            ...taskStart,
+            path,
+            ...(task.bed === undefined
+              ? {}
+              : { bed: blockPosition(task.bed) }),
+            ...(task.searchRadius === undefined
+              ? {}
+              : { searchRadius: task.searchRadius }),
+            ...(task.waitUntilPossible === undefined
+              ? {}
+              : { waitUntilPossible: task.waitUntilPossible }),
+            ...(task.retryIntervalTicks === undefined
+              ? {}
+              : { retryIntervalTicks: task.retryIntervalTicks }),
+          });
         case "build":
           return bot.tasks.build(
             blockPosition(task.origin),
@@ -1139,6 +1176,17 @@ export function makeSoulFireBeatGameDriver(
             return { type: "bot-respawned", observedAt };
           }
         }
+        if (
+          payload.event.case === "environment"
+          && payload.event.value.change.case === "gameEvent"
+        ) {
+          return {
+            type: "game-event",
+            observedAt,
+            event: payload.event.value.change.value.event,
+            parameter: payload.event.value.change.value.parameter,
+          };
+        }
         return {
           type: "bot-event",
           observedAt,
@@ -1179,6 +1227,9 @@ export function makeSoulFireBeatGameDriver(
           entities.map((entity): BeatGameEntityObservation => {
             const reference = required(entity.reference, "entity.reference");
             const velocity = required(entity.velocity, "entity.velocity");
+            const creeper = entity.entityType === "minecraft:creeper"
+              ? creeperObservation(entity.metadata)
+              : undefined;
             return {
               connectionEpoch: reference.connectionEpoch,
               networkId: reference.networkId,
@@ -1212,6 +1263,10 @@ export function makeSoulFireBeatGameDriver(
                       : { uuid: entity.target.uuid }),
                   },
                 }),
+              ...(entity.aggressive === undefined
+                ? {}
+                : { aggressive: entity.aggressive }),
+              ...(creeper === undefined ? {} : { creeper }),
               observedAt: new Date().toISOString(),
             };
           })
@@ -1371,6 +1426,42 @@ export function makeSoulFireBeatGameDriver(
           : driverError("control", cause)
       )),
   };
+}
+
+function creeperObservation(
+  metadata: Readonly<Record<string, unknown>> | undefined,
+): BeatGameEntityObservation["creeper"] | undefined {
+  const fuseProgress = finiteMetadataNumber(
+    metadata,
+    "creeper_fuse_progress",
+  );
+  const swellDirection = finiteMetadataNumber(
+    metadata,
+    "creeper_swell_direction",
+  );
+  const powered = metadata?.creeper_powered;
+  const ignited = metadata?.creeper_ignited;
+  return fuseProgress === undefined
+      || swellDirection === undefined
+      || typeof powered !== "boolean"
+      || typeof ignited !== "boolean"
+    ? undefined
+    : {
+      fuseProgress: Math.max(0, fuseProgress),
+      swellDirection,
+      powered,
+      ignited,
+    };
+}
+
+function finiteMetadataNumber(
+  metadata: Readonly<Record<string, unknown>> | undefined,
+  key: string,
+): number | undefined {
+  const value = metadata?.[key];
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
 }
 
 function executePrimitive(
@@ -1536,10 +1627,12 @@ function toBeatGameBlockObservation(
       required(block.position, "block.position"),
     ),
     properties: block.properties,
+    hardness: block.hardness,
     diggable: block.diggable,
     replaceable: block.replaceable,
     solid: block.solid,
     interactive: block.interactive,
+    effectiveToolTags: block.effectiveToolTags,
     observedAt: new Date().toISOString(),
   };
 }

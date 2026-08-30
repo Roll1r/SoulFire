@@ -36,10 +36,13 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.NeutralMob;
 import net.minecraft.world.entity.OwnableEntity;
 import net.minecraft.world.entity.TamableAnimal;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.entity.monster.Creeper;
+import net.minecraft.world.entity.monster.EnderMan;
 import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.projectile.Projectile;
@@ -239,14 +242,36 @@ public final class MinecraftDomainMapper {
         builder.setOwner(reference(bot, owner));
       }
     }
-    if (entity instanceof Mob mob && mob.getTarget() != null) {
-      builder.setTarget(reference(bot, mob.getTarget()));
+    if (entity instanceof Mob mob) {
+      builder.setAggressive(
+        mob.isAggressive()
+          || (mob instanceof NeutralMob neutralMob && neutralMob.isAngry())
+          || (mob instanceof EnderMan enderMan && enderMan.isCreepy())
+      );
+      if (mob.getTarget() != null) {
+        builder.setTarget(reference(bot, mob.getTarget()));
+      }
     }
     if (entity instanceof AgeableMob ageable) {
       builder.setAgeTicks(ageable.getAge());
     }
     if (entity instanceof TamableAnimal tamable) {
       builder.setTamed(tamable.isTame());
+    }
+    if (entity instanceof Creeper creeper) {
+      builder.setMetadata(Struct.newBuilder()
+        .putFields("creeper_fuse_progress", Value.newBuilder()
+          .setNumberValue(creeper.getSwelling(1.0F))
+          .build())
+        .putFields("creeper_swell_direction", Value.newBuilder()
+          .setNumberValue(creeper.getSwellDir())
+          .build())
+        .putFields("creeper_powered", Value.newBuilder()
+          .setBoolValue(creeper.isPowered())
+          .build())
+        .putFields("creeper_ignited", Value.newBuilder()
+          .setBoolValue(creeper.isIgnited())
+          .build()));
     }
     return builder.build();
   }

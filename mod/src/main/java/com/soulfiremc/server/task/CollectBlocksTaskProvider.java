@@ -83,7 +83,7 @@ public final class CollectBlocksTaskProvider
   private static final int MAX_SEARCH_RADIUS = 64;
   private static final int MAX_CANDIDATES = 64;
   private static final int MAX_FAILED_APPROACHES_PER_TARGET = 4;
-  private static final int MAX_CONSECUTIVE_STALLED_PATHS = 4;
+  private static final int MAX_CONSECUTIVE_STALLED_PATHS = 16;
   private static final double DIRECT_BREAK_REACH_SQUARED = 4.5D * 4.5D;
   private static final Set<ControlResource> RESOURCES = Set.of(
     ControlResource.MOVEMENT,
@@ -293,42 +293,43 @@ public final class CollectBlocksTaskProvider
       || lineOfSight.getAsBoolean();
   }
 
-  static boolean shouldIncludeOccludedReachGoals(
-    boolean requireLineOfSight,
-    int consecutiveStalledPaths
-  ) {
-    return !requireLineOfSight && consecutiveStalledPaths == 0;
+  static Comparator<SFVec3i> candidateComparator(BlockPos origin) {
+    return Comparator
+      .comparingDouble((SFVec3i position) ->
+        position.toBlockPos().distSqr(origin)
+      )
+      .thenComparingInt(position -> position.y)
+      .thenComparingInt(position -> position.x)
+      .thenComparingInt(position -> position.z);
   }
 
   static Set<GoalScorer> collectionGoals(
     BlockGetter level,
     Vec3 eyePosition,
-    List<SFVec3i> candidates,
+    SFVec3i target,
     boolean includeOccludedReachGoals,
     Map<SFVec3i, Set<SFVec3i>> rejectedAdjacentPositions
   ) {
-    return candidates.stream()
-      .<GoalScorer>mapMulti((candidate, goals) -> {
-        goals.accept(new BreakBlockPosGoal(candidate));
-        var visible = hasLineOfSight(
-          level,
-          eyePosition,
-          candidate.toBlockPos()
-        );
-        if (
-          visible
-            || (
-              includeOccludedReachGoals
-                && !rejectedAdjacentPositions.containsKey(candidate)
-            )
-        ) {
-          goals.accept(new WithinBlockReachGoal(
-            candidate,
-            rejectedAdjacentPositions.getOrDefault(candidate, Set.of())
-          ));
-        }
-      })
-      .collect(Collectors.toUnmodifiableSet());
+    var goals = new HashSet<GoalScorer>();
+    goals.add(new BreakBlockPosGoal(target));
+    var visible = hasLineOfSight(
+      level,
+      eyePosition,
+      target.toBlockPos()
+    );
+    if (
+      visible
+        || (
+          includeOccludedReachGoals
+            && !rejectedAdjacentPositions.containsKey(target)
+        )
+    ) {
+      goals.add(new WithinBlockReachGoal(
+        target,
+        rejectedAdjacentPositions.getOrDefault(target, Set.of())
+      ));
+    }
+    return Set.copyOf(goals);
   }
 
   private static final class CollectBlocksControl implements ControlTask {
@@ -418,7 +419,8 @@ public final class CollectBlocksTaskProvider
         );
         return;
       }
-      activeTargets = Set.copyOf(candidates);
+      var target = candidates.getFirst();
+      activeTargets = Set.of(target);
       context.reportProgress(progress(
         "Planning route to matching block",
         CollectBlocksTaskProgressDetail.Phase.PHASE_PLANNING_ROUTE
@@ -447,11 +449,8 @@ public final class CollectBlocksTaskProvider
         new CompositeGoal(collectionGoals(
           level,
           player.getEyePosition(),
-          candidates,
-          shouldIncludeOccludedReachGoals(
-            requireLineOfSight,
-            consecutiveStalledPaths
-          ),
+          target,
+          !requireLineOfSight,
           rejectedAdjacentPositions
         )),
         constraint
@@ -600,12 +599,10 @@ public final class CollectBlocksTaskProvider
           : exception.getCause();
         path.onStopped(ControlStopReason.FAILED, cause);
         if (cause instanceof UnreachableGoalException) {
-          if (
-            rejectStalledAdjacentPositions(failedTargets)
-              && !reachedStalledPathLimit()
-          ) {
+          rejectedTargets.addAll(failedTargets);
+          if (!reachedStalledPathLimit()) {
             context.reportProgress(progress(
-              "Trying another approach after collection path stalled",
+              "Trying another matching block after route planning failed",
               CollectBlocksTaskProgressDetail.Phase.PHASE_RETRYING_APPROACH
             ));
             return;
@@ -620,6 +617,7 @@ public final class CollectBlocksTaskProvider
           cause instanceof BlockBreakRejectedException rejection
         ) {
           rejectedTargets.add(rejection.blockPosition());
+          reachedStalledPathLimit();
           context.reportProgress(progress(
             "Skipping a matching block rejected by the server",
             CollectBlocksTaskProgressDetail.Phase.PHASE_SKIPPING_TARGET
@@ -628,6 +626,7 @@ public final class CollectBlocksTaskProvider
         }
         if (cause instanceof BlockPlaceRejectedException) {
           rejectedTargets.addAll(failedTargets);
+          reachedStalledPathLimit();
           context.reportProgress(progress(
             "Skipping targets whose route requires a rejected placement",
             CollectBlocksTaskProgressDetail.Phase.PHASE_SKIPPING_TARGET
@@ -706,8 +705,7 @@ public final class CollectBlocksTaskProvider
         }
       }
       var orderedCandidates = candidates.stream()
-        .sorted(Comparator.comparingDouble(position ->
-          position.toBlockPos().distSqr(origin)))
+        .sorted(candidateComparator(origin))
         .filter(position -> canHarvest(
           level.getBlockState(position.toBlockPos())
         ))
@@ -804,13 +802,17 @@ public final class CollectBlocksTaskProvider
       activePath = null;
       activeTargets = Set.of();
       path.onStopped(ControlStopReason.CANCELLED, null);
-      complete(
-        blocksBroken >= targetCount
-          ? CollectBlocksCompletionReason
+      if (blocksBroken >= targetCount) {
+        complete(
+          CollectBlocksCompletionReason
             .COLLECT_BLOCKS_COMPLETION_REASON_TARGET_REACHED
-          : CollectBlocksCompletionReason
-            .COLLECT_BLOCKS_COMPLETION_REASON_NO_REACHABLE_BLOCKS
-      );
+        );
+      } else {
+        context.reportProgress(progress(
+          "Selecting another matching block after the target changed",
+          CollectBlocksTaskProgressDetail.Phase.PHASE_RETRYING_APPROACH
+        ));
+      }
       return true;
     }
 

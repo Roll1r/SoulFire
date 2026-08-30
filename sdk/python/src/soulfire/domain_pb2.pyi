@@ -200,7 +200,7 @@ class EntityReference(_message.Message):
     def __init__(self, connection_epoch: _Optional[str] = ..., network_id: _Optional[int] = ..., uuid: _Optional[str] = ...) -> None: ...
 
 class EntitySnapshot(_message.Message):
-    __slots__ = ("reference", "entity_type", "category", "position", "velocity", "rotation", "bounding_box", "pose", "on_ground", "display_name", "player_name", "health", "max_health", "equipment", "effects", "attributes", "vehicle", "passengers", "owner", "target", "item", "alive", "metadata", "age_ticks", "tamed")
+    __slots__ = ("reference", "entity_type", "category", "position", "velocity", "rotation", "bounding_box", "pose", "on_ground", "display_name", "player_name", "health", "max_health", "equipment", "effects", "attributes", "vehicle", "passengers", "owner", "target", "item", "alive", "metadata", "age_ticks", "tamed", "aggressive")
     class EquipmentEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -233,6 +233,7 @@ class EntitySnapshot(_message.Message):
     METADATA_FIELD_NUMBER: _ClassVar[int]
     AGE_TICKS_FIELD_NUMBER: _ClassVar[int]
     TAMED_FIELD_NUMBER: _ClassVar[int]
+    AGGRESSIVE_FIELD_NUMBER: _ClassVar[int]
     reference: EntityReference
     entity_type: str
     category: EntityCategory
@@ -258,7 +259,8 @@ class EntitySnapshot(_message.Message):
     metadata: _struct_pb2.Struct
     age_ticks: int
     tamed: bool
-    def __init__(self, reference: _Optional[_Union[EntityReference, _Mapping]] = ..., entity_type: _Optional[str] = ..., category: _Optional[_Union[EntityCategory, str]] = ..., position: _Optional[_Union[_common_pb2.WorldPosition, _Mapping]] = ..., velocity: _Optional[_Union[Vec3, _Mapping]] = ..., rotation: _Optional[_Union[Rotation, _Mapping]] = ..., bounding_box: _Optional[_Union[BoundingBox, _Mapping]] = ..., pose: _Optional[str] = ..., on_ground: bool = ..., display_name: _Optional[_Union[TextComponent, _Mapping]] = ..., player_name: _Optional[str] = ..., health: _Optional[float] = ..., max_health: _Optional[float] = ..., equipment: _Optional[_Mapping[str, ItemStackSnapshot]] = ..., effects: _Optional[_Iterable[_Union[EffectSnapshot, _Mapping]]] = ..., attributes: _Optional[_Iterable[_Union[AttributeSnapshot, _Mapping]]] = ..., vehicle: _Optional[_Union[EntityReference, _Mapping]] = ..., passengers: _Optional[_Iterable[_Union[EntityReference, _Mapping]]] = ..., owner: _Optional[_Union[EntityReference, _Mapping]] = ..., target: _Optional[_Union[EntityReference, _Mapping]] = ..., item: _Optional[_Union[ItemStackSnapshot, _Mapping]] = ..., alive: bool = ..., metadata: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., age_ticks: _Optional[int] = ..., tamed: bool = ...) -> None: ...
+    aggressive: bool
+    def __init__(self, reference: _Optional[_Union[EntityReference, _Mapping]] = ..., entity_type: _Optional[str] = ..., category: _Optional[_Union[EntityCategory, str]] = ..., position: _Optional[_Union[_common_pb2.WorldPosition, _Mapping]] = ..., velocity: _Optional[_Union[Vec3, _Mapping]] = ..., rotation: _Optional[_Union[Rotation, _Mapping]] = ..., bounding_box: _Optional[_Union[BoundingBox, _Mapping]] = ..., pose: _Optional[str] = ..., on_ground: bool = ..., display_name: _Optional[_Union[TextComponent, _Mapping]] = ..., player_name: _Optional[str] = ..., health: _Optional[float] = ..., max_health: _Optional[float] = ..., equipment: _Optional[_Mapping[str, ItemStackSnapshot]] = ..., effects: _Optional[_Iterable[_Union[EffectSnapshot, _Mapping]]] = ..., attributes: _Optional[_Iterable[_Union[AttributeSnapshot, _Mapping]]] = ..., vehicle: _Optional[_Union[EntityReference, _Mapping]] = ..., passengers: _Optional[_Iterable[_Union[EntityReference, _Mapping]]] = ..., owner: _Optional[_Union[EntityReference, _Mapping]] = ..., target: _Optional[_Union[EntityReference, _Mapping]] = ..., item: _Optional[_Union[ItemStackSnapshot, _Mapping]] = ..., alive: bool = ..., metadata: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., age_ticks: _Optional[int] = ..., tamed: bool = ..., aggressive: bool = ...) -> None: ...
 
 class FluidSnapshot(_message.Message):
     __slots__ = ("fluid_id", "source", "height")

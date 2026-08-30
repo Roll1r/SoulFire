@@ -14,6 +14,10 @@ export interface BeatGameRequirementDefinition {
   readonly priority: number;
 }
 
+export interface BeatGameRequirementContext {
+  readonly reusablePortalAvailable?: boolean;
+}
+
 export const COOKED_FOOD_ITEM_IDS = [
   "minecraft:cooked_beef",
   "minecraft:cooked_porkchop",
@@ -241,20 +245,6 @@ const REQUIREMENTS: Readonly<
       75,
     ),
   ],
-  [BeatGamePhase.COLLECT_DRAGON_EGG]: [
-    itemRequirement(
-      "torch",
-      ["minecraft:torch"],
-      () => 1,
-      100,
-    ),
-    itemRequirement(
-      "dragon-egg",
-      ["minecraft:dragon_egg"],
-      () => 1,
-      90,
-    ),
-  ],
   [BeatGamePhase.EXIT_END]: [],
   [BeatGamePhase.COMPLETE]: [],
 };
@@ -263,9 +253,14 @@ export function requirementsForPhase(
   phase: BeatGamePhase,
   inventory: BeatGameInventory,
   strategy: BeatGameStrategy,
+  context: BeatGameRequirementContext = {},
 ): readonly BeatGameItemRequirement[] {
   const definitions = phase === BeatGamePhase.ENTER_NETHER
-    ? portalRequirements(inventory, strategy)
+    ? portalRequirements(
+      inventory,
+      strategy,
+      context.reusablePortalAvailable === true,
+    )
     : phase === BeatGamePhase.PREPARE_OVERWORLD
     ? prepareOverworldRequirements(inventory)
     : REQUIREMENTS[phase];
@@ -283,14 +278,45 @@ function prepareOverworldRequirements(
 ): readonly BeatGameRequirementDefinition[] {
   const definitions = REQUIREMENTS[BeatGamePhase.PREPARE_OVERWORLD];
   const logTarget = overworldLogTarget(inventory);
-  return definitions.map((definition) =>
-    definition.key === "logs"
-      ? {
+  const investedIron = preparedEquipmentIronInvestment(inventory);
+  return definitions.map((definition) => {
+    if (definition.key === "logs") {
+      return {
         ...definition,
         target: ({ targetLogCount }) => Math.min(targetLogCount, logTarget),
-      }
-      : definition
-  );
+      };
+    }
+    if (definition.key === "iron") {
+      return {
+        ...definition,
+        target: ({ targetIronCount }) =>
+          Math.max(0, targetIronCount - investedIron),
+      };
+    }
+    return definition;
+  });
+}
+
+function preparedEquipmentIronInvestment(
+  inventory: BeatGameInventory,
+): number {
+  const hasShield = (inventory.counts["minecraft:shield"] ?? 0) > 0;
+  const hasDurablePickaxe = [
+    "minecraft:netherite_pickaxe",
+    "minecraft:diamond_pickaxe",
+    "minecraft:iron_pickaxe",
+  ].some((itemId) => (inventory.counts[itemId] ?? 0) > 0);
+  const hasLiquidContainer =
+    (inventory.counts["minecraft:bucket"] ?? 0)
+      + (inventory.counts["minecraft:water_bucket"] ?? 0)
+      + (inventory.counts["minecraft:lava_bucket"] ?? 0) > 0;
+  const hasIgnition =
+    (inventory.counts["minecraft:flint_and_steel"] ?? 0) > 0
+    || (inventory.counts["minecraft:fire_charge"] ?? 0) > 0;
+  return Number(hasShield)
+    + 3 * Number(hasDurablePickaxe)
+    + 3 * Number(hasLiquidContainer)
+    + Number(hasIgnition);
 }
 
 function overworldLogTarget(inventory: BeatGameInventory): number {
@@ -322,6 +348,7 @@ function overworldLogTarget(inventory: BeatGameInventory): number {
 function portalRequirements(
   inventory: BeatGameInventory,
   strategy: BeatGameStrategy,
+  reusablePortalAvailable: boolean,
 ): readonly BeatGameRequirementDefinition[] {
   const survivalRequirements = REQUIREMENTS[
     BeatGamePhase.PREPARE_OVERWORLD
@@ -348,6 +375,21 @@ function portalRequirements(
       }
       return definition;
     });
+  if (reusablePortalAvailable) {
+    return [
+      ...survivalRequirements,
+      ...(
+        (inventory.counts["minecraft:shield"] ?? 0) === 0
+          ? [itemRequirement(
+            "iron",
+            ["minecraft:iron_ingot"],
+            () => 1,
+            103,
+          )]
+          : []
+      ),
+    ];
+  }
   const hasCompleteObsidianFrame =
     (inventory.counts["minecraft:obsidian"] ?? 0)
       >= strategy.targetObsidianCount;
@@ -362,11 +404,11 @@ function portalRequirements(
     !useObsidian
       && (inventory.counts["minecraft:lava_bucket"] ?? 0) === 0,
   );
-  const missingBucketIron = Math.max(
+  const missingBucketCount = Math.max(
     0,
     missingLiquidBuckets - (inventory.counts["minecraft:bucket"] ?? 0),
   );
-  const portalEquipmentIronTarget = missingBucketIron
+  const portalEquipmentIronTarget = 3 * missingBucketCount
     + Number((inventory.counts["minecraft:shield"] ?? 0) === 0)
     + Number(
       (inventory.counts["minecraft:flint_and_steel"] ?? 0) === 0
@@ -428,8 +470,9 @@ export function unsatisfiedRequirements(
   phase: BeatGamePhase,
   inventory: BeatGameInventory,
   strategy: BeatGameStrategy,
+  context: BeatGameRequirementContext = {},
 ): readonly BeatGameItemRequirement[] {
-  return requirementsForPhase(phase, inventory, strategy)
+  return requirementsForPhase(phase, inventory, strategy, context)
     .filter(({ satisfied }) => !satisfied);
 }
 

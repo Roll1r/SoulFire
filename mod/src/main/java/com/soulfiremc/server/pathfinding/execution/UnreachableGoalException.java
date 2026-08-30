@@ -19,16 +19,23 @@ package com.soulfiremc.server.pathfinding.execution;
 
 /// Indicates that pathfinding cannot make progress toward a goal.
 public final class UnreachableGoalException extends IllegalStateException {
-  private UnreachableGoalException(String message) {
+  private final String code;
+
+  private UnreachableGoalException(String code, String message) {
     super(message);
+    this.code = code;
   }
 
   public static UnreachableGoalException noRoute() {
-    return new UnreachableGoalException("No route found to the goal!");
+    return new UnreachableGoalException(
+      "path_no_route",
+      "No route found to the goal!"
+    );
   }
 
   public static UnreachableGoalException searchLimit(int expandedStates) {
     return new UnreachableGoalException(
+      "path_search_limit",
       "Pathfinding reached its search limit after "
         + expandedStates
         + " expanded states"
@@ -40,6 +47,7 @@ public final class UnreachableGoalException extends IllegalStateException {
     double requestedBound
   ) {
     return new UnreachableGoalException(
+      "path_quality_bound_not_met",
       "Pathfinding found a route with certified bound "
         + certifiedBound
         + " but the request requires "
@@ -49,6 +57,7 @@ public final class UnreachableGoalException extends IllegalStateException {
 
   public static UnreachableGoalException stalled(int partialRouteCount) {
     return new UnreachableGoalException(
+      "path_stalled",
       "Pathfinding made no progress across "
         + partialRouteCount
         + " consecutive partial routes"
@@ -60,6 +69,7 @@ public final class UnreachableGoalException extends IllegalStateException {
     String action
   ) {
     return new UnreachableGoalException(
+      "path_action_stalled",
       "Pathfinding stalled on "
         + action
         + " across "
@@ -73,10 +83,15 @@ public final class UnreachableGoalException extends IllegalStateException {
     int unavailableChunks
   ) {
     return new UnreachableGoalException(
+      "path_world_data_timeout",
       "Timed out waiting for "
         + unavailableChunks
         + " navigation chunks after world revision "
         + snapshotRevision
     );
+  }
+
+  public String code() {
+    return code;
   }
 }

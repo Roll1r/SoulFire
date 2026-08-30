@@ -168,6 +168,40 @@ describe("beat-game requirements", () => {
     });
   });
 
+  it("credits crafted equipment toward the preparation iron budget", () => {
+    const ironRequirement = (
+      counts: Readonly<Record<string, number>>,
+    ) =>
+      requirementsForPhase(
+        BeatGamePhase.PREPARE_OVERWORLD,
+        observation({ counts }).inventory,
+        defaultBeatGameStrategy,
+      ).find(({ key }) => key === "iron");
+
+    expect(ironRequirement({})).toMatchObject({
+      currentCount: 0,
+      targetCount: 7,
+      satisfied: false,
+    });
+    expect(ironRequirement({
+      "minecraft:shield": 1,
+      "minecraft:iron_ingot": 6,
+    })).toMatchObject({
+      currentCount: 6,
+      targetCount: 6,
+      satisfied: true,
+    });
+    expect(ironRequirement({
+      "minecraft:shield": 1,
+      "minecraft:iron_pickaxe": 1,
+      "minecraft:bucket": 1,
+    })).toMatchObject({
+      currentCount: 0,
+      targetCount: 0,
+      satisfied: true,
+    });
+  });
+
   it("requires a diamond pickaxe before mining an obsidian frame", () => {
     const strategy = {
       ...defaultBeatGameStrategy,
@@ -246,9 +280,78 @@ describe("beat-game requirements", () => {
     ).toHaveLength(1);
     expect(requirements.find(({ key }) => key === "iron")).toMatchObject({
       currentCount: 7,
-      targetCount: 1,
+      targetCount: 3,
       satisfied: true,
     });
+  });
+
+  it("does not rebuild portal equipment while a reusable portal is known", () => {
+    const requirements = requirementsForPhase(
+      BeatGamePhase.ENTER_NETHER,
+      observation({
+        counts: {
+          "minecraft:cooked_beef": 8,
+          "minecraft:oak_log": 4,
+          "minecraft:cobblestone": 20,
+          "minecraft:stone_sword": 1,
+          "minecraft:stone_pickaxe": 1,
+          "minecraft:shield": 1,
+        },
+      }).inventory,
+      {
+        ...defaultBeatGameStrategy,
+        portalStrategy: PortalStrategy.CAST,
+      },
+      { reusablePortalAvailable: true },
+    );
+
+    expect(requirements.every(({ satisfied }) => satisfied)).toBe(true);
+    expect(requirements.map(({ key }) => key)).not.toEqual(
+      expect.arrayContaining([
+        "iron",
+        "water-bucket",
+        "lava-bucket",
+        "ignition",
+        "obsidian",
+      ]),
+    );
+  });
+
+  it("restores the shield iron dependency before reusing a portal", () => {
+    const requirements = requirementsForPhase(
+      BeatGamePhase.ENTER_NETHER,
+      observation({
+        counts: {
+          "minecraft:cooked_beef": 8,
+          "minecraft:oak_log": 4,
+          "minecraft:cobblestone": 20,
+          "minecraft:stone_sword": 1,
+          "minecraft:stone_pickaxe": 1,
+          "minecraft:raw_iron": 1,
+        },
+      }).inventory,
+      {
+        ...defaultBeatGameStrategy,
+        portalStrategy: PortalStrategy.CAST,
+      },
+      { reusablePortalAvailable: true },
+    );
+
+    expect(requirements.find(({ key }) => key === "iron")).toMatchObject({
+      currentCount: 0,
+      targetCount: 1,
+      satisfied: false,
+    });
+    expect(requirements.findIndex(({ key }) => key === "iron"))
+      .toBeLessThan(requirements.findIndex(({ key }) => key === "shield"));
+    expect(requirements.map(({ key }) => key)).not.toEqual(
+      expect.arrayContaining([
+        "water-bucket",
+        "lava-bucket",
+        "ignition",
+        "obsidian",
+      ]),
+    );
   });
 
   it("replenishes only the iron needed for missing portal equipment", () => {
@@ -268,7 +371,24 @@ describe("beat-game requirements", () => {
 
     expect(requirements.find(({ key }) => key === "iron")).toMatchObject({
       currentCount: 0,
-      targetCount: 2,
+      targetCount: 4,
+      satisfied: false,
+    });
+  });
+
+  it("prices missing cast-portal buckets in ingots", () => {
+    const requirements = requirementsForPhase(
+      BeatGamePhase.ENTER_NETHER,
+      observation().inventory,
+      {
+        ...defaultBeatGameStrategy,
+        portalStrategy: PortalStrategy.CAST,
+      },
+    );
+
+    expect(requirements.find(({ key }) => key === "iron")).toMatchObject({
+      currentCount: 0,
+      targetCount: 8,
       satisfied: false,
     });
   });

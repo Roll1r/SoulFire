@@ -149,6 +149,10 @@ message EntitySnapshot {
   google.protobuf.Struct metadata = 23;
   optional int32 age_ticks = 24;
   optional bool tamed = 25;
+  // Client-observable aggression state. This is true while a mob exposes an
+  // active attack posture or a synchronized neutral-mob anger state. It does
+  // not identify which entity the mob is attacking.
+  optional bool aggressive = 26;
 }
 
 message FluidSnapshot {

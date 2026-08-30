@@ -67,6 +67,7 @@ final class AnytimeRepairingAStar<S, E> {
   private int repairedInconsistentStates;
   private @Nullable Solution<S, E> incumbent;
   private @Nullable PartialCandidate<S, E> bestBoundary;
+  private @Nullable PartialCandidate<S, E> bestSearchBudgetFrontier;
   private @Nullable SearchRecord<S, E> blockedStart;
   private @Nullable SearchRecord<S, E> closestRecord;
   private @Nullable SearchRecord<S, E> closestExpandedRecord;
@@ -139,6 +140,16 @@ final class AnytimeRepairingAStar<S, E> {
         }
         if (bestBoundary != null) {
           return partialOutcome(termination);
+        }
+        if (
+          (termination == Termination.DEADLINE
+            || termination == Termination.EXPANSION_BUDGET)
+            && bestSearchBudgetFrontier != null
+        ) {
+          return partialOutcome(
+            termination,
+            bestSearchBudgetFrontier
+          );
         }
         if (
           blockedStart != null
@@ -235,6 +246,18 @@ final class AnytimeRepairingAStar<S, E> {
         current.state,
         transition -> relax(current, transition)
       );
+      if (
+        current.parent != null
+          && current.heuristic < startHeuristic
+          && domain.isValidSearchBudgetFrontier(
+          current.state,
+          current.incomingEdge,
+          startHeuristic,
+          current.heuristic
+        )
+      ) {
+        considerSearchBudgetFrontier(current);
+      }
       if (reachedBoundary) {
         reachedBoundaries++;
         considerBlockedStart(current);
@@ -367,6 +390,42 @@ final class AnytimeRepairingAStar<S, E> {
       ) {
       bestBoundary = candidate;
     }
+  }
+
+  private void considerSearchBudgetFrontier(
+    SearchRecord<S, E> record
+  ) {
+    var candidate = new PartialCandidate<>(
+      List.copyOf(reconstruct(record)),
+      record.state,
+      record.g,
+      record.heuristic
+    );
+    var current = bestSearchBudgetFrontier;
+    if (current == null || isBetterSearchBudgetFrontier(candidate, current)) {
+      bestSearchBudgetFrontier = candidate;
+    }
+  }
+
+  private boolean isBetterSearchBudgetFrontier(
+    PartialCandidate<S, E> candidate,
+    PartialCandidate<S, E> current
+  ) {
+    var candidateKey = candidate.cost() + epsilon * candidate.heuristic();
+    var currentKey = current.cost() + epsilon * current.heuristic();
+    if (candidateKey < currentKey - COST_TOLERANCE) {
+      return true;
+    }
+    if (candidateKey > currentKey + COST_TOLERANCE) {
+      return false;
+    }
+    if (candidate.heuristic() < current.heuristic() - COST_TOLERANCE) {
+      return true;
+    }
+    if (candidate.heuristic() > current.heuristic() + COST_TOLERANCE) {
+      return false;
+    }
+    return candidate.cost() < current.cost() - COST_TOLERANCE;
   }
 
   private void considerBlockedStart(SearchRecord<S, E> record) {
@@ -552,11 +611,18 @@ final class AnytimeRepairingAStar<S, E> {
     if (boundary == null) {
       throw new IllegalStateException("No frontier is available");
     }
+    return partialOutcome(termination, boundary);
+  }
+
+  private Outcome<S, E> partialOutcome(
+    Termination termination,
+    PartialCandidate<S, E> frontier
+  ) {
     return new Outcome<>(
       Status.PARTIAL,
-      boundary.path(),
-      boundary.endpoint(),
-      boundary.cost(),
+      frontier.path(),
+      frontier.endpoint(),
+      frontier.cost(),
       0,
       epsilon,
       repairIterations,
@@ -662,6 +728,15 @@ final class AnytimeRepairingAStar<S, E> {
       @Nullable E incomingEdge
     ) {
       return incomingEdge != null;
+    }
+
+    default boolean isValidSearchBudgetFrontier(
+      S state,
+      @Nullable E incomingEdge,
+      double startHeuristic,
+      double stateHeuristic
+    ) {
+      return false;
     }
   }
 

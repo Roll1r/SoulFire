@@ -28,7 +28,6 @@ import com.soulfiremc.server.api.BotTaskProvider;
 import com.soulfiremc.server.bot.ControlResource;
 import com.soulfiremc.server.bot.ControlStopReason;
 import com.soulfiremc.server.bot.ControlTask;
-import com.soulfiremc.server.grpc.InventoryServiceImpl;
 import com.soulfiremc.server.pathfinding.NodeState;
 import com.soulfiremc.server.pathfinding.PathfindingSupport;
 import com.soulfiremc.server.pathfinding.PathfindingSupport.ResolvedGoal;
@@ -37,20 +36,18 @@ import com.soulfiremc.server.pathfinding.execution.PathExecutor;
 import com.soulfiremc.server.pathfinding.goals.GoalScorer;
 import com.soulfiremc.server.util.SFBlockHelpers;
 import com.soulfiremc.server.util.SFEntityHelpers;
-import com.soulfiremc.server.util.SFInventoryHelpers;
-import com.soulfiremc.server.util.SFItemHelpers;
 import io.grpc.Status;
 import net.minecraft.client.multiplayer.MultiPlayerGameMode;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.InteractionHand;
-import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.checkerframework.checker.nullness.qual.Nullable;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -293,7 +290,7 @@ public final class AttackEntityTaskProvider
         context.bot().minecraft().player
       ).getInventory().getSelectedSlot();
       this.goal = goal;
-      this.waitingGoals = waitingGoals;
+      this.waitingGoals = new ArrayList<>(waitingGoals);
       this.constraint = constraint;
       this.result = result;
     }
@@ -496,20 +493,17 @@ public final class AttackEntityTaskProvider
         completed.completion().join();
         completed.onStopped(ControlStopReason.COMPLETED, null);
         consecutivePathFailures = 0;
-        if (completedPurpose == PathPurpose.DRAGON_STAGING) {
-          waitingGoalIndex++;
-        }
       } catch (CompletionException exception) {
         var cause = Objects.requireNonNullElse(
           exception.getCause(),
           exception
         );
         completed.onStopped(ControlStopReason.FAILED, cause);
-        if (completedPurpose == PathPurpose.DRAGON_STAGING) {
-          // Staging is an optimization while the dragon circles. If the
-          // terrain cannot support it, keep waiting and let the required
-          // approach run when a melee phase begins.
-          waitingGoalIndex = waitingGoals.size();
+        if (
+          completedPurpose == PathPurpose.DRAGON_STAGING
+            && refineCurrentWaitingGoal()
+        ) {
+          consecutivePathFailures = 0;
           return;
         }
         consecutivePathFailures++;
@@ -521,6 +515,27 @@ public final class AttackEntityTaskProvider
           ));
         }
       }
+    }
+
+    private boolean refineCurrentWaitingGoal() {
+      var failedGoal = currentWaitingGoal();
+      if (failedGoal == null) {
+        return false;
+      }
+      var player = Objects.requireNonNull(context.bot().minecraft().player);
+      var refined = CombatTaskSupport.refineDragonWaitingGoal(
+        failedGoal,
+        player.position()
+      );
+      if (refined.isEmpty()) {
+        return false;
+      }
+      waitingGoals.add(waitingGoalIndex, refined.orElseThrow());
+      context.reportProgress(BotTaskProgress.newBuilder()
+        .setMessage("Refining the dragon staging route after a path limit")
+        .setCurrent(attacks)
+        .build());
+      return true;
     }
 
     private void reportUnavailable() {
@@ -606,42 +621,15 @@ public final class AttackEntityTaskProvider
       if (!selectBestWeapon) {
         return true;
       }
-      var player = Objects.requireNonNull(context.bot().minecraft().player);
-      var best = SFInventoryHelpers.playerInventorySlots(
-          player.inventoryMenu
-        )
-        .mapToObj(slot -> player.inventoryMenu.getSlot(slot).getItem())
-        .filter(stack -> weaponSelector == null
-          || InventoryServiceImpl.matches(stack, weaponSelector))
-        .filter(stack -> SFItemHelpers.meleeWeaponStats(stack).isPresent())
-        .max((left, right) -> Double.compare(
-          weaponScore(left),
-          weaponScore(right)
-        ));
-      if (best.isEmpty()) {
-        if (weaponSelector != null) {
-          throw Status.FAILED_PRECONDITION
-            .withDescription("No matching melee weapon is available")
-            .asRuntimeException();
-        }
+      if (CombatTaskSupport.ensureBestMeleeWeapon(
+        context.bot(),
+        weaponSelector
+      )) {
         return true;
       }
-      var selected = best.orElseThrow().copy();
-      return TaskInventorySupport.ensureHolding(
-        context.bot(),
-        stack -> ItemStack.isSameItemSameComponents(stack, selected)
-      );
-    }
-
-    private static double weaponScore(ItemStack stack) {
-      var base = SFItemHelpers.meleeWeaponStats(stack)
-        .orElseThrow()
-        .score();
-      if (!stack.isDamageableItem()) {
-        return base;
-      }
-      var remaining = stack.getMaxDamage() - stack.getDamageValue();
-      return base + (double) remaining / stack.getMaxDamage();
+      throw Status.FAILED_PRECONDITION
+        .withDescription("No matching melee weapon is available")
+        .asRuntimeException();
     }
 
     private void stopPath(

@@ -19,6 +19,7 @@ import {
 
 const FOOD_RESERVE_REFILL_TOLERANCE = 3;
 const DEEP_WORK_MINIMUM_FOOD_RESERVE = 3;
+const MINIMUM_LOG_RESERVE = 2;
 const PRACTICAL_OVERWORLD_FOOD_REFILL_MINIMUM_Y = 50;
 
 const COOKABLE_RAW_FOOD_ITEM_IDS = new Set(
@@ -78,10 +79,6 @@ export type BeatGamePlannerDecision =
     readonly action: "fight-ender-dragon";
   }
   | {
-    readonly type: "collect-dragon-egg";
-    readonly action: "collect-dragon-egg";
-  }
-  | {
     readonly type: "exit-end";
     readonly action: "exit-end";
   };
@@ -110,16 +107,30 @@ export function decideBeatGameAction(
   ) {
     return { type: "eat", action: "eat" };
   }
+  const reusablePortalAvailable = hasReusablePortalCandidate(
+    checkpoint,
+    observation,
+  );
   const requirements = requirementsForPhase(
     phase,
     observation.inventory,
     strategy,
+    {
+      reusablePortalAvailable,
+    },
   );
   if (
     observation.player.food <= strategy.eatBelowFood
     && hasCookableRawFood(observation)
   ) {
-    const food = requirements.find(({ key }) => key === "food");
+    const food = requirements.find(({ key }) => key === "food")
+      ?? (isOverworld(observation.player.position.dimension)
+        ? requirementsForPhase(
+          BeatGamePhase.PREPARE_OVERWORLD,
+          observation.inventory,
+          strategy,
+        ).find(({ key }) => key === "food")
+        : undefined);
     const logs = requirements.find(({ key }) => key === "logs");
     if (
       food !== undefined
@@ -128,6 +139,7 @@ export function decideBeatGameAction(
         observation.player.health < strategy.minimumHealth
         || logs === undefined
         || logs.satisfied
+        || shouldDeferReserveRefill(logs, observation, strategy)
       )
     ) {
       return requirementDecision(food);
@@ -144,13 +156,40 @@ export function decideBeatGameAction(
     }
   }
   if (observation.player.health < strategy.minimumHealth) {
-    const food = requirements.find(({ key }) => key === "food");
+    const phaseFood = requirements.find(({ key }) => key === "food");
+    const food = phaseFood
+      ?? (isOverworld(observation.player.position.dimension)
+        ? requirementsForPhase(
+          BeatGamePhase.PREPARE_OVERWORLD,
+          observation.inventory,
+          strategy,
+        ).find(({ key }) => key === "food")
+        : undefined);
     if (
       !hasFood(observation, strategy)
-      && food !== undefined
-      && !food.satisfied
     ) {
-      return requirementDecision(food);
+      if (
+        food !== undefined
+        && !food.satisfied
+        && (
+          phaseFood !== undefined
+          || hasCookableRawFood(observation)
+        )
+      ) {
+        return requirementDecision(food);
+      }
+      const emergencyFoodSupply = requirementsForPhase(
+        BeatGamePhase.PREPARE_OVERWORLD,
+        observation.inventory,
+        strategy,
+      ).find(({ key }) => key === "food-supply");
+      if (
+        isOverworld(observation.player.position.dimension)
+        && emergencyFoodSupply !== undefined
+        && !emergencyFoodSupply.satisfied
+      ) {
+        return requirementDecision(emergencyFoodSupply);
+      }
     }
     return { type: "retreat", action: "retreat" };
   }
@@ -171,14 +210,10 @@ export function decideBeatGameAction(
   );
   const firstMissing = missingRequirements[0];
   const actionableMissing = missingRequirements.find((requirement) =>
-    !shouldDeferFoodReserveRefill(requirement, observation, strategy)
+    !shouldDeferReserveRefill(requirement, observation, strategy)
   );
-  const missing = actionableMissing ?? (
-      firstMissing !== undefined
-      && shouldRefillDeferredFoodReserve(observation)
-    ? firstMissing
-    : undefined
-  );
+  const missing = actionableMissing
+    ?? (phase === BeatGamePhase.PREPARE_OVERWORLD ? firstMissing : undefined);
   switch (phase) {
     case BeatGamePhase.PREPARE_OVERWORLD:
       if (missing !== undefined) {
@@ -204,6 +239,24 @@ export function decideBeatGameAction(
         }
         : requirementDecision(missing);
     case BeatGamePhase.COLLECT_NETHER_RESOURCES:
+      if (!isNether(observation.player.position.dimension)) {
+        const reentryRequirement = requirementsForPhase(
+          BeatGamePhase.ENTER_NETHER,
+          observation.inventory,
+          strategy,
+          { reusablePortalAvailable },
+        ).find((requirement) =>
+          !requirement.satisfied
+          && !shouldDeferReserveRefill(requirement, observation, strategy)
+        );
+        if (reentryRequirement !== undefined) {
+          return requirementDecision(reentryRequirement);
+        }
+        return {
+          type: "build-and-enter-nether",
+          action: "build-and-enter-nether",
+        };
+      }
       return missing === undefined
         ? phaseTransition(phase, BeatGamePhase.RETURN_TO_OVERWORLD)
         : requirementDecision(missing);
@@ -238,20 +291,6 @@ export function decideBeatGameAction(
         action: "fight-ender-dragon",
         }
         : requirementDecision(missing);
-    case BeatGamePhase.COLLECT_DRAGON_EGG: {
-      if ((observation.inventory.counts["minecraft:dragon_egg"] ?? 0) > 0) {
-        return phaseTransition(phase, BeatGamePhase.EXIT_END);
-      }
-      const missingTool = requirements.find(({ key, satisfied }) =>
-        key !== "dragon-egg" && !satisfied
-      );
-      return missingTool === undefined
-        ? {
-          type: "collect-dragon-egg",
-          action: "collect-dragon-egg",
-        }
-        : requirementDecision(missingTool);
-    }
     case BeatGamePhase.EXIT_END:
       return isEnd(observation.player.position.dimension)
         ? { type: "exit-end", action: "exit-end" }
@@ -279,19 +318,27 @@ function canCraftWoodenSword(
   return availablePlanks >= craftingTableCost + stickCost + 2;
 }
 
-function shouldDeferFoodReserveRefill(
+function shouldDeferReserveRefill(
   requirement: BeatGameItemRequirement,
   observation: BeatGameObservation,
   strategy: BeatGameStrategy,
 ): boolean {
+  if (requirement.key === "logs") {
+    return requirement.currentCount >= Math.min(
+      requirement.targetCount,
+      MINIMUM_LOG_RESERVE,
+    );
+  }
+  if (
+    requirement.key !== "food-supply"
+    && requirement.key !== "food"
+  ) {
+    return false;
+  }
   const minimumReserve = shouldRefillDeferredFoodReserve(observation)
     ? Math.max(1, requirement.targetCount - FOOD_RESERVE_REFILL_TOLERANCE)
     : DEEP_WORK_MINIMUM_FOOD_RESERVE;
   return observation.player.food > strategy.eatBelowFood
-    && (
-      requirement.key === "food-supply"
-      || requirement.key === "food"
-    )
     && requirement.currentCount >= minimumReserve;
 }
 
@@ -344,6 +391,7 @@ export function plannerWithObservation(
   planner: BeatGamePlannerState,
   observation: BeatGameObservation,
   strategy: BeatGameStrategy,
+  checkpoint?: BeatGameCheckpoint,
 ): BeatGamePlannerState {
   const now = new Date().toISOString();
   return {
@@ -352,9 +400,46 @@ export function plannerWithObservation(
       planner.phase,
       observation.inventory,
       strategy,
+      {
+        reusablePortalAvailable: checkpoint !== undefined
+          && hasReusablePortalCandidate(checkpoint, observation),
+      },
     ),
     updatedAt: now,
   };
+}
+
+function hasReusablePortalCandidate(
+  checkpoint: BeatGameCheckpoint,
+  observation: BeatGameObservation,
+): boolean {
+  if (
+    checkpoint.planner.phase !== BeatGamePhase.ENTER_NETHER
+    && checkpoint.planner.phase !== BeatGamePhase.COLLECT_NETHER_RESOURCES
+  ) {
+    return false;
+  }
+  const dimension = observation.player.position.dimension;
+  if (checkpoint.memory.portals.some(({ confidence, value }) =>
+    confidence > 0
+    && value.position.dimension === dimension
+  )) {
+    return true;
+  }
+  const activeWorkspace = checkpoint.activeSkill?.portalWorkspace;
+  if (
+    activeWorkspace !== undefined
+    && activeWorkspace.origin.dimension === dimension
+    && activeWorkspace.status !== "ABANDONED"
+    && activeWorkspace.interiorState === "PORTAL"
+  ) {
+    return true;
+  }
+  return checkpoint.memory.portalWorkspaces.some((workspace) =>
+    workspace.origin.dimension === dimension
+    && workspace.status !== "ABANDONED"
+    && workspace.interiorState === "PORTAL"
+  );
 }
 
 export function nextPhase(phase: BeatGamePhase): BeatGamePhase {
@@ -372,8 +457,6 @@ export function nextPhase(phase: BeatGamePhase): BeatGamePhase {
     case BeatGamePhase.ACTIVATE_END_PORTAL:
       return BeatGamePhase.FIGHT_ENDER_DRAGON;
     case BeatGamePhase.FIGHT_ENDER_DRAGON:
-      return BeatGamePhase.COLLECT_DRAGON_EGG;
-    case BeatGamePhase.COLLECT_DRAGON_EGG:
       return BeatGamePhase.EXIT_END;
     case BeatGamePhase.EXIT_END:
     case BeatGamePhase.COMPLETE:
@@ -397,18 +480,21 @@ export function objectiveForPhase(phase: BeatGamePhase): string {
       return "Fill the End portal frames and enter the End";
     case BeatGamePhase.FIGHT_ENDER_DRAGON:
       return "Destroy the End crystals and defeat the dragon";
-    case BeatGamePhase.COLLECT_DRAGON_EGG:
-      return "Collect the dragon egg from the exit portal";
     case BeatGamePhase.EXIT_END:
       return "Enter the exit portal and return from the End";
     case BeatGamePhase.COMPLETE:
-      return "The dragon egg is secured and the bot has left the End";
+      return "The dragon is defeated and the bot has left the End";
   }
 }
 
 export function isNether(dimension: string): boolean {
   return dimension === "minecraft:the_nether"
     || dimension.endsWith(":the_nether");
+}
+
+function isOverworld(dimension: string): boolean {
+  return dimension === "minecraft:overworld"
+    || dimension.endsWith(":overworld");
 }
 
 export function isEnd(dimension: string): boolean {

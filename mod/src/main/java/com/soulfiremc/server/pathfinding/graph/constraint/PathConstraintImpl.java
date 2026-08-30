@@ -30,7 +30,10 @@ import com.soulfiremc.server.util.SFItemHelpers;
 import com.soulfiremc.server.util.structs.CachedLazyObject;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.NeutralMob;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.LevelHeightAccessor;
@@ -219,15 +222,37 @@ public final class PathConstraintImpl implements PathConstraint {
 
     return StreamSupport.stream(((ClientLevel) entity.level()).entitiesForRendering().spliterator(), false)
       .filter(e -> e != entity)
-      .filter(e -> !e.getType().getCategory().isFriendly())
       .flatMap(e -> e instanceof LivingEntity livingEntity
         && livingEntity.getAttributeValue(Attributes.FOLLOW_RANGE) > 0
+        && shouldAvoidEntity(e)
         ? Stream.of(livingEntity) : Stream.empty())
       .map(e -> new EntityRangeData(
         e.getAttributeValue(Attributes.FOLLOW_RANGE),
         SFVec3i.fromInt(e.blockPosition())
       ))
       .toList();
+  }
+
+  private static boolean shouldAvoidEntity(Entity candidate) {
+    var activelyAggressive = candidate instanceof Mob mob
+      && (
+        mob.isAggressive()
+          || mob.getTarget() != null
+          || (mob instanceof NeutralMob neutralMob && neutralMob.isAngry())
+      );
+    return shouldAvoidEntity(
+      candidate.getType().getCategory().isFriendly(),
+      candidate instanceof NeutralMob,
+      activelyAggressive
+    );
+  }
+
+  static boolean shouldAvoidEntity(
+    boolean friendlyCategory,
+    boolean neutralMob,
+    boolean activelyAggressive
+  ) {
+    return activelyAggressive || (!friendlyCategory && !neutralMob);
   }
 
   private record EntityRangeData(double followRange, SFVec3i entityPosition) {}
