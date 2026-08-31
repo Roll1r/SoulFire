@@ -1077,9 +1077,7 @@ class RasterPipelineTest {
       .withFragmentShader("core/test_unknown")
       .withPrimitiveTopology(PrimitiveTopology.QUADS)
       .build();
-    RenderDebugTrace.bind(trace);
-
-    try {
+    trace.run(() -> {
       RenderMaterial
         .create(solidTexture(0xFFFFFFFF), RendererAssets.AlphaMode.OPAQUE, 0xFFFFFFFF, true, 0.0F)
         .withPipelineState(pipeline);
@@ -1087,9 +1085,7 @@ class RasterPipelineTest {
       assertEquals(1, trace.snapshot().unknownRenderPipelines());
       assertTrue(trace.snapshot().notableEvents().stream().anyMatch(event ->
         event.equals("unknown-pipeline:pipeline/test_unknown:core/test_unknown")));
-    } finally {
-      RenderDebugTrace.unbind();
-    }
+    });
   }
 
   @Test

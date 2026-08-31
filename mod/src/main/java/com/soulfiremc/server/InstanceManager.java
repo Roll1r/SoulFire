@@ -75,7 +75,7 @@ import java.util.concurrent.TimeUnit;
 @Slf4j
 @Getter
 public final class InstanceManager {
-  private static final ThreadLocal<InstanceManager> CURRENT = new ThreadLocal<>();
+  private static final ScopedValue<InstanceManager> CURRENT = ScopedValue.newInstance();
   private final Map<UUID, BotConnection> botConnections = new ConcurrentHashMap<>();
   private final BotControlLeaseManager botControlLeaseManager = new BotControlLeaseManager();
   private final MetadataHolder<Object> metadata = new MetadataHolder<>();
@@ -93,7 +93,7 @@ public final class InstanceManager {
   private final BotStateManager botStateManager;
 
   public static InstanceManager current() {
-    var current = CURRENT.get();
+    var current = CURRENT.isBound() ? CURRENT.get() : null;
     if (!SFConstants.NOT_REGISTRY_INIT_PHASE) {
       return current;
     }
@@ -105,7 +105,7 @@ public final class InstanceManager {
   }
 
   public static Optional<InstanceManager> currentOptional() {
-    return Optional.ofNullable(CURRENT.get());
+    return CURRENT.isBound() ? Optional.of(CURRENT.get()) : Optional.empty();
   }
 
   public InstanceManager(SoulFireServer soulFireServer, DSLContext dsl, UUID id) {
@@ -508,14 +508,13 @@ public final class InstanceManager {
   private record InstanceRunnableWrapper(InstanceManager instanceManager) implements SoulFireScheduler.RunnableWrapper {
     @Override
     public Runnable wrap(Runnable runnable) {
-      return () -> {
+      return () -> ScopedValue.where(CURRENT, instanceManager).run(() -> {
         try (
-          var ignored1 = SFHelpers.smartThreadLocalCloseable(CURRENT, instanceManager);
-          var ignored2 = SFHelpers.smartMDCCloseable(SFLogAppender.SF_INSTANCE_ID, instanceManager.id().toString());
-          var ignored3 = SFHelpers.smartMDCCloseable(SFLogAppender.SF_INSTANCE_NAME, instanceManager.friendlyNameCache().get())) {
+          var _ = SFHelpers.smartMDCCloseable(SFLogAppender.SF_INSTANCE_ID, instanceManager.id().toString());
+          var _ = SFHelpers.smartMDCCloseable(SFLogAppender.SF_INSTANCE_NAME, instanceManager.friendlyNameCache().get())) {
           runnable.run();
         }
-      };
+      });
     }
   }
 }

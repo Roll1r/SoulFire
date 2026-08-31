@@ -486,11 +486,10 @@ class RendererAssetsRuntimeTextureTest {
     var gpuTexture = new FakeGpuTexture(GpuFormat.RGBA8_UNORM, 4, 4, 2, 2);
     var trace = RenderDebugTrace.createForced(1, 1, 1, 0.0F, 0.0F);
     RendererRuntimeTextureMirror.register(location, gpuTexture);
-    RenderDebugTrace.bind(trace);
 
     try (var source = new NativeImage(2, 2, true)) {
       source.setPixel(0, 0, 0xFF102030);
-      RendererRuntimeTextureMirror.mirrorWrite(gpuTexture, source, 1, 1, 0, 0, 2, 2, 0, 0);
+      trace.run(() -> RendererRuntimeTextureMirror.mirrorWrite(gpuTexture, source, 1, 1, 0, 0, 2, 2, 0, 0));
 
       assertNull(RendererRuntimeTextureMirror.texture(location));
       assertEquals(1, trace.snapshot().runtimeTextureMirrorSkips());
@@ -498,7 +497,6 @@ class RendererAssetsRuntimeTextureTest {
         event.contains("runtime-texture-skip:write:")
           && event.contains("non-base-level:mip=1,layer=1")));
     } finally {
-      RenderDebugTrace.unbind();
       RendererRuntimeTextureMirror.unregister(location);
     }
   }

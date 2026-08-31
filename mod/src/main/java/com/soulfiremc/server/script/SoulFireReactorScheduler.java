@@ -28,7 +28,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /// Adapter that wraps SoulFireScheduler to implement Reactor's Scheduler interface.
 /// This allows reactive pipelines to execute on SoulFire's virtual thread executor.
 /// Supports an optional additional RunnableWrapper for per-invocation context
-/// (e.g., bot thread-locals for trigger executions).
+/// (e.g., bot context for trigger executions).
 public final class SoulFireReactorScheduler implements Scheduler {
   private final SoulFireScheduler delegate;
   private final SoulFireScheduler.@Nullable RunnableWrapper additionalWrapper;
@@ -43,8 +43,8 @@ public final class SoulFireReactorScheduler implements Scheduler {
   }
 
   /// Creates a new scheduler with an additional RunnableWrapper composed on top.
-  /// The wrapper is applied to each task before delegation, ensuring thread-locals
-  /// (e.g., BotConnection.CURRENT, MINECRAFT_INSTANCE) are set for all async operations.
+  /// The wrapper is applied to each task before delegation, binding the bot and
+  /// Minecraft context for each async operation.
   public SoulFireReactorScheduler withAdditionalWrapper(SoulFireScheduler.RunnableWrapper wrapper) {
     var composed = additionalWrapper != null ? additionalWrapper.with(wrapper) : wrapper;
     return new SoulFireReactorScheduler(delegate, composed);

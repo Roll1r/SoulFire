@@ -486,17 +486,14 @@ class InventoryItemIconRendererTest {
     submitFlame.setAccessible(true);
     submitLeash.setAccessible(true);
     var trace = RenderDebugTrace.createForced(1, 1, 1, 0.0F, 0.0F);
-    RenderDebugTrace.bind(trace);
-
-    try {
+    trace.call(() -> {
       submitFlame.invoke(collector, new PoseStack(), null, new Quaternionf());
       submitLeash.invoke(collector, new PoseStack(), null);
 
       assertFalse(unsupported(collector));
       assertEquals(2, trace.snapshot().inventoryIconIgnored());
-    } finally {
-      RenderDebugTrace.unbind();
-    }
+      return null;
+    });
   }
 
   @Test

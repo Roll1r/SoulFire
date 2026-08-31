@@ -18,11 +18,11 @@
 package com.soulfiremc.server.pathfinding.cost;
 
 import com.soulfiremc.server.util.SFBlockHelpers;
-import com.soulfiremc.server.util.SFHelpers;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.state.BlockState;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /// This class helps in calculating the costs of different actions. It is used in the pathfinding
 /// algorithm to determine the best path to a goal.
@@ -30,7 +30,7 @@ import net.minecraft.world.level.block.state.BlockState;
 /// using the distance in blocks. The cost of breaking a block is calculated using the time it takes
 /// in ticks to break a block and then converted to a relative heuristic.
 public final class Costs {
-  public static final ThreadLocal<ItemStack> SELECTED_ITEM_MIXIN_OVERRIDE = new ThreadLocal<>();
+  private static final ScopedValue<ItemStack> SELECTED_ITEM_MIXIN_OVERRIDE = ScopedValue.newInstance();
   /// The distance in blocks between two points that are directly next to each other.
   public static final double STRAIGHT = 1;
   /// The distance in blocks between two points that are diagonal to each other.
@@ -77,29 +77,31 @@ public final class Costs {
     return JUMP_LAND_GROUND + (gapLength + 1) * STRAIGHT;
   }
 
+  public static @Nullable ItemStack selectedItemOverride() {
+    return SELECTED_ITEM_MIXIN_OVERRIDE.isBound() ? SELECTED_ITEM_MIXIN_OVERRIDE.get() : null;
+  }
+
   // Time in ticks
   public static TickResult getRequiredMiningTicks(
     LocalPlayer entity,
     ItemStack itemStack,
     BlockState blockState) {
-    boolean correctToolUsed;
-    float damage;
-    try (var ignored = SFHelpers.smartThreadLocalCloseable(SELECTED_ITEM_MIXIN_OVERRIDE, itemStack)) {
-      correctToolUsed = entity.hasCorrectToolForDrops(blockState);
+    return ScopedValue.where(SELECTED_ITEM_MIXIN_OVERRIDE, itemStack).call(() -> {
+      var correctToolUsed = entity.hasCorrectToolForDrops(blockState);
       // If this value adds up over all ticks to 1, the block is fully mined
-      damage = blockState.getDestroyProgress(entity, entity.level(), BlockPos.ZERO);
-    }
+      var damage = blockState.getDestroyProgress(entity, entity.level(), BlockPos.ZERO);
 
-    var willDropUsableBlockItem = correctToolUsed
-      && !entity.preventsBlockDrops()
-      && SFBlockHelpers.isUsableBlockItem(blockState.getBlock());
+      var willDropUsableBlockItem = correctToolUsed
+        && !entity.preventsBlockDrops()
+        && SFBlockHelpers.isUsableBlockItem(blockState.getBlock());
 
-    // Insta mine
-    if (damage >= 1) {
-      return new TickResult(0, willDropUsableBlockItem);
-    }
+      // Insta mine
+      if (damage >= 1) {
+        return new TickResult(0, willDropUsableBlockItem);
+      }
 
-    return new TickResult((int) Math.ceil(1 / damage), willDropUsableBlockItem);
+      return new TickResult((int) Math.ceil(1 / damage), willDropUsableBlockItem);
+    });
   }
 
   public record TickResult(int ticks, boolean willDropUsableBlockItem) {}

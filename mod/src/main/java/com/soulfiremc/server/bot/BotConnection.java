@@ -134,7 +134,7 @@ import java.util.concurrent.atomic.AtomicReference;
 @Getter
 public final class BotConnection {
   private static final Duration DISCONNECT_TIMEOUT = Duration.ofSeconds(5);
-  private static final ThreadLocal<BotConnection> CURRENT = new ThreadLocal<>();
+  private static final ScopedValue<BotConnection> CURRENT = ScopedValue.newInstance();
   private final List<Runnable> shutdownHooks = new CopyOnWriteArrayList<>();
   private final Queue<Runnable> preTickHooks = new ConcurrentLinkedQueue<>();
   private final MetadataHolder<Object> metadata = new MetadataHolder<>();
@@ -168,7 +168,7 @@ public final class BotConnection {
   private volatile boolean isDisconnected;
 
   public static BotConnection current() {
-    var current = CURRENT.get();
+    var current = CURRENT.isBound() ? CURRENT.get() : null;
     if (!SFConstants.NOT_REGISTRY_INIT_PHASE) {
       return current;
     }
@@ -180,7 +180,7 @@ public final class BotConnection {
   }
 
   public static Optional<BotConnection> currentOptional() {
-    return Optional.ofNullable(CURRENT.get());
+    return CURRENT.isBound() ? Optional.of(CURRENT.get()) : Optional.empty();
   }
 
   public BotConnection(
@@ -674,15 +674,14 @@ public final class BotConnection {
   private record BotRunnableWrapper(BotConnection botConnection) implements SoulFireScheduler.RunnableWrapper {
     @Override
     public Runnable wrap(Runnable runnable) {
-      return () -> {
+      return () -> ScopedValue.where(CURRENT, botConnection).run(() -> {
         try (
-          var ignored1 = SFHelpers.smartThreadLocalCloseable(CURRENT, botConnection);
-          var ignored2 = SFHelpers.smartMDCCloseable(SFLogAppender.SF_BOT_ACCOUNT_ID, botConnection.accountProfileId().toString());
-          var ignored3 = SFHelpers.smartMDCCloseable(SFLogAppender.SF_BOT_ACCOUNT_NAME, botConnection.accountName());
-          var ignored4 = SFHelpers.smartThreadLocalCloseable(SFConstants.MINECRAFT_INSTANCE, botConnection.minecraft)) {
+          var _ = SFHelpers.smartMDCCloseable(SFLogAppender.SF_BOT_ACCOUNT_ID, botConnection.accountProfileId().toString());
+          var _ = SFHelpers.smartMDCCloseable(SFLogAppender.SF_BOT_ACCOUNT_NAME, botConnection.accountName());
+          var _ = SFHelpers.smartThreadLocalCloseable(SFConstants.MINECRAFT_INSTANCE, botConnection.minecraft)) {
           runnable.run();
         }
-      };
+      });
     }
   }
 }

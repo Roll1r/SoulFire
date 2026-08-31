@@ -40,7 +40,6 @@ import com.soulfiremc.server.spark.SFSparkPlugin;
 import com.soulfiremc.server.task.BotTaskManager;
 import com.soulfiremc.server.user.*;
 import com.soulfiremc.server.util.KeyHelper;
-import com.soulfiremc.server.util.SFHelpers;
 import com.soulfiremc.server.util.SFPathConstants;
 import com.soulfiremc.server.util.structs.CachedLazyObject;
 import com.soulfiremc.server.util.structs.GsonInstance;
@@ -80,10 +79,10 @@ import java.util.concurrent.TimeUnit;
 @Slf4j
 @Getter
 public final class SoulFireServer {
-  private static final ThreadLocal<SoulFireServer> CURRENT = new ThreadLocal<>();
+  private static final ScopedValue<SoulFireServer> CURRENT = ScopedValue.newInstance();
 
   public static SoulFireServer current() {
-    var current = CURRENT.get();
+    var current = CURRENT.isBound() ? CURRENT.get() : null;
     if (!SFConstants.NOT_REGISTRY_INIT_PHASE) {
       return current;
     }
@@ -95,7 +94,7 @@ public final class SoulFireServer {
   }
 
   public static Optional<SoulFireServer> currentOptional() {
-    return Optional.ofNullable(CURRENT.get());
+    return CURRENT.isBound() ? Optional.of(CURRENT.get()) : Optional.empty();
   }
 
   private final SoulFireScheduler.RunnableWrapper runnableWrapper = new ServerRunnableWrapper(this);
@@ -356,12 +355,7 @@ public final class SoulFireServer {
   private record ServerRunnableWrapper(SoulFireServer server) implements SoulFireScheduler.RunnableWrapper {
     @Override
     public Runnable wrap(Runnable runnable) {
-      return () -> {
-        try (
-          var ignored1 = SFHelpers.smartThreadLocalCloseable(CURRENT, server)) {
-          runnable.run();
-        }
-      };
+      return () -> ScopedValue.where(CURRENT, server).run(runnable);
     }
   }
 }

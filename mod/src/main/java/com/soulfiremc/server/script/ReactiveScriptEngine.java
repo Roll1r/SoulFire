@@ -174,7 +174,7 @@ public final class ReactiveScriptEngine {
     boolean tickSynchronous
   ) {
     // Build per-invocation reactor scheduler with bot context if available.
-    // This ensures bot thread-locals are set on all async threads,
+    // This ensures bot context is bound on all async threads,
     // including after Mono.delay continuations.
     var baseScheduler = context.getReactorScheduler();
     var botValue = eventInputs.get(StandardPorts.BOT_IN);

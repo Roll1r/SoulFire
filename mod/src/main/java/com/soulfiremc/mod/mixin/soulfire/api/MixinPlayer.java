@@ -30,7 +30,7 @@ import org.spongepowered.asm.mixin.injection.At;
 public class MixinPlayer {
   @WrapOperation(method = "getDestroySpeed", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/entity/player/Inventory;getSelectedItem()Lnet/minecraft/world/item/ItemStack;"))
   private ItemStack customDestroySpeedItem(Inventory instance, Operation<ItemStack> original) {
-    ItemStack item = Costs.SELECTED_ITEM_MIXIN_OVERRIDE.get();
+    var item = Costs.selectedItemOverride();
     if (item != null) {
       return item;
     }
@@ -40,7 +40,7 @@ public class MixinPlayer {
 
   @WrapOperation(method = "hasCorrectToolForDrops", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/entity/player/Inventory;getSelectedItem()Lnet/minecraft/world/item/ItemStack;"))
   private ItemStack customCorrectToolItem(Inventory instance, Operation<ItemStack> original) {
-    ItemStack item = Costs.SELECTED_ITEM_MIXIN_OVERRIDE.get();
+    var item = Costs.selectedItemOverride();
     if (item != null) {
       return item;
     }

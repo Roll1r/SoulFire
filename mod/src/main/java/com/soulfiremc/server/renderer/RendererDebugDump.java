@@ -66,9 +66,8 @@ public final class RendererDebugDump {
 
     var options = SoftwareRenderer.Options.defaults(player, width, height, fov, maxDistance).withForceDebugTrace(true);
     var debugTrace = RenderDebugTrace.createForced(width, height, maxDistance, options.yRot(), options.xRot());
-    RenderDebugTrace.bind(debugTrace);
-    var renderStart = System.nanoTime();
-    try {
+    return debugTrace.call(() -> {
+      var renderStart = System.nanoTime();
       var camera = new Camera(options.eyePos(), options.yRot(), options.xRot(), width, height, fov, maxDistance + 32.0F);
       var ctx = RenderContext.create(level, player, camera, maxDistance);
 
@@ -127,9 +126,7 @@ public final class RendererDebugDump {
         writer.runtimeTextureCount(),
         writer.atlasCount()
       );
-    } finally {
-      RenderDebugTrace.unbind();
-    }
+    });
   }
 
   public record Result(

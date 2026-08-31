@@ -81,9 +81,8 @@ public class SoftwareRenderer {
     var debugTrace = options.forceDebugTrace()
       ? RenderDebugTrace.createForced(options.width(), options.height(), options.maxDistance(), options.yRot(), options.xRot())
       : RenderDebugTrace.create(options.width(), options.height(), options.maxDistance(), options.yRot(), options.xRot());
-    RenderDebugTrace.bind(debugTrace);
-    var renderStart = System.nanoTime();
-    try {
+    return debugTrace.call(() -> {
+      var renderStart = System.nanoTime();
       var camera = new Camera(
         options.eyePos(),
         options.yRot(),
@@ -125,9 +124,7 @@ public class SoftwareRenderer {
       debugTrace.logSummary(sceneData);
 
       return new Result(buffers.image(), debugTrace.snapshot());
-    } finally {
-      RenderDebugTrace.unbind();
-    }
+    });
   }
 
   static void renderOverlays(

@@ -27,7 +27,7 @@ import java.util.concurrent.atomic.LongAdder;
 
 @Slf4j
 public final class RenderDebugTrace {
-  private static final ThreadLocal<RenderDebugTrace> CURRENT = new ThreadLocal<>();
+  private static final ScopedValue<RenderDebugTrace> CURRENT = ScopedValue.newInstance();
   private static final AtomicLong NEXT_ID = new AtomicLong(1L);
   private static final int SAMPLE_LIMIT = 16;
   private static final int STACKTRACE_SAMPLE_LIMIT = 8;
@@ -98,19 +98,16 @@ public final class RenderDebugTrace {
       || "true".equalsIgnoreCase(System.getenv("SF_RENDERER_DEBUG"));
   }
 
-  public static void bind(RenderDebugTrace trace) {
-    if (trace.enabled) {
-      CURRENT.set(trace);
-    }
+  public void run(Runnable operation) {
+    ScopedValue.where(CURRENT, this).run(operation);
   }
 
-  public static void unbind() {
-    CURRENT.remove();
+  public <T, X extends Throwable> T call(ScopedValue.CallableOp<T, X> operation) throws X {
+    return ScopedValue.where(CURRENT, this).call(operation);
   }
 
   public static RenderDebugTrace current() {
-    var trace = CURRENT.get();
-    return trace != null ? trace : DISABLED;
+    return CURRENT.orElse(DISABLED);
   }
 
   public void chunkConsidered() {
