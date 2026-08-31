@@ -46,7 +46,7 @@ import com.soulfiremc.server.api.event.bot.BotDisconnectedEvent;
 import com.soulfiremc.server.api.event.bot.PreBotConnectEvent;
 import com.soulfiremc.server.api.metadata.MetadataHolder;
 import com.soulfiremc.server.pathfinding.NavigationWorldState;
-import com.soulfiremc.server.proxy.ProxyType;
+import com.soulfiremc.server.proxy.ProxyAuthenticator;
 import com.soulfiremc.server.proxy.SFProxy;
 import com.soulfiremc.server.settings.lib.BotSettingsDelegate;
 import com.soulfiremc.server.settings.lib.BotSettingsSource;
@@ -221,11 +221,7 @@ public final class BotConnection {
   @SneakyThrows
   private Minecraft createMinecraftCopy(MinecraftAccount minecraftAccount) {
     var newInstance = SFModHelpers.deepCopy(SFConstants.BASE_MC_INSTANCE);
-    var javaProxy = proxy != null
-      ? new Proxy(
-      proxy.type() == ProxyType.HTTP ? Proxy.Type.HTTP : Proxy.Type.SOCKS,
-      proxy.address())
-      : Proxy.NO_PROXY;
+    var javaProxy = ProxyAuthenticator.createProxy(proxy);
     var authSession = createAuthSession(minecraftAccount, javaProxy);
     var userApiService = authSession.userApiService();
 

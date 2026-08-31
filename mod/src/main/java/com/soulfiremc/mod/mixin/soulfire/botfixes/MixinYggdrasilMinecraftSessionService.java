@@ -30,10 +30,9 @@ import com.soulfiremc.server.account.service.OnlineChainJavaData;
 import com.soulfiremc.server.account.service.OnlineSimpleJavaData;
 import com.soulfiremc.server.account.service.TheAlteningJavaData;
 import com.soulfiremc.server.bot.BotConnection;
-import com.soulfiremc.server.proxy.SFProxy;
+import com.soulfiremc.server.proxy.ProxyAuthenticator;
 import org.spongepowered.asm.mixin.Mixin;
 
-import java.net.Proxy;
 import java.util.UUID;
 
 @Mixin(YggdrasilMinecraftSessionService.class)
@@ -53,7 +52,7 @@ public class MixinYggdrasilMinecraftSessionService {
     };
 
     if (accountData instanceof TheAlteningJavaData) {
-      YggdrasilAuthenticationService.createOffline(toJavaProxy(bot.proxy()), TheAlteningAuthService.ENVIRONMENT)
+      YggdrasilAuthenticationService.createOffline(ProxyAuthenticator.createProxy(bot.proxy()), TheAlteningAuthService.ENVIRONMENT)
         .createMinecraftSessionService()
         .joinServer(actualProfileId, actualAuthenticationToken, serverId);
       return;
@@ -65,15 +64,5 @@ public class MixinYggdrasilMinecraftSessionService {
   private static IllegalArgumentException incompatibleJavaOnlineModeAuth(AuthType authType) {
     return new IllegalArgumentException(
       "Server requested Java online-mode authentication, but account auth type %s is incompatible".formatted(authType));
-  }
-
-  private static Proxy toJavaProxy(SFProxy proxy) {
-    if (proxy == null) {
-      return Proxy.NO_PROXY;
-    }
-
-    return new Proxy(
-      proxy.type() == com.soulfiremc.server.proxy.ProxyType.HTTP ? Proxy.Type.HTTP : Proxy.Type.SOCKS,
-      proxy.address());
   }
 }
