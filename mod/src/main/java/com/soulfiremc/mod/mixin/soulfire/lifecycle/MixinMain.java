@@ -38,7 +38,7 @@ import java.util.concurrent.TimeUnit;
 @Mixin(Main.class)
 public final class MixinMain {
   @Unique
-  private static final long soulfire$INITIAL_CLIENT_LOAD_TIMEOUT_NANOS = TimeUnit.SECONDS.toNanos(30);
+  private static final long soulfire$INITIAL_CLIENT_LOAD_TIMEOUT_NANOS = TimeUnit.SECONDS.toNanos(120);
 
   @SneakyThrows
   @Inject(method = "main([Ljava/lang/String;)V", at = @At("HEAD"))
